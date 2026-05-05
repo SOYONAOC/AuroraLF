@@ -102,7 +102,7 @@ def build_deck() -> None:
         fig = plt.figure(figsize=(16, 9), facecolor="#f8fafc")
         ax = page_title(
             fig,
-            "realUVLF：UVLF / SSP / Dust 结果总结",
+            "AuroraLF：UVLF / SSP / Dust 结果总结",
             "",
         )
         add_text_box(

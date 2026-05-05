@@ -1,4 +1,6 @@
-# realUVLF
+# AuroraLF
+
+Halo-growth based modeling of high-redshift UV luminosity functions.
 
 ## Repository Notes
 
