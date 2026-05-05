@@ -1,3 +1,4 @@
+.venv
 .venv/
 __pycache__/
 *.pyc
@@ -12,6 +13,14 @@ slides/
 
 *.egg-info/
 
+# LaTeX build products
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+
 # Large raw datasets: keep outside the initial Git history.
 spectra-bin_byrne23/*.dat
+spectra-bin_byrne23/*.hdf5
 obsdata/universemachine_dr1/*.tar.gz
