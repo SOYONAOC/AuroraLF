@@ -5,11 +5,16 @@ import argparse
 import os
 import time
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from uvlf import compute_dust_attenuated_uvlf, sample_uvlf_from_hmf
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import compute_dust_attenuated_uvlf, sample_uvlf_from_hmf
 
 
 MUV_MIN = -28.0
@@ -23,7 +28,7 @@ def format_redshift_tag(z_value: float) -> str:
 
 
 def observational_directory_for_redshift(z_value: float) -> Path:
-    return Path("obsdata") / f"redshift_{format_redshift_tag(z_value)}"
+    return PROJECT_ROOT / "external_data" / "observations" / "uvlf" / f"redshift_{format_redshift_tag(z_value)}"
 
 
 def reserve_output_path(path: Path) -> Path:

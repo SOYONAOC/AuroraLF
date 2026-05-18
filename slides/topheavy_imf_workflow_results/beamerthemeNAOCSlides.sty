@@ -1,0 +1,212 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{beamerthemeNAOCSlides}[2026/04/22 NAOC slide workflow theme]
+
+\RequirePackage{iftex}
+\ifLuaTeX\else
+  \PackageError{beamerthemeNAOCSlides}{This theme requires LuaLaTeX}{Compile with lualatex so Chinese text renders correctly.}
+\fi
+
+\RequirePackage{fontspec}
+\RequirePackage{graphicx}
+\RequirePackage{xcolor}
+\RequirePackage{tikz}
+\RequirePackage{array}
+\RequirePackage{xparse}
+
+\usetikzlibrary{calc,shapes.geometric}
+
+\defaultfontfeatures{Ligatures=TeX}
+\setmainfont{Noto Serif CJK SC}
+\setsansfont{Noto Sans CJK SC}
+\setmonofont{Noto Sans Mono CJK SC}
+
+\definecolor{NAOCBlue}{HTML}{2A579D}
+\definecolor{NAOCDark}{HTML}{183A79}
+\definecolor{NAOCLight}{HTML}{E7EEF9}
+\definecolor{NAOCGray}{HTML}{6E7786}
+
+\newcommand{\NAOCBannerPath}{assets/naoc_banner.jpeg}
+\newcommand{\NAOCLogoPath}{assets/naoc_logo_white.png}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamersize{text margin left=0.80cm,text margin right=0.80cm}
+\setbeamertemplate{itemize item}{\color{NAOCBlue}\small$\blacktriangleright$}
+\setbeamertemplate{itemize subitem}{\color{NAOCBlue}\scriptsize$\bullet$}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamerfont{frametitle}{size=\Large}
+\setbeamercolor{normal text}{fg=black,bg=white}
+\setbeamercolor{frametitle}{fg=white,bg=NAOCBlue}
+\setbeamercolor{title}{fg=NAOCDark}
+\setbeamercolor{subtitle}{fg=black}
+\setbeamercolor{block title}{fg=white,bg=NAOCBlue}
+\setbeamercolor{block body}{fg=black,bg=NAOCLight}
+
+\setbeamertemplate{headline}{}
+\setbeamertemplate{frametitle}{%
+  \nointerlineskip
+  \begin{beamercolorbox}[wd=\paperwidth,ht=0.82cm,dp=0ex]{frametitle}
+    \vbox to 0.82cm{%
+      \vfil
+      \hbox to \paperwidth{%
+        \hskip0.30cm%
+        \hbox to \dimexpr\paperwidth-0.60cm\relax{%
+          {\usebeamerfont{frametitle}\insertframetitle}%
+          \hfill
+          \raisebox{-0.06cm}{\includegraphics[height=0.54cm]{\NAOCLogoPath}}%
+        }%
+        \hskip0.30cm%
+      }%
+      \vfil
+    }%
+  \end{beamercolorbox}
+}
+
+\setbeamertemplate{footline}{%
+  \leavevmode
+  \hbox{%
+    \begin{beamercolorbox}[wd=\paperwidth,ht=0.90cm,dp=0ex]{frametitle}
+      \vbox to 0.90cm{%
+        \vfil
+        \hbox to \paperwidth{%
+          \hskip0.32cm%
+          \hbox to \dimexpr\paperwidth-0.64cm\relax{%
+            {\fontsize{5.5}{6}\selectfont\color{white!80!NAOCBlue}\insertshortdate}%
+            \hfill
+            {\fontsize{6.5}{6.5}\selectfont\color{white!80!NAOCBlue}\insertframenumber}%
+          }%
+          \hskip0.32cm%
+        }%
+        \vfil
+      }%
+    \end{beamercolorbox}%
+  }%
+}
+
+\newcommand{\NAOCTitlePage}{%
+  {%
+    \usebackgroundtemplate{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=north west,inner sep=0pt] at (current page.north west)
+          {\includegraphics[width=\paperwidth,height=1.55cm]{\NAOCBannerPath}};
+        \fill[NAOCBlue!82] (current page.south west) rectangle ([yshift=1.35cm]current page.south east);
+        \node[anchor=north west,inner sep=0pt] at ([xshift=0.18cm,yshift=-0.35cm]current page.north west)
+          {\includegraphics[width=5.35cm]{\NAOCLogoPath}};
+      \end{tikzpicture}%
+    }
+    \begin{frame}[plain]
+      \vspace*{2.10cm}
+      \begin{center}
+        {\fontsize{22}{28}\selectfont\bfseries\color{NAOCDark}\inserttitle\par}
+        \vspace{0.35cm}
+        {\fontsize{12}{16}\selectfont\insertsubtitle\par}
+        \vspace{0.90cm}
+        {\fontsize{12}{14}\selectfont\insertauthor\par}
+        \vspace{0.18cm}
+        {\fontsize{10}{12}\selectfont\insertinstitute\par}
+        \vspace{0.18cm}
+        {\fontsize{10}{12}\selectfont\insertdate\par}
+      \end{center}
+    \end{frame}
+  }%
+}
+
+\NewDocumentCommand{\NAOCOutlinePage}{m}{%
+  {%
+    \usebackgroundtemplate{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[NAOCBlue] (current page.north west) rectangle ([yshift=-0.82cm]current page.north east);
+        \node[anchor=north east,inner sep=0pt] at ([xshift=-0.25cm,yshift=-0.14cm]current page.north east)
+          {\includegraphics[height=0.52cm]{\NAOCLogoPath}};
+        \fill[NAOCBlue!85] ([xshift=1.05cm,yshift=-1.85cm]current page.north west)
+          rectangle ([xshift=3.85cm,yshift=-5.70cm]current page.north west);
+        \fill[NAOCBlue!75] (current page.south west) rectangle ([yshift=0.90cm]current page.south east);
+        \node[anchor=south west,font=\fontsize{5.5}{6}\selectfont,text=white!80!NAOCBlue]
+          at ([xshift=0.40cm,yshift=0.18cm]current page.south west) {\insertshortdate};
+        \node[anchor=south east,font=\fontsize{6.5}{6.5}\selectfont,text=white!80!NAOCBlue]
+          at ([xshift=-0.40cm,yshift=0.18cm]current page.south east) {\insertframenumber};
+      \end{tikzpicture}%
+    }
+    \begin{frame}[plain]
+      \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=north west,text=white,font=\fontsize{18}{20}\selectfont]
+          at ([xshift=1.33cm,yshift=-2.55cm]current page.north west) {目录};
+      \end{tikzpicture}
+      \vspace*{2.0cm}
+      \hspace*{3.95cm}
+      \begin{minipage}[t][3.9cm][t]{0.57\paperwidth}
+        \fontsize{13.5}{18}\selectfont
+        \begin{enumerate}
+          #1
+        \end{enumerate}
+      \end{minipage}
+    \end{frame}
+  }%
+}
+
+\NewDocumentCommand{\NAOCSectionPage}{mm}{%
+  {%
+    \usebackgroundtemplate{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[NAOCBlue] (current page.north west) rectangle ([yshift=-5.55cm]current page.north east);
+        \node[anchor=north,inner sep=0pt] at ([yshift=-2.95cm]current page.north)
+          {\includegraphics[width=6.25cm]{\NAOCLogoPath}};
+        \node[
+          regular polygon,
+          regular polygon sides=6,
+          minimum width=2.70cm,
+          inner sep=0pt,
+          fill=black!18,
+          draw=none,
+          opacity=0.18
+        ] at ([xshift=0.09cm,yshift=-5.63cm]current page.north) {};
+        \node[
+          regular polygon,
+          regular polygon sides=6,
+          minimum width=2.62cm,
+          inner sep=0pt,
+          fill=NAOCBlue!45,
+          draw=white,
+          line width=5pt
+        ] at ([yshift=-5.52cm]current page.north) {};
+        \node[font=\fontsize{20}{22}\selectfont\color{NAOCDark}] at ([yshift=-5.52cm]current page.north) {#1};
+        \node[anchor=south west,font=\fontsize{5.5}{6}\selectfont,text=NAOCGray]
+          at ([xshift=1.10cm,yshift=0.42cm]current page.south west) {\insertshortdate};
+        \node[anchor=south east,font=\fontsize{7}{7}\selectfont,text=NAOCGray]
+          at ([xshift=-1.10cm,yshift=0.42cm]current page.south east) {\insertframenumber};
+      \end{tikzpicture}%
+    }
+    \begin{frame}[plain]
+      \vspace*{6.70cm}
+      \begin{center}
+        {\fontsize{23}{28}\selectfont\bfseries\color{NAOCBlue}#2\par}
+      \end{center}
+    \end{frame}
+  }%
+}
+
+\NewDocumentEnvironment{NAOCBlankPage}{m+b}
+  {%
+    \begin{frame}[t]{#1}
+      \vspace{0.20cm}
+      #2
+    \end{frame}
+  }
+  {}
+
+\newcommand{\NAOCThanksPage}{%
+  {%
+    \usebackgroundtemplate{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[NAOCBlue] (current page.south west) rectangle ([yshift=4.25cm]current page.south east);
+        \node[anchor=north west,inner sep=0pt] at ([xshift=3.45cm,yshift=-2.25cm]current page.north west)
+          {\includegraphics[width=5.35cm]{\NAOCLogoPath}};
+      \end{tikzpicture}%
+    }
+    \begin{frame}[plain]
+      \vspace*{4.0cm}
+      \begin{center}
+        {\fontsize{24}{28}\selectfont\bfseries\color{white}感谢各位老师指正\par}
+      \end{center}
+    \end{frame}
+  }%
+}

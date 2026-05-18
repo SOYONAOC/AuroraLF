@@ -3,17 +3,23 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import font_manager
 
-from mah import Cosmology
-from mah.generator import generate_halo_histories
-from sfr.calculator import DEFAULT_SFR_MODEL_PARAMETERS, compute_sfr_from_tracks
-from ssp import compute_halo_uv_luminosity, load_uv1600_table
-from uvlf.pipeline import DEFAULT_SSP_FILE
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.mah import Cosmology
+from auroralf.mah.generator import generate_halo_histories
+from auroralf.sfr.calculator import DEFAULT_SFR_MODEL_PARAMETERS, compute_sfr_from_tracks
+from auroralf.ssp import compute_halo_uv_luminosity, load_uv1600_table
+from auroralf.uvlf.pipeline import DEFAULT_SSP_FILE
+
+SSP_PATH = PROJECT_ROOT / DEFAULT_SSP_FILE
 
 FONT_PATH = "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc"
 font_manager.fontManager.addfont(FONT_PATH)
@@ -81,7 +87,7 @@ def build_case(z_final: float) -> dict[str, np.ndarray | float]:
         model_parameters=DEFAULT_SFR_MODEL_PARAMETERS,
     )
 
-    ages_myr, luv_per_msun = load_uv1600_table(DEFAULT_SSP_FILE)
+    ages_myr, luv_per_msun = load_uv1600_table(SSP_PATH)
     ssp_age_grid_gyr = ages_myr / 1.0e3
 
     halo_ids = np.asarray(sfr_tracks["halo_id"], dtype=int)

@@ -1,0 +1,54 @@
+npz_path: /home/zhuhourui/AstroCode/AuroraLF/data_save/uvlf_reed07_eps0p10212_z6_z12p5_z14p5_N10000_n2000.npz
+mass_function_model: hmf_reed07
+epsilon_0: 0.102122369945
+canonical_ssp_file: /home/zhuhourui/AstroCode/AuroraLF/data/spectra-bin-imf135_300.BASEL.z001.a+00.dat
+topheavy_ssp_file: /home/zhuhourui/AstroCode/AuroraLF/data/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5
+topheavy_ssp_metallicity: 0.05
+apply_dust: True
+mode_names: canonical z10_mild_topheavy mah_burst_mild_topheavy
+ratio_display_range: -22.5 <= Muv <= -16
+
+z=6
+  z10_mild_topheavy_ratio_median=1.000000
+  z10_mild_topheavy_ratio_min=1.000000
+  z10_mild_topheavy_ratio_max=1.000000
+  z10_mild_topheavy_obs_range_ratio_median=1.000000
+  z10_mild_topheavy_obs_range_ratio_min=1.000000
+  z10_mild_topheavy_obs_range_ratio_max=1.000000
+  mah_burst_mild_topheavy_ratio_median=1.000000
+  mah_burst_mild_topheavy_ratio_min=1.000000
+  mah_burst_mild_topheavy_ratio_max=1.000000
+  mah_burst_mild_topheavy_obs_range_ratio_median=1.000000
+  mah_burst_mild_topheavy_obs_range_ratio_min=1.000000
+  mah_burst_mild_topheavy_obs_range_ratio_max=1.000000
+  n_obs_sets=3
+
+z=12.5
+  z10_mild_topheavy_ratio_median=3.336163
+  z10_mild_topheavy_ratio_min=2.181535
+  z10_mild_topheavy_ratio_max=44.853619
+  z10_mild_topheavy_obs_range_ratio_median=3.236581
+  z10_mild_topheavy_obs_range_ratio_min=2.364254
+  z10_mild_topheavy_obs_range_ratio_max=7.825516
+  mah_burst_mild_topheavy_ratio_median=1.849872
+  mah_burst_mild_topheavy_ratio_min=1.128348
+  mah_burst_mild_topheavy_ratio_max=48.288301
+  mah_burst_mild_topheavy_obs_range_ratio_median=1.761201
+  mah_burst_mild_topheavy_obs_range_ratio_min=1.212765
+  mah_burst_mild_topheavy_obs_range_ratio_max=5.596818
+  n_obs_sets=3
+
+z=14.5
+  z10_mild_topheavy_ratio_median=4.762645
+  z10_mild_topheavy_ratio_min=2.576204
+  z10_mild_topheavy_ratio_max=82.862683
+  z10_mild_topheavy_obs_range_ratio_median=4.440942
+  z10_mild_topheavy_obs_range_ratio_min=2.756250
+  z10_mild_topheavy_obs_range_ratio_max=11.584233
+  mah_burst_mild_topheavy_ratio_median=3.595475
+  mah_burst_mild_topheavy_ratio_min=1.588383
+  mah_burst_mild_topheavy_ratio_max=83.877870
+  mah_burst_mild_topheavy_obs_range_ratio_median=3.297330
+  mah_burst_mild_topheavy_obs_range_ratio_min=1.674907
+  mah_burst_mild_topheavy_obs_range_ratio_max=10.474177
+  n_obs_sets=2

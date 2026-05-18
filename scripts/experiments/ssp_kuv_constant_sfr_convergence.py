@@ -4,14 +4,20 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import font_manager
 
-from ssp import compute_halo_uv_luminosity, load_uv1600_table
-from uvlf.pipeline import DEFAULT_SSP_FILE
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.ssp import compute_halo_uv_luminosity, load_uv1600_table
+from auroralf.uvlf.pipeline import DEFAULT_SSP_FILE
+
+SSP_PATH = PROJECT_ROOT / DEFAULT_SSP_FILE
 
 FONT_PATH = "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc"
 font_manager.fontManager.addfont(FONT_PATH)
@@ -57,7 +63,7 @@ def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    ages_myr, luv_per_msun = load_uv1600_table(DEFAULT_SSP_FILE)
+    ages_myr, luv_per_msun = load_uv1600_table(SSP_PATH)
     ssp_age_grid_gyr = ages_myr / 1.0e3
 
     duration_myr_grid = np.array(
@@ -105,7 +111,7 @@ def main() -> None:
     fig.savefig(PNG_PATH, dpi=220)
 
     with TXT_PATH.open("w", encoding="utf-8") as handle:
-        handle.write(f"ssp_file: {DEFAULT_SSP_FILE}\n")
+        handle.write(f"ssp_file: {SSP_PATH}\n")
         handle.write(f"n_time: {args.n_time}\n")
         handle.write(f"elapsed_seconds: {elapsed:.6f}\n")
         handle.write(f"KUV_reference: {KUV_REFERENCE:.6e}\n")

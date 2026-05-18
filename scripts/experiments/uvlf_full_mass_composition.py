@@ -4,11 +4,16 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from uvlf import intrinsic_muv_from_observed, sample_uvlf_from_hmf
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import intrinsic_muv_from_observed, sample_uvlf_from_hmf
 
 
 DEFAULT_LOGMH_EDGES = [8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5]
@@ -52,7 +57,7 @@ def _mass_range_tag(logmh_edges: np.ndarray) -> str:
 
 
 def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]]:
-    obs_dir = Path("obsdata") / f"redshift_{_format_redshift_tag(z_value)}"
+    obs_dir = PROJECT_ROOT / "external_data" / "observations" / "uvlf" / f"redshift_{_format_redshift_tag(z_value)}"
     datasets: list[dict[str, np.ndarray | str]] = []
     if not obs_dir.exists():
         return datasets
