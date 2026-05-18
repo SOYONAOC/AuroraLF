@@ -6,13 +6,18 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mah import Cosmology
-from mah.generator import generate_halo_histories
-from sfr.calculator import DEFAULT_SFR_MODEL_PARAMETERS, compute_sfr_from_tracks
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.mah import Cosmology
+from auroralf.mah.generator import generate_halo_histories
+from auroralf.sfr.calculator import DEFAULT_SFR_MODEL_PARAMETERS, compute_sfr_from_tracks
 
 
 Z_VALUES = [6.0, 8.0, 10.0, 12.5]

@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from sfr.calculator import EXTENDED_BURST_KAPPA
-from uvlf import run_halo_uv_pipeline, uv_luminosity_to_muv
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.sfr.calculator import EXTENDED_BURST_KAPPA
+from auroralf.uvlf import run_halo_uv_pipeline, uv_luminosity_to_muv
 
 
 def _burst_kernel(delta_t_gyr: np.ndarray, td_gyr: float, kappa: float = EXTENDED_BURST_KAPPA) -> np.ndarray:

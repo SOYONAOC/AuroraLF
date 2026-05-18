@@ -5,8 +5,13 @@ import argparse
 import os
 import time
 from pathlib import Path
+import sys
 
-from uvlf import sample_uvlf_from_hmf
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import sample_uvlf_from_hmf
 
 
 def format_redshift_tag(z_value: float) -> str:

@@ -2,22 +2,42 @@
 
 Halo-growth based modeling of high-redshift UV luminosity functions.
 
-## Repository Notes
+## Project layout
 
-Core reusable code lives in `mah/`, `sfr/`, `ssp/`, and `uvlf/`. One-off
-diagnostics, plotting scripts, and rerun helpers live in `scripts/experiments/`;
-run them from the repository root, for example:
+Core code:
 
-```bash
-PYTHONPATH=. .venv/bin/python scripts/experiments/plot_delay_sfr_four_z.py
-```
+- `auroralf/uvlf/`: UV luminosity function pipeline, HMF weighting, dust mapping, and Pop II IMF gate logic
+- `auroralf/mah/`: Monte Carlo halo assembly history generation
+- `auroralf/sfr/`: star-formation model utilities
+- `auroralf/ssp/`: SSP UV convolution utilities
+- `tests/`: focused regression tests
 
-## `mah.generate_halo_histories()`
+Workflow code:
+
+- `scripts/run/`: production or batch workflow entry points
+- `scripts/submit/`: SLURM submission wrappers
+- `scripts/plot/`: plotting and visual comparison scripts
+- `scripts/analysis/`: post-processing and result comparison scripts
+- `scripts/experiments/`: one-off experiment launchers
+
+Data and generated files:
+
+- `external_data/`: external source data, including observations, SSP spectra, empirical model releases, and literature source packages
+- `data_save/`: reusable intermediate products and summary tables; ignored by git
+- `outputs/`: logs, progress files, one-off plots, and diagnostics; ignored by git
+- `temp_data/`: scratch caches and temporary `.npz` products; ignored by git
+- `slides/`: Beamer sources, slide PDFs, and slide assets; ignored by git in this branch
+- `archive/`: archived legacy code or notes kept for reference
+- `nbody/`: N-body experiment notes and launch documentation
+
+Keep external source data under `external_data/`, with large local libraries ignored by git. Use `data_save/` for reusable computed products and `outputs/` for diagnostics.
+
+## `auroralf.mah.generate_halo_histories()`
 
 导入：
 
 ```python
-from mah import generate_halo_histories
+from auroralf.mah import generate_halo_histories
 ```
 
 输入：
@@ -33,7 +53,7 @@ from mah import generate_halo_histories
 - `M_min`
   最低质量阈值；默认 `None` 时使用 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`，也可以传标量、与红移网格同长度的数组，或 `M_min(z)` 形式的可调用对象
 - `cosmology`
-  `mah.Cosmology`；未提供时使用项目默认宇宙学
+  `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
 - `random_seed`
   随机种子
 - `time_grid_mode`
@@ -91,12 +111,12 @@ from mah import generate_halo_histories
   - `"below_M_min"`
   - `"completed"`
 
-## `sfr.compute_sfr_from_tracks()`
+## `auroralf.sfr.compute_sfr_from_tracks()`
 
 导入：
 
 ```python
-from sfr import compute_sfr_from_tracks
+from auroralf.sfr import compute_sfr_from_tracks
 ```
 
 输入：
@@ -150,25 +170,26 @@ from sfr import compute_sfr_from_tracks
 最小调用：
 
 ```python
-from mah import generate_halo_histories
-from sfr import compute_sfr_from_tracks
+from auroralf.mah import generate_halo_histories
+from auroralf.sfr import compute_sfr_from_tracks
 
 result = generate_halo_histories(n_tracks=100, z_final=6.0, Mh_final=1e11)
 sfr_tracks = compute_sfr_from_tracks(result.tracks, enable_time_delay=True)
 ```
 
-## `ssp.load_uv1600_table()`
+## `auroralf.ssp.load_uv1600_table()`
 
 导入：
 
 ```python
-from ssp import load_uv1600_table
+from auroralf.ssp import load_uv1600_table
 ```
 
 输入：
 
 - `file_path`
-  SSP 光谱文件路径，例如 `spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+  SSP 光谱文件路径，例如 `external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+  或 `external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5`
 - `wavelength_a`
   目标波长，单位 `Angstrom`，默认 `1600.0`
 
@@ -184,12 +205,12 @@ from ssp import load_uv1600_table
 - 内部带缓存；同一个文件和波长组合只会实际读取一次
 - 当前默认用于 `Z=0.001` 的 SSP 文件
 
-## `ssp.interpolate_uv1600_luminosity_per_msun()`
+## `auroralf.ssp.interpolate_uv1600_luminosity_per_msun()`
 
 导入：
 
 ```python
-from ssp import interpolate_uv1600_luminosity_per_msun
+from auroralf.ssp import interpolate_uv1600_luminosity_per_msun
 ```
 
 输入：
@@ -214,20 +235,31 @@ from ssp import interpolate_uv1600_luminosity_per_msun
 最小调用：
 
 ```python
-from ssp import interpolate_uv1600_luminosity_per_msun
+from auroralf.ssp import interpolate_uv1600_luminosity_per_msun
 
 lum_1600 = interpolate_uv1600_luminosity_per_msun(
     time_myr=10.0,
-    file_path="spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat",
+    file_path="external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat",
 )
 ```
 
-## `ssp.compute_halo_uv_luminosity()`
+HDF5 示例：
+
+```python
+from auroralf.ssp import load_uv1600_table
+
+ages_myr, luv_per_msun = load_uv1600_table(
+    file_path="external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5",
+    metallicity=0.05,
+)
+```
+
+## `auroralf.ssp.compute_halo_uv_luminosity()`
 
 导入：
 
 ```python
-from ssp import compute_halo_uv_luminosity
+from auroralf.ssp import compute_halo_uv_luminosity
 ```
 
 输入：
@@ -275,22 +307,22 @@ from ssp import compute_halo_uv_luminosity
 - `t_cross_Mmin` 在 `Mh(t)` 穿过 `M_min` 时用线性插值求出
 - 若 `ti` 早于 `t_history` 的首个采样点，实际积分会从首个可用历史点开始
 - `dt` 的年单位换算已显式通过 `time_unit_in_years` 处理
-- SSP 核采用与现有 `ssp` 一致的 `log10(age)` 插值风格
+- SSP 核采用与现有 `auroralf.ssp` 一致的 `log10(age)` 插值风格
 - 当年龄小于 SSP 最小年龄时取最小年龄值；大于最大年龄时返回 `0`
-- 若 `load_uv1600_table()` 返回的是 `Myr` 年龄网格，而 `mah/sfr` 历史是 `Gyr`，请先做 `ssp_age_grid_gyr = ages_myr / 1e3`
+- 若 `load_uv1600_table()` 返回的是 `Myr` 年龄网格，而 `auroralf/mah` 和 `auroralf/sfr` 历史是 `Gyr`，请先做 `ssp_age_grid_gyr = ages_myr / 1e3`
 
 最小调用：
 
 ```python
-from mah import generate_halo_histories
-from sfr import compute_sfr_from_tracks
-from ssp import compute_halo_uv_luminosity, load_uv1600_table
+from auroralf.mah import generate_halo_histories
+from auroralf.sfr import compute_sfr_from_tracks
+from auroralf.ssp import compute_halo_uv_luminosity, load_uv1600_table
 
 histories = generate_halo_histories(n_tracks=1, z_final=6.0, Mh_final=1e11)
 sfr_tracks = compute_sfr_from_tracks(histories.tracks)
 
 ages_myr, luv_per_msun = load_uv1600_table(
-    "spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+    "external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
 )
 ssp_age_grid_gyr = ages_myr / 1e3
 
@@ -307,12 +339,12 @@ L_uv = compute_halo_uv_luminosity(
 )
 ```
 
-## `uvlf.run_halo_uv_pipeline()`
+## `auroralf.uvlf.run_halo_uv_pipeline()`
 
 导入：
 
 ```python
-from uvlf import run_halo_uv_pipeline
+from auroralf.uvlf import run_halo_uv_pipeline
 ```
 
 输入：
@@ -328,15 +360,26 @@ from uvlf import run_halo_uv_pipeline
 - `n_grid`
   redshift grid 点数，默认 `240`
 - `ssp_file`
-  SSP 光谱文件路径；默认使用 `spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+  canonical Pop II SSP 光谱文件路径；默认使用 `external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+- `topheavy_ssp_file`
+  mild top-heavy Pop II SSP 光谱文件路径；默认使用 `external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5`
+- `topheavy_ssp_metallicity`
+  读取 HDF5 top-heavy SSP 时使用的金属丰度，单位为 `Z/Zsun`；默认 `0.05`
+- `imf_mode`
+  Pop II IMF 模式，支持：
+  - `"canonical"`：所有源时刻都使用 canonical Pop II SSP
+  - `"z10_mild_topheavy"`：源时刻满足 `z >= z_topheavy_min` 时使用 mild top-heavy SSP
+  - `"mah_burst_mild_topheavy"`：同时满足 `z >= z_topheavy_min` 且 `Mh / dMh_dt <= growth_time_threshold_myr` 时使用 mild top-heavy SSP
+- `imf_transition_parameters`
+  `auroralf.uvlf.IMFTransitionParameters`，默认 `z_topheavy_min=10.0`、`growth_time_threshold_myr=50.0`
 - `cosmology`
-  `mah.Cosmology`；未提供时使用项目默认宇宙学
+  `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
 - `random_seed`
   随机种子
 - `sampler`
-  `mah` 参数抽样方式，默认 `"mcbride"`
+  `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
 - `enable_time_delay`
-  是否在 `sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
+  是否在 `auroralf.sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
 - `workers`
   保留的接口参数；当前实现中 `run_halo_uv_pipeline()` 内部 UV 卷积按串行执行
 
@@ -349,31 +392,38 @@ from uvlf import run_halo_uv_pipeline
 字段：
 
 - `histories`
-  `mah.generate_halo_histories()` 返回的原始 `HaloHistoryResult`
+  `auroralf.mah.generate_halo_histories()` 返回的原始 `HaloHistoryResult`
 - `sfr_tracks`
-  `sfr.compute_sfr_from_tracks()` 输出的扁平表格
+  `auroralf.sfr.compute_sfr_from_tracks()` 输出的扁平表格
 - `uv_luminosities`
   每个 halo 在 `z_final` 的总 UV 光度，单位 `erg/s/Hz`
+- `uv_luminosities_canonical`
+  canonical Pop II SSP 对总 UV 光度的分量
+- `uv_luminosities_topheavy`
+  mild top-heavy Pop II SSP 对总 UV 光度的分量
 - `redshift_grid`
   这次计算使用的 redshift grid
 - `floor_mass`
   从有效历史点反推出的有效 `M_min(z)` 下限，可直接用于画图
 - `active_grid`
   每个 halo 每个时间步是否仍处于有效区间
+- `imf_topheavy_source_grid`
+  每个 halo 每个源时刻是否使用 mild top-heavy SSP kernel
 - `metadata`
-  包含 `n_tracks`、`steps_per_halo`、`workers`、`ssp_file`、`enable_time_delay` 和各阶段耗时
+  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`enable_time_delay` 和各阶段耗时
 
 说明：
 
-- 这个函数封装了完整主流程：`mah -> sfr -> SSP UV convolution`
-- `mah` 部分使用默认 `M_min`，即 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`
+- 这个函数封装了完整主流程：`auroralf.mah -> auroralf.sfr -> auroralf.ssp UV convolution`
+- `auroralf.mah` 部分使用默认 `M_min`，即 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
+- Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
 - `load_uv1600_table()` 读出的 SSP 年龄网格会自动从 `Myr` 转成 `Gyr` 后再参与卷积
 
 最小调用：
 
 ```python
-from uvlf import run_halo_uv_pipeline
+from auroralf.uvlf import run_halo_uv_pipeline
 
 result = run_halo_uv_pipeline(
     n_tracks=10000,
@@ -386,12 +436,12 @@ print(result.uv_luminosities.shape)
 print(result.metadata["timing_seconds"])
 ```
 
-## `uvlf.sample_uvlf_from_hmf()`
+## `auroralf.uvlf.sample_uvlf_from_hmf()`
 
 导入：
 
 ```python
-from uvlf import sample_uvlf_from_hmf
+from auroralf.uvlf import sample_uvlf_from_hmf
 ```
 
 输入：
@@ -411,21 +461,31 @@ from uvlf import sample_uvlf_from_hmf
 - `logM_min`
   外层均匀抽样的最低 `log10 Mh`，默认 `9`
 - `logM_max`
-  外层均匀抽样的最高 `log10 Mh`，默认 `16`
+  外层均匀抽样的最高 `log10 Mh`，默认 `13`
 - `z_start_max`
-  内层 `mah` 回溯的最高红移，默认 `50.0`
+  内层 `auroralf.mah` 回溯的最高红移，默认 `50.0`
 - `n_grid`
-  内层 `mah/sfr` 使用的 redshift grid 点数，默认 `240`
+  内层 `auroralf/mah` 和 `auroralf/sfr` 使用的 redshift grid 点数，默认 `240`
 - `sampler`
-  `mah` 参数抽样方式，默认 `"mcbride"`
+  `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
 - `enable_time_delay`
-  是否在 `sfr` 中启用时间延迟，默认 `False`
+  是否在 `auroralf.sfr` 中启用时间延迟，默认 `False`
 - `pipeline_workers`
   外层 `N_mass` 质量点采样使用的并行 worker 数
 - `ssp_file`
-  SSP 文件路径；默认使用 `spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+  canonical Pop II SSP 文件路径；默认使用 `external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat`
+- `topheavy_ssp_file`
+  mild top-heavy Pop II SSP 文件路径；仅非 canonical IMF 模式实际读取
+- `topheavy_ssp_metallicity`
+  HDF5 mild top-heavy SSP 的金属丰度，单位为 `Z/Zsun`；默认 `0.05`
+- `imf_mode`
+  同 `run_halo_uv_pipeline()`，默认 `"canonical"`
+- `imf_transition_parameters`
+  mild top-heavy IMF 的源时刻触发参数
 - `progress_path`
   可选进度文件路径；若提供，会把外层 `N_mass` 循环进度持续写入该 txt 文件
+- `mass_function_model`
+  外层 halo mass function 权重模型；当前生产接口只支持 `"hmf_reed07"`，使用 `hmf` 包中的 Reed07 fitting function。旧的 `"massfunc_st"` 和 Watson13 分支已禁用。
 
 输出：
 
@@ -442,33 +502,41 @@ from uvlf import sample_uvlf_from_hmf
   - `mass_weight`
   - `track_index`
   - `luminosity`
+  - `topheavy_light_fraction`
   - `Muv`
   - `sample_weight`
-- `uvlf`
+- `auroralf.uvlf`
   UVLF histogram 结果，包含：
   - `quantity`
   - `bin_edges`
   - `bin_centers`
   - `bin_width`
+  - `raw_counts`
   - `weighted_counts`
+  - `weight_squared_counts`
+  - `weighted_count_sigma`
+  - `effective_counts`
   - `phi`
+  - `phi_sigma`
 - `metadata`
   运行参数和耗时信息
 
 说明：
 
-- 外层在 `log10 Mh in [9, 16]` 上均匀抽样
-- 外层权重使用 ST halo mass function：
+- 外层在 `log10 Mh in [9, 13]` 上均匀抽样
+- 外层权重默认使用 `hmf` 包的 Reed07 halo mass function：
   - `dn/dlogM = M ln(10) dn/dM`
+- `hmf` 的质量单位从 `Msun/h` 转成项目内部使用的 `Msun`，`dn/dM` 从 `h^4 Mpc^-3 Msun^-1` 转成 `Mpc^-3 Msun^-1`
+- 若传入旧的 `mass_function_model="massfunc_st"` 或 `"hmf_watson13_fof"`，接口会显式报错，避免误用历史分支
 - 每个质量点的总权重会平均分配给其 `n_tracks` 个 luminosity realization
-- 内层条件采样器直接复用 `uvlf.run_halo_uv_pipeline()`
+- 内层条件采样器直接复用 `auroralf.uvlf.run_halo_uv_pipeline()`
 - 当前并行层级放在外层 `N_mass` 循环；`run_halo_uv_pipeline()` 内部 UV 卷积保持串行，避免嵌套进程池
 - 若设置 `progress_path`，外层 `N_mass` 进度条会实时写入文本文件
 
 最小调用：
 
 ```python
-from uvlf import sample_uvlf_from_hmf
+from auroralf.uvlf import sample_uvlf_from_hmf
 
 result = sample_uvlf_from_hmf(
     z_obs=6.0,
@@ -481,12 +549,12 @@ print(result.samples["Muv"].shape)
 print(result.uvlf["phi"])
 ```
 
-## `uvlf.compute_dust_attenuated_uvlf()`
+## `auroralf.uvlf.compute_dust_attenuated_uvlf()`
 
 导入：
 
 ```python
-from uvlf import compute_dust_attenuated_uvlf
+from auroralf.uvlf import compute_dust_attenuated_uvlf
 ```
 
 输入：
@@ -534,7 +602,7 @@ from uvlf import compute_dust_attenuated_uvlf
 最小调用：
 
 ```python
-from uvlf import sample_uvlf_from_hmf, compute_dust_attenuated_uvlf
+from auroralf.uvlf import sample_uvlf_from_hmf, compute_dust_attenuated_uvlf
 import numpy as np
 
 result = sample_uvlf_from_hmf(
@@ -555,12 +623,12 @@ dust_result = compute_dust_attenuated_uvlf(
 print(dust_result["phi_obs"])
 ```
 
-## `uvlf` 尘埃修正辅助函数
+## `auroralf.uvlf` 尘埃修正辅助函数
 
 导入：
 
 ```python
-from uvlf import (
+from auroralf.uvlf import (
     intrinsic_muv_from_observed,
     intrinsic_muv_jacobian,
     uv_continuum_slope_beta,
@@ -582,47 +650,45 @@ from uvlf import (
 最小调用：
 
 ```python
-from uvlf import uv_dust_attenuation, intrinsic_muv_from_observed
+from auroralf.uvlf import uv_dust_attenuation, intrinsic_muv_from_observed
 
 muv_obs = [-22.0, -20.0, -18.0]
 auv = uv_dust_attenuation(muv_obs, z=6.0)
 muv_intrinsic = intrinsic_muv_from_observed(muv_obs, z=6.0)
 ```
 
-## `massfunc.Mass_func.dndmst()`
+## `auroralf.uvlf.compute_reed07_halo_mass_function_dndm()`
 导入：
 
 ```python
-from massfunc import Mass_func
+from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
 ```
 
 输入：
 
-- `M`
+- `halo_mass_msun`
   halo mass；支持标量或 `numpy.ndarray`
-- `z`
+- `z_obs`
   红移
 
 输出：
 
-- `dndm_st`
-  Sheth-Tormen 质量函数 `dn/dM`，量纲可按 `Mpc^-3 Msun^-1` 理解
+- `dndm`
+  Reed07 halo mass function `dn/dM`，单位为 `Mpc^-3 Msun^-1`
 
 说明：
 
-- `Mass_func()` 默认使用包内默认宇宙学参数
-- ST 质量函数接口名是 `dndmst(M, z)`
-- 若需要减少首次调用开销，可先执行：
-  - `sigma2_interpolation_set()`
-  - `dsig2dm_interpolation_set()`
+- 该接口是项目当前唯一的 HMF 生产接口
+- 底层调用 `hmf.MassFunction(hmf_model="Reed07")`
+- 质量从 `hmf` 的 `Msun/h` 转为项目内部的 `Msun`
+- `dn/dM` 从 `h^4 Mpc^-3 Msun^-1` 转为 `Mpc^-3 Msun^-1`
 
 最小调用：
 
 ```python
 import numpy as np
-from massfunc import Mass_func
+from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
 
-mf = Mass_func()
 masses = np.logspace(8, 12, 100)
-dndm_st = mf.dndmst(masses, 6.0)
+dndm = compute_reed07_halo_mass_function_dndm(masses, 6.0)
 ```

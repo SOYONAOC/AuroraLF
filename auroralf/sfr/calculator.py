@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from mah import CosmologySet
-from mah.models import GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN, KM_PER_MPC, SECONDS_PER_GYR
+from auroralf.mah import CosmologySet
+from auroralf.mah.models import GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN, KM_PER_MPC, SECONDS_PER_GYR
 
 
 PROTON_MASS_KG = 1.67262192369e-27

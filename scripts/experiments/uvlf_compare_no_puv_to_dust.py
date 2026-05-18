@@ -6,13 +6,18 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from massfunc import Mass_func, SFRD
 from scipy.interpolate import interp1d
 
-from uvlf import compute_dust_attenuated_uvlf, run_halo_uv_pipeline, uv_luminosity_to_muv
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import DEFAULT_CANONICAL_SSP_FILE, compute_dust_attenuated_uvlf, run_halo_uv_pipeline, uv_luminosity_to_muv
 
 
 MUV_MIN = -28.0
@@ -112,7 +117,7 @@ def format_redshift_tag(z_value: float) -> str:
 
 
 def load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]]:
-    obs_dir = Path("obsdata") / f"redshift_{format_redshift_tag(z_value)}"
+    obs_dir = PROJECT_ROOT / "external_data" / "observations" / "uvlf" / f"redshift_{format_redshift_tag(z_value)}"
     datasets: list[dict[str, np.ndarray | str]] = []
     for file_path in sorted(obs_dir.glob("*.npz")):
         data = np.load(file_path)
@@ -268,7 +273,7 @@ def main() -> None:
             int(args.n_grid),
             args.sampler,
             bool(args.enable_time_delay),
-            "spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat",
+            str(PROJECT_ROOT / DEFAULT_CANONICAL_SSP_FILE),
             int(args.random_seed + mass_index),
         )
         for mass_index, (log_mass, mass) in enumerate(zip(log_mh, mh, strict=True))

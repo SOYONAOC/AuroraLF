@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import font_manager
 
-from ssp import load_uv1600_table
-from sfr.calculator import EXTENDED_BURST_KAPPA
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.ssp import load_uv1600_table
+from auroralf.sfr.calculator import EXTENDED_BURST_KAPPA
+from auroralf.uvlf import DEFAULT_CANONICAL_SSP_FILE
 from plot_extended_burst_kernel import burst_kernel, tdyn_y16_myr
 
 
@@ -21,7 +27,7 @@ OUTPUT_DIR = Path("outputs")
 PNG_PATH = OUTPUT_DIR / "effective_uv_kernel.png"
 PDF_PATH = OUTPUT_DIR / "effective_uv_kernel.pdf"
 TXT_PATH = OUTPUT_DIR / "effective_uv_kernel.txt"
-SSP_FILE = "spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+SSP_FILE = PROJECT_ROOT / DEFAULT_CANONICAL_SSP_FILE
 
 
 def effective_kernel(delta_t_myr: np.ndarray, ssp_age_myr: np.ndarray, ssp_luv: np.ndarray, td_myr: float, kappa: float) -> np.ndarray:

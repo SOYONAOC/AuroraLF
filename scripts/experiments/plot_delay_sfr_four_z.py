@@ -6,13 +6,18 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from uvlf import run_halo_uv_pipeline
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import run_halo_uv_pipeline
 
 
 DEFAULT_Z_VALUES = [6.0, 8.0, 10.0, 12.5]

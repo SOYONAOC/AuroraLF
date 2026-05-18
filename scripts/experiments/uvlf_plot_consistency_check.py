@@ -6,12 +6,17 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from massfunc import Mass_func
 
-from uvlf import compute_dust_attenuated_uvlf
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from auroralf.uvlf import DEFAULT_CANONICAL_SSP_FILE, compute_dust_attenuated_uvlf
 from uvlf_compare_no_puv_to_dust import (
     LOGM_MAX,
     LOGM_MIN,
@@ -161,7 +166,7 @@ def main() -> None:
     summary_path = data_dir / f"uvlf_plot_consistency_check_z{z_tags}.txt"
 
     bins = np.linspace(MUV_MIN, MUV_MAX, args.bins + 1, dtype=float)
-    ssp_file = "spectra-bin_byrne23/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+    ssp_file = str(PROJECT_ROOT / DEFAULT_CANONICAL_SSP_FILE)
 
     t0 = time.perf_counter()
     results = [
