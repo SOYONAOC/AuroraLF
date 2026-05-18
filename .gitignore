@@ -1,21 +1,39 @@
 .venv/
+.pytest_cache/
 __pycache__/
 *.pyc
 /*.py
 !run_uvlf_compare_imf_no_delay_all_z.py
 !replot_uvlf_imf_no_delay_compare.py
 
+data/
 outputs/
 data_save/
+temp_data/
 cosm/
 jupyter.err
 kernel/jupyter.err
 
-slides/
+# Track formal slide sources, PDFs, scripts, and compile-time assets.
+slides/**/*.aux
+slides/**/*.log
+slides/**/*.nav
+slides/**/*.out
+slides/**/*.snm
+slides/**/*.toc
+slides/**/*.fls
+slides/**/*.fdb_latexmk
+slides/**/*.synctex.gz
+slides/**/*.vrb
+slides/**/*.bbl
+slides/**/*.blg
+slides/**/*.run.xml
+slides/**/__pycache__/
 
 *.egg-info/
 
 # Large raw datasets: keep outside the initial Git history.
-spectra-bin_byrne23/*.dat
-spectra-bin_byrne23/*.hdf5
-obsdata/universemachine_dr1/*.tar.gz
+external_data/ssp_spectra/
+external_data/empirical_models/universemachine_dr1/tarballs/
+external_data/literature_sources/**/*.tar
+external_data/literature_sources/**/*.tar.gz

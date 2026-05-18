@@ -10,17 +10,30 @@ from typing import Any
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
-from mah import Cosmology, HaloHistoryResult, generate_halo_histories
-from sfr import (
+from auroralf.mah import Cosmology, HaloHistoryResult, generate_halo_histories
+from auroralf.sfr import (
     DEFAULT_SFR_MODEL_PARAMETERS,
     EXTENDED_BURST_LOOKBACK_MAX_MYR,
     SFRModelParameters,
     compute_sfr_from_tracks,
 )
-from ssp import SSP_UV_LOOKBACK_MAX_MYR, compute_halo_uv_luminosity, interpolate_ssp_luminosity, load_uv1600_table
+from auroralf.ssp import SSP_UV_LOOKBACK_MAX_MYR, compute_halo_uv_luminosity, interpolate_ssp_luminosity, load_uv1600_table
+from .imf import (
+    DEFAULT_CANONICAL_SSP_FILE,
+    DEFAULT_IMF_TRANSITION_PARAMETERS,
+    DEFAULT_MILD_TOPHEAVY_SSP_FILE,
+    DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY,
+    IMFTransitionParameters,
+    compute_topheavy_source_flags,
+    requires_topheavy_ssp,
+    resolve_ssp_path,
+    validate_imf_mode,
+)
 
 
-DEFAULT_SSP_FILE = "data_save/ssp_uv1600_topheavy_imf100_300_z0005.npz"
+DEFAULT_SSP_FILE = DEFAULT_CANONICAL_SSP_FILE
+DEFAULT_TOPHEAVY_SSP_FILE = DEFAULT_MILD_TOPHEAVY_SSP_FILE
+DEFAULT_TOPHEAVY_SSP_METALLICITY = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 YEARS_PER_GYR = 1.0e9
 
 
@@ -29,9 +42,12 @@ class HaloUVPipelineResult:
     histories: HaloHistoryResult
     sfr_tracks: dict[str, np.ndarray]
     uv_luminosities: np.ndarray
+    uv_luminosities_canonical: np.ndarray
+    uv_luminosities_topheavy: np.ndarray
     redshift_grid: np.ndarray
     floor_mass: np.ndarray
     active_grid: np.ndarray
+    imf_topheavy_source_grid: np.ndarray
     metadata: dict[str, Any]
 
 
@@ -127,32 +143,36 @@ def _resolve_regular_time_grid(t_grid: np.ndarray) -> np.ndarray | None:
     return time_row
 
 
-def _integrate_final_uv_single_halo_regular_grid(
+def _integrate_final_uv_components_single_halo_regular_grid(
     time_row: np.ndarray,
     sfr_row: np.ndarray,
     active_row: np.ndarray,
+    topheavy_source_flag_row: np.ndarray,
     ssp_age_grid: np.ndarray,
     ssp_luv_grid: np.ndarray,
+    topheavy_ssp_age_grid: np.ndarray | None,
+    topheavy_ssp_luv_grid: np.ndarray | None,
     ssp_lookback_max_myr: float,
-) -> float:
+) -> tuple[float, float]:
     active = np.asarray(active_row, dtype=bool)
     if not np.any(active):
-        return 0.0
+        return 0.0, 0.0
 
     t_obs = float(time_row[-1])
     max_lookback_gyr = float(ssp_lookback_max_myr) / 1.0e3
     first_active = int(np.argmax(active))
     lower = max(float(time_row[first_active]), t_obs - max_lookback_gyr)
     if lower >= t_obs:
-        return 0.0
+        return 0.0, 0.0
 
     start = int(np.searchsorted(time_row, lower, side="left"))
     t_used = np.asarray(time_row[start:], dtype=float)
     sfr_used = np.asarray(sfr_row[start:], dtype=float)
     active_used = np.asarray(active[start:], dtype=bool)
+    topheavy_used = np.asarray(topheavy_source_flag_row[start:], dtype=bool)
 
     if t_used.size == 0:
-        return 0.0
+        return 0.0, 0.0
 
     if lower < float(t_used[0]):
         left = start - 1
@@ -166,41 +186,70 @@ def _integrate_final_uv_single_halo_regular_grid(
         t_used = np.concatenate((np.array([lower], dtype=float), t_used))
         sfr_used = np.concatenate((np.array([sfr_lower], dtype=float), sfr_used))
         active_used = np.concatenate((np.array([True], dtype=bool), active_used))
+        topheavy_lower = bool(topheavy_source_flag_row[left])
+        topheavy_used = np.concatenate((np.array([topheavy_lower], dtype=bool), topheavy_used))
 
     if np.count_nonzero(active_used) < 2:
-        return 0.0
+        return 0.0, 0.0
 
     age_used = np.maximum(t_obs - t_used, 0.0)
-    kernel_used = np.asarray(
+    canonical_kernel = np.asarray(
         interpolate_ssp_luminosity(age_used, ssp_age_grid=ssp_age_grid, ssp_luv_grid=ssp_luv_grid),
         dtype=float,
     )
-    integrand = np.where(active_used, sfr_used, 0.0) * kernel_used
-    return float(np.trapezoid(integrand, x=t_used * YEARS_PER_GYR))
+    if topheavy_ssp_age_grid is None or topheavy_ssp_luv_grid is None:
+        topheavy_used = np.zeros_like(active_used, dtype=bool)
+        topheavy_kernel = canonical_kernel
+    else:
+        topheavy_kernel = np.asarray(
+            interpolate_ssp_luminosity(
+                age_used,
+                ssp_age_grid=topheavy_ssp_age_grid,
+                ssp_luv_grid=topheavy_ssp_luv_grid,
+            ),
+            dtype=float,
+        )
+
+    source_rate = np.where(active_used, sfr_used, 0.0)
+    canonical_integrand = np.where(topheavy_used, 0.0, source_rate * canonical_kernel)
+    topheavy_integrand = np.where(topheavy_used, source_rate * topheavy_kernel, 0.0)
+    x_years = t_used * YEARS_PER_GYR
+    canonical_luv = float(np.trapezoid(canonical_integrand, x=x_years))
+    topheavy_luv = float(np.trapezoid(topheavy_integrand, x=x_years))
+    return canonical_luv, topheavy_luv
 
 
-def _compute_final_uv_luminosities_vectorized(
+def _compute_final_uv_luminosity_components_vectorized(
     t_grid: np.ndarray,
     sfr_grid: np.ndarray,
     active_grid: np.ndarray,
+    topheavy_source_flag_grid: np.ndarray,
     ssp_age_grid: np.ndarray,
     ssp_luv_grid: np.ndarray,
+    topheavy_ssp_age_grid: np.ndarray | None,
+    topheavy_ssp_luv_grid: np.ndarray | None,
     ssp_lookback_max_myr: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     time_row = _resolve_regular_time_grid(t_grid)
     if time_row is None:
         raise ValueError("vectorized final UV convolution requires a shared regular time grid")
-    result = np.empty(sfr_grid.shape[0], dtype=float)
+    canonical_result = np.empty(sfr_grid.shape[0], dtype=float)
+    topheavy_result = np.empty(sfr_grid.shape[0], dtype=float)
     for halo_index in range(sfr_grid.shape[0]):
-        result[halo_index] = _integrate_final_uv_single_halo_regular_grid(
+        canonical_luv, topheavy_luv = _integrate_final_uv_components_single_halo_regular_grid(
             time_row=time_row,
             sfr_row=np.asarray(sfr_grid[halo_index], dtype=float),
             active_row=np.asarray(active_grid[halo_index], dtype=bool),
+            topheavy_source_flag_row=np.asarray(topheavy_source_flag_grid[halo_index], dtype=bool),
             ssp_age_grid=ssp_age_grid,
             ssp_luv_grid=ssp_luv_grid,
+            topheavy_ssp_age_grid=topheavy_ssp_age_grid,
+            topheavy_ssp_luv_grid=topheavy_ssp_luv_grid,
             ssp_lookback_max_myr=ssp_lookback_max_myr,
         )
-    return result
+        canonical_result[halo_index] = canonical_luv
+        topheavy_result[halo_index] = topheavy_luv
+    return canonical_result, topheavy_result
 
 
 def run_halo_uv_pipeline(
@@ -211,6 +260,10 @@ def run_halo_uv_pipeline(
     z_start_max: float = 50.0,
     n_grid: int = 240,
     ssp_file: str | Path = DEFAULT_SSP_FILE,
+    topheavy_ssp_file: str | Path = DEFAULT_TOPHEAVY_SSP_FILE,
+    topheavy_ssp_metallicity: float | None = DEFAULT_TOPHEAVY_SSP_METALLICITY,
+    imf_mode: str = "canonical",
+    imf_transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
     cosmology: Cosmology | None = None,
     random_seed: int | None = 42,
     sampler: str = "mcbride",
@@ -222,6 +275,7 @@ def run_halo_uv_pipeline(
 ) -> HaloUVPipelineResult:
     """Run the main mah -> sfr -> UV pipeline and return per-halo UV luminosities."""
 
+    imf_mode = validate_imf_mode(imf_mode)
     cosmology = Cosmology() if cosmology is None else cosmology
     workers = default_worker_count() if workers is None else int(workers)
     if int(n_grid) < 2:
@@ -255,16 +309,38 @@ def run_halo_uv_pipeline(
     )
     t2 = time.perf_counter()
 
-    ages_myr, luv_per_msun = load_uv1600_table(ssp_file)
+    canonical_ssp_path = resolve_ssp_path(ssp_file)
+    topheavy_ssp_path = resolve_ssp_path(topheavy_ssp_file)
+    ages_myr, luv_per_msun = load_uv1600_table(canonical_ssp_path)
     ssp_age_grid_gyr = ages_myr / 1.0e3
+    if requires_topheavy_ssp(imf_mode):
+        topheavy_ages_myr, topheavy_luv_per_msun = load_uv1600_table(
+            topheavy_ssp_path,
+            metallicity=topheavy_ssp_metallicity,
+        )
+        topheavy_ssp_age_grid_gyr = topheavy_ages_myr / 1.0e3
+    else:
+        topheavy_luv_per_msun = None
+        topheavy_ssp_age_grid_gyr = None
 
     halo_ids = np.asarray(sfr_tracks["halo_id"], dtype=int)
     n_halos = np.unique(halo_ids).size
     steps_per_halo = redshift_grid.size
     t_grid = np.asarray(sfr_tracks["t_gyr"], dtype=float).reshape(n_halos, steps_per_halo)
     mh_grid = np.asarray(sfr_tracks["Mh"], dtype=float).reshape(n_halos, steps_per_halo)
+    dmhdt_grid = np.asarray(sfr_tracks["dMh_dt"], dtype=float).reshape(n_halos, steps_per_halo)
     sfr_grid = np.asarray(sfr_tracks["SFR"], dtype=float).reshape(n_halos, steps_per_halo)
     active_grid = np.asarray(sfr_tracks["active_flag"], dtype=bool).reshape(n_halos, steps_per_halo)
+    z_grid = np.asarray(sfr_tracks["z"], dtype=float).reshape(n_halos, steps_per_halo)
+    starforming_grid = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
+    topheavy_source_grid = compute_topheavy_source_flags(
+        imf_mode=imf_mode,
+        z_grid=z_grid,
+        mh_grid=mh_grid,
+        dmhdt_grid=dmhdt_grid,
+        active_grid=starforming_grid,
+        transition_parameters=imf_transition_parameters,
+    )
 
     floor_mass = np.zeros_like(redshift_grid, dtype=float)
     active_flat = active_grid.reshape(-1)
@@ -280,31 +356,48 @@ def run_halo_uv_pipeline(
         raise RuntimeError("could not infer an effective M_min(z) floor from active histories")
 
     time_row = _resolve_regular_time_grid(t_grid)
-    if time_row is not None:
-        uv_luminosities = _compute_final_uv_luminosities_vectorized(
-            t_grid=t_grid,
-            sfr_grid=sfr_grid,
-            active_grid=active_grid,
-            ssp_age_grid=ssp_age_grid_gyr,
-            ssp_luv_grid=luv_per_msun,
-            ssp_lookback_max_myr=ssp_lookback_max_myr,
-        )
-        uv_convolution_method = "vectorized_final_time"
-    else:
-        # The outer UVLF Monte Carlo owns parallelism over Mh samples.
-        # Keep the fallback per-mass UV convolution serial here to avoid nested process pools.
-        _init_uv_worker(luv_per_msun)
-        uv_luminosities = _compute_uv_chunk(
-            (t_grid[0], mh_grid, sfr_grid, active_grid, ssp_age_grid_gyr, float(ssp_lookback_max_myr))
-        )
-        uv_convolution_method = "per_halo_fallback"
+    if time_row is None:
+        raise ValueError("run_halo_uv_pipeline requires histories on a shared regular time grid")
+    uv_luminosities_canonical, uv_luminosities_topheavy = _compute_final_uv_luminosity_components_vectorized(
+        t_grid=t_grid,
+        sfr_grid=sfr_grid,
+        active_grid=active_grid,
+        topheavy_source_flag_grid=topheavy_source_grid,
+        ssp_age_grid=ssp_age_grid_gyr,
+        ssp_luv_grid=luv_per_msun,
+        topheavy_ssp_age_grid=topheavy_ssp_age_grid_gyr,
+        topheavy_ssp_luv_grid=topheavy_luv_per_msun,
+        ssp_lookback_max_myr=ssp_lookback_max_myr,
+    )
+    uv_luminosities = uv_luminosities_canonical + uv_luminosities_topheavy
+    uv_convolution_method = "vectorized_final_time_variable_imf"
     t3 = time.perf_counter()
+    total_light = np.asarray(uv_luminosities, dtype=float)
+    positive_light = total_light > 0.0
+    topheavy_light_fraction = np.zeros_like(total_light, dtype=float)
+    topheavy_light_fraction[positive_light] = uv_luminosities_topheavy[positive_light] / total_light[positive_light]
 
     metadata = {
         "n_tracks": n_halos,
         "steps_per_halo": steps_per_halo,
         "workers": max(1, workers),
-        "ssp_file": str(Path(ssp_file).expanduser().resolve()),
+        "ssp_file": str(canonical_ssp_path),
+        "canonical_ssp_file": str(canonical_ssp_path),
+        "topheavy_ssp_file": str(topheavy_ssp_path),
+        "topheavy_ssp_metallicity": topheavy_ssp_metallicity,
+        "imf_mode": imf_mode,
+        "imf_transition_parameters": {
+            "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
+            "growth_time_threshold_myr": float(imf_transition_parameters.growth_time_threshold_myr),
+        },
+        "topheavy_source_fraction": float(np.mean(topheavy_source_grid[starforming_grid]))
+        if np.any(starforming_grid)
+        else 0.0,
+        "topheavy_source_count": int(np.count_nonzero(topheavy_source_grid & starforming_grid)),
+        "starforming_source_count": int(np.count_nonzero(starforming_grid)),
+        "topheavy_light_fraction_median": float(np.median(topheavy_light_fraction[positive_light]))
+        if np.any(positive_light)
+        else 0.0,
         "enable_time_delay": enable_time_delay,
         "time_grid_mode": "uniform_in_t",
         "dt_gyr": float(dt_gyr),
@@ -329,8 +422,11 @@ def run_halo_uv_pipeline(
         histories=histories,
         sfr_tracks=sfr_tracks,
         uv_luminosities=np.asarray(uv_luminosities, dtype=float),
+        uv_luminosities_canonical=np.asarray(uv_luminosities_canonical, dtype=float),
+        uv_luminosities_topheavy=np.asarray(uv_luminosities_topheavy, dtype=float),
         redshift_grid=redshift_grid,
         floor_mass=floor_mass,
         active_grid=active_grid,
+        imf_topheavy_source_grid=topheavy_source_grid,
         metadata=metadata,
     )
