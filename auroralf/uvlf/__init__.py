@@ -23,6 +23,7 @@ from .imf import (
     DEFAULT_IMF_TRANSITION_PARAMETERS,
     DEFAULT_MILD_TOPHEAVY_SSP_FILE,
     DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY,
+    DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN,
     IMF_MODE_CANONICAL,
     IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
     IMF_MODE_Z_GATED_MILD_TOPHEAVY,
@@ -30,13 +31,15 @@ from .imf import (
     compute_topheavy_source_flags,
     validate_imf_mode,
 )
-from .pipeline import HaloUVPipelineResult, run_halo_uv_pipeline
+from .pipeline import DEFAULT_BURST_SCATTER_TIMESCALE_MYR, HaloUVPipelineResult, run_halo_uv_pipeline
 
 __all__ = [
+    "DEFAULT_BURST_SCATTER_TIMESCALE_MYR",
     "DEFAULT_CANONICAL_SSP_FILE",
     "DEFAULT_IMF_TRANSITION_PARAMETERS",
     "DEFAULT_MILD_TOPHEAVY_SSP_FILE",
     "DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY",
+    "DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN",
     "DEFAULT_MASS_FUNCTION_MODEL",
     "HaloUVPipelineResult",
     "IMF_MODE_CANONICAL",

@@ -7,6 +7,7 @@ Core code:
 - `auroralf/uvlf/`: UV luminosity function pipeline, HMF weighting, dust mapping, and Pop II IMF gate logic
 - `auroralf/mah/`: Monte Carlo halo assembly history generation
 - `auroralf/sfr/`: star-formation model utilities
+- `auroralf/chemistry/`: stochastic one-zone metal enrichment diagnostics
 - `auroralf/ssp/`: SSP UV convolution utilities
 - `tests/`: focused regression tests
 
@@ -174,6 +175,71 @@ from auroralf.sfr import compute_sfr_from_tracks
 result = generate_halo_histories(n_tracks=100, z_final=6.0, Mh_final=1e11)
 sfr_tracks = compute_sfr_from_tracks(result.tracks, enable_time_delay=True)
 ```
+
+## `auroralf.chemistry.evolve_stochastic_metallicity()`
+
+导入：
+
+```python
+from auroralf.chemistry import MetalEnrichmentParameters, evolve_stochastic_metallicity
+```
+
+输入：
+
+- `t_grid_gyr`
+  二维宇宙时间网格，单位 `Gyr`
+- `z_grid`
+  与时间网格同形状的红移网格
+- `mh_grid`
+  halo mass 网格，单位 `Msun`
+- `dmhdt_grid`
+  halo mass accretion rate 网格
+- `sfr_grid`
+  SFR 网格，单位 `Msun/yr`
+- `active_grid`
+  哪些 source-time 步参与成星/富集
+- `baryon_fraction`
+  宇宙 baryon fraction，必须在 `(0, 1]`
+- `parameters`
+  `MetalEnrichmentParameters`；未提供时使用默认参数
+- `random_seed`
+  stochastic yield、mass loading、birth metallicity scatter 的随机种子
+- `topheavy_source_grid`
+  可选布尔网格；为 `True` 的 source-time 候选点使用 `topheavy_yield_multiplier * metal_yield`
+  作为产额，若同时设置 birth-metallicity gate，则该网格会先被金属丰度阈值筛选
+- `topheavy_birth_metallicity_max_zsun`
+  可选 `Z/Zsun` 阈值；提供时只允许 `birth_metallicity_zsun_grid <= topheavy_birth_metallicity_max_zsun`
+  的候选 source-time 使用 top-heavy 产额
+
+`MetalEnrichmentParameters` 常用字段：
+
+- `gas_fraction_of_baryons`
+  诊断 gas reservoir 占 halo baryon mass 的比例
+- `metal_yield`
+  每形成单位 stellar mass 产生的 metal mass
+- `topheavy_yield_multiplier`
+  top-heavy source-time 的产额倍增因子；低层 `MetalEnrichmentParameters` 默认 `1.0`
+  表示不增强，生产/分析脚本采用 MZR 标定值 `1.28`
+- `returned_fraction`
+  即时返回比例，必须在 `[0, 1)`
+- `mass_loading_norm`
+  outflow mass loading 归一化
+- `yield_scatter_dex`、`mass_loading_scatter_dex`、`birth_metallicity_scatter_dex`
+  对数正态 scatter，单位 dex
+
+输出：
+
+- `MetallicityEvolutionResult`
+  包含 `gas_mass_grid`、`metal_mass_grid`、`gas_metallicity_zsun_grid`、`birth_metallicity_zsun_grid`、`mass_loading_grid`、`effective_yield_grid`、`topheavy_source_grid`
+
+说明：
+
+- 该模块是沿固定 MAH/SFR 历史的 stochastic one-zone enrichment 诊断，不改变 SFR；在主 UV pipeline 中，
+  其返回的 `topheavy_source_grid` 可用于限制 SSP 选择、UV 卷积和 UVLF 权重
+- `birth_metallicity_zsun_grid` 记录本步成星前的 gas metallicity；`gas_metallicity_zsun_grid` 记录本步富集后的 gas metallicity
+- birth-metallicity gate 使用本步成星前的 `birth_metallicity_zsun_grid`，避免同一步新产生的 metals 反向决定自己的 IMF
+- 金属丰度以 `Z/Zsun` 存储，默认 `Zsun=0.0142`
+- 若需要确定性检查，可把所有 scatter 设为 `0.0`
 
 ## `auroralf.ssp.load_uv1600_table()`
 
@@ -373,10 +439,11 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `imf_mode`
   Pop II IMF 模式，支持：
   - `"canonical"`：所有源时刻都使用 canonical Pop II SSP
-  - `"z10_mild_topheavy"`：源时刻满足 `z >= z_topheavy_min` 时使用 mild top-heavy SSP
-  - `"mah_burst_mild_topheavy"`：同时满足 `z >= z_topheavy_min` 且 `Mh / dMh_dt <= growth_time_threshold_myr` 时使用 mild top-heavy SSP
+  - `"z10_mild_topheavy"`：源时刻满足 `z >= z_topheavy_min`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
+  - `"mah_burst_mild_topheavy"`：同时满足 `z >= z_topheavy_min`、`Mh / dMh_dt <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
 - `imf_transition_parameters`
-  `auroralf.uvlf.IMFTransitionParameters`，默认 `z_topheavy_min=10.0`、`growth_time_threshold_myr=50.0`
+  `auroralf.uvlf.IMFTransitionParameters`，默认 `z_topheavy_min=10.0`、`growth_time_threshold_myr=50.0`、
+  `metallicity_topheavy_max_zsun=0.05`；若设为 `None`，则关闭金属丰度 gate
 - `cosmology`
   `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
 - `random_seed`
@@ -387,6 +454,19 @@ from auroralf.uvlf import run_halo_uv_pipeline
   是否在 `auroralf.sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
 - `workers`
   保留的接口参数；当前实现中 `run_halo_uv_pipeline()` 内部 UV 卷积按串行执行
+- `metal_enrichment_parameters`
+  可选 `auroralf.chemistry.MetalEnrichmentParameters`；提供时沿 MAH/SFR 历史计算 stochastic one-zone metallicity 诊断。
+  非 canonical IMF 模式若启用 `metallicity_topheavy_max_zsun`，必须提供该参数
+- `metallicity_random_seed`
+  金属演化 stochastic scatter 的随机种子；不影响 MAH 抽样随机种子
+- `burst_scatter_dex`
+  对源时刻 SFR 施加 lognormal burst scatter 的标准差，单位 dex；默认 `0.0` 表示关闭
+- `burst_scatter_timescale_myr`
+  burst scatter 在同一 halo 内保持相关的时间尺度，单位 `Myr`；默认 `20.0`
+- `burst_scatter_random_seed`
+  burst scatter 随机种子；若未提供，则复用该 halo 的 MAH `random_seed`
+- `burst_scatter_preserve_mean`
+  是否使用 unit-mean lognormal shift，使 ensemble-mean SFR 不因 scatter 系统性升高；默认 `True`
 
 输出：
 
@@ -413,9 +493,18 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `active_grid`
   每个 halo 每个时间步是否仍处于有效区间
 - `imf_topheavy_source_grid`
-  每个 halo 每个源时刻是否使用 mild top-heavy SSP kernel
+  每个 halo 每个源时刻是否实际使用 mild top-heavy SSP kernel；若启用金属 gate，该字段已经过
+  `birth_metallicity_zsun_grid <= metallicity_topheavy_max_zsun` 筛选
+- `gas_metallicity_zsun_grid`
+  若启用金属演化，返回每个 halo 每个时间步的富集后 gas metallicity，单位 `Z/Zsun`
+- `birth_metallicity_zsun_grid`
+  若启用金属演化，返回每个 halo 每个时间步成星前的 birth metallicity，单位 `Z/Zsun`
+- `metal_mass_grid`
+  若启用金属演化，返回诊断 metal mass，单位 `Msun`
+- `gas_mass_grid`
+  若启用金属演化，返回诊断 gas reservoir mass，单位 `Msun`
 - `metadata`
-  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`enable_time_delay` 和各阶段耗时
+  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`topheavy_candidate_source_fraction`、`stochastic_metallicity_enabled`、`final_gas_metallicity_zsun_median`、`birth_metallicity_zsun_starforming_median`、`burst_scatter_dex`、`burst_sfr_multiplier_median`、`enable_time_delay` 和各阶段耗时
 
 说明：
 
@@ -423,6 +512,14 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `auroralf.mah` 部分使用默认 `M_min`，即 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
 - Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
+- 默认 mild top-heavy 还要求本步成星前 `Z_birth <= 0.05 Zsun`；这个阈值位于低金属 IMF 过渡区间内，并与当前 top-heavy SSP 的 `0.05 Zsun` 选择一致
+- 启用金属演化时，实际通过红移/MAH 和 birth-metallicity gate 的 top-heavy source-time 会同时决定 SSP kernel 与 `topheavy_yield_multiplier` 金属产额
+- 当前标定值 `topheavy_yield_multiplier=1.28` 来自 `z=12.5` 代表性 halo 的 FIRE-2
+  高红移 MZR 约束；`3.0` 会使 redshift-gated top-heavy 分支明显过富集
+- 可选 burst scatter 使用
+  `SFR_burst(t)=SFR_smooth(t) 10^Delta`，其中
+  `Delta ~ Normal(-0.5 ln(10) sigma_burst^2, sigma_burst)`；该均值位移保证
+  `E[10^Delta]=1`，因此 scatter 默认不整体抬高平均 SFR
 - `load_uv1600_table()` 读出的 SSP 年龄网格会自动从 `Myr` 转成 `Gyr` 后再参与卷积
 
 最小调用：
@@ -486,11 +583,23 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - `imf_mode`
   同 `run_halo_uv_pipeline()`，默认 `"canonical"`
 - `imf_transition_parameters`
-  mild top-heavy IMF 的源时刻触发参数
+  mild top-heavy IMF 的源时刻触发参数；默认包含 `metallicity_topheavy_max_zsun=0.05`
 - `progress_path`
   可选进度文件路径；若提供，会把外层 `N_mass` 循环进度持续写入该 txt 文件
 - `mass_function_model`
   外层 halo mass function 权重模型；当前生产接口只支持 `"hmf_reed07"`，使用 `hmf` 包中的 Reed07 fitting function。旧的 `"massfunc_st"` 和 Watson13 分支已禁用。
+- `metal_enrichment_parameters`
+  可选 `auroralf.chemistry.MetalEnrichmentParameters`；会透传给每个质量点的 `run_halo_uv_pipeline()`
+- `metallicity_random_seed`
+  金属演化随机种子；外层每个质量点会使用 `metallicity_random_seed + mass_index`
+- `burst_scatter_dex`
+  透传给每个质量点的 SFR burst scatter 标准差，单位 dex；默认 `0.0`
+- `burst_scatter_timescale_myr`
+  burst scatter 时间相关尺度，单位 `Myr`；默认 `20.0`
+- `burst_scatter_random_seed`
+  burst scatter 随机种子；外层每个质量点会使用 `burst_scatter_random_seed + mass_index`
+- `burst_scatter_preserve_mean`
+  是否保持 lognormal multiplier 的 ensemble mean 为 1；默认 `True`
 
 输出：
 
@@ -524,7 +633,7 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   - `phi`
   - `phi_sigma`
 - `metadata`
-  运行参数和耗时信息
+  运行参数、耗时信息、top-heavy 诊断和可选金属演化诊断；启用金属演化时包含 `final_gas_metallicity_zsun_median_by_mass` 和 `birth_metallicity_zsun_starforming_median_by_mass`
 
 说明：
 
@@ -537,6 +646,10 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - 内层条件采样器直接复用 `auroralf.uvlf.run_halo_uv_pipeline()`
 - 当前并行层级放在外层 `N_mass` 循环；`run_halo_uv_pipeline()` 内部 UV 卷积保持串行，避免嵌套进程池
 - 若设置 `progress_path`，外层 `N_mass` 进度条会实时写入文本文件
+- 非 canonical IMF 模式默认使用 birth-metallicity gate，因此需要传入 `metal_enrichment_parameters`；
+  关闭该 gate 时可把 `IMFTransitionParameters.metallicity_topheavy_max_zsun` 设为 `None`
+- `burst_scatter_dex > 0` 时，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
+  canonical 与 top-heavy mode 若使用同一个 `burst_scatter_random_seed`，会共享同一组 burst realization
 
 最小调用：
 
@@ -553,6 +666,69 @@ result = sample_uvlf_from_hmf(
 print(result.samples["Muv"].shape)
 print(result.uvlf["phi"])
 ```
+
+## 生产 UVLF 脚本中的金属演化选项
+
+生产脚本 `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` 必须通过 SLURM wrapper 提交。
+生产脚本默认启用 `enable_time_delay=True`；若要做历史 no-delay 对照，需要显式传入 `--disable-time-delay`。
+启用 stochastic metallicity 的 dry-run 示例：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --enable-stochastic-metallicity --metallicity-random-seed 123 --metallicity-topheavy-max-zsun 0.05 --metal-topheavy-yield-multiplier 1.28
+```
+
+no-delay 对照示例：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --disable-time-delay --enable-stochastic-metallicity --metallicity-random-seed 123 --metallicity-topheavy-max-zsun 0.05 --metal-topheavy-yield-multiplier 1.28
+```
+
+常用金属演化参数：
+
+- `--enable-stochastic-metallicity`
+  启用 one-zone metallicity 诊断
+- `--metallicity-random-seed`
+  stochastic scatter 随机种子
+- `--metal-gas-fraction-of-baryons`
+  诊断 gas reservoir 占 halo baryon mass 的比例
+- `--metal-yield`
+  canonical source-time 的 metal yield
+- `--metal-topheavy-yield-multiplier`
+  top-heavy source-time 的 metal yield 倍增因子，默认使用 MZR 标定值 `1.28`
+- `--metallicity-topheavy-max-zsun`
+  mild top-heavy IMF 的 birth-metallicity 上限，单位 `Z/Zsun`，默认 `0.05`
+- `--disable-metallicity-topheavy-gate`
+  关闭 birth-metallicity gate，用于历史分支对照；默认不关闭
+- `--metal-returned-fraction`
+  即时返回比例
+- `--metal-mass-loading-norm`
+  mass loading 归一化
+- `--metal-yield-scatter-dex`、`--metal-mass-loading-scatter-dex`、`--metal-birth-scatter-dex`
+  stochastic scatter，单位 dex
+
+脚本输出的 `.npz` 和 summary txt 会记录金属演化开关、金属阈值、参数、每个红移/IMF mode 的 `final_gas_metallicity_zsun_median` 和 `birth_metallicity_zsun_starforming_median`。若默认金属 gate 开启且运行非 canonical IMF mode，必须同时启用 `--enable-stochastic-metallicity`。
+
+## 生产 UVLF 脚本中的 burst scatter 选项
+
+生产脚本默认不启用 burst scatter。启用 `0.5 dex`、`20 Myr` 相关尺度的示例：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --burst-scatter-dex 0.5 --burst-scatter-timescale-myr 20 --burst-scatter-random-seed 777
+```
+
+常用参数：
+
+- `--burst-scatter-dex`
+  SFR lognormal scatter 的标准差，单位 dex；`0.3 dex` 约对应瞬时 SFR 的因子 `2`
+- `--burst-scatter-timescale-myr`
+  同一个随机 multiplier 在 halo 历史中保持相关的时间尺度；默认 `20 Myr`
+- `--burst-scatter-random-seed`
+  burst scatter 随机种子；生产脚本对不同红移加 `1000*z_index`，对不同 IMF mode 保持相同 seed，
+  因此 canonical 与 top-heavy 分支使用同一组 burst realization
+- `--disable-burst-scatter-mean-preservation`
+  关闭 unit-mean lognormal 修正；默认不关闭
+
+脚本输出的 `.npz` 会记录 `burst_scatter_dex`、`burst_scatter_timescale_myr`、`burst_scatter_random_seed` 和 `burst_scatter_preserve_mean`。
 
 ## `auroralf.uvlf.compute_dust_attenuated_uvlf()`
 

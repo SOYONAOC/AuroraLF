@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
+from auroralf.chemistry import MetalEnrichmentParameters, MetallicityEvolutionResult, evolve_stochastic_metallicity
 from auroralf.mah import Cosmology, HaloHistoryResult, generate_halo_histories
 from auroralf.sfr import (
     DEFAULT_SFR_MODEL_PARAMETERS,
@@ -23,6 +24,7 @@ from .imf import (
     DEFAULT_IMF_TRANSITION_PARAMETERS,
     DEFAULT_MILD_TOPHEAVY_SSP_FILE,
     DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY,
+    IMF_MODE_CANONICAL,
     IMFTransitionParameters,
     compute_topheavy_source_flags,
     requires_topheavy_ssp,
@@ -35,6 +37,7 @@ DEFAULT_SSP_FILE = DEFAULT_CANONICAL_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_FILE = DEFAULT_MILD_TOPHEAVY_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_METALLICITY = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 YEARS_PER_GYR = 1.0e9
+DEFAULT_BURST_SCATTER_TIMESCALE_MYR = 20.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,10 @@ class HaloUVPipelineResult:
     active_grid: np.ndarray
     imf_topheavy_source_grid: np.ndarray
     metadata: dict[str, Any]
+    gas_metallicity_zsun_grid: np.ndarray | None = None
+    birth_metallicity_zsun_grid: np.ndarray | None = None
+    metal_mass_grid: np.ndarray | None = None
+    gas_mass_grid: np.ndarray | None = None
 
 
 _UV_WORKER_STATE: dict[str, np.ndarray] = {}
@@ -130,6 +137,72 @@ def compute_uv_luminosities_parallel(
 
 def default_worker_count() -> int:
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+
+
+def _lognormal_unit_mean_shift_dex(scatter_dex: float) -> float:
+    return -0.5 * np.log(10.0) * float(scatter_dex) ** 2
+
+
+def _draw_burst_multiplier_for_segments(
+    *,
+    rng: np.random.Generator,
+    segment_ids: np.ndarray,
+    scatter_dex: float,
+    preserve_mean: bool,
+) -> np.ndarray:
+    unique_segments, inverse = np.unique(segment_ids, return_inverse=True)
+    loc = _lognormal_unit_mean_shift_dex(scatter_dex) if preserve_mean else 0.0
+    delta_dex = rng.normal(loc=loc, scale=float(scatter_dex), size=unique_segments.size)
+    return np.power(10.0, delta_dex[inverse])
+
+
+def _apply_burst_scatter_to_sfr_grid(
+    *,
+    sfr_grid: np.ndarray,
+    active_grid: np.ndarray,
+    t_grid: np.ndarray,
+    scatter_dex: float,
+    correlation_timescale_myr: float,
+    random_seed: int | None,
+    preserve_mean: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    scatter_dex = float(scatter_dex)
+    correlation_timescale_myr = float(correlation_timescale_myr)
+    if scatter_dex < 0.0:
+        raise ValueError("burst_scatter_dex must be non-negative")
+    if correlation_timescale_myr <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be positive")
+
+    sfr = np.asarray(sfr_grid, dtype=float)
+    active = np.asarray(active_grid, dtype=bool)
+    time = np.asarray(t_grid, dtype=float)
+    if sfr.shape != active.shape or sfr.shape != time.shape:
+        raise ValueError("sfr_grid, active_grid, and t_grid must have the same shape")
+
+    multiplier = np.ones_like(sfr, dtype=float)
+    if scatter_dex == 0.0:
+        return sfr.copy(), multiplier
+
+    rng = np.random.default_rng(random_seed)
+    correlation_gyr = correlation_timescale_myr / 1.0e3
+    burst_sfr = sfr.copy()
+    source_grid = active & np.isfinite(sfr) & (sfr > 0.0) & np.isfinite(time)
+    for halo_index in range(sfr.shape[0]):
+        source = source_grid[halo_index]
+        if not np.any(source):
+            continue
+        first_time = float(time[halo_index, np.flatnonzero(source)[0]])
+        segment_ids = np.floor((time[halo_index, source] - first_time) / correlation_gyr).astype(np.int64)
+        row_multiplier = _draw_burst_multiplier_for_segments(
+            rng=rng,
+            segment_ids=segment_ids,
+            scatter_dex=scatter_dex,
+            preserve_mean=preserve_mean,
+        )
+        multiplier[halo_index, source] = row_multiplier
+        burst_sfr[halo_index, source] = sfr[halo_index, source] * row_multiplier
+
+    return burst_sfr, multiplier
 
 
 def _resolve_regular_time_grid(t_grid: np.ndarray) -> np.ndarray | None:
@@ -272,12 +345,31 @@ def run_halo_uv_pipeline(
     burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
     ssp_lookback_max_myr: float = SSP_UV_LOOKBACK_MAX_MYR,
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
+    metal_enrichment_parameters: MetalEnrichmentParameters | None = None,
+    metallicity_random_seed: int | None = None,
+    burst_scatter_dex: float = 0.0,
+    burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    burst_scatter_random_seed: int | None = None,
+    burst_scatter_preserve_mean: bool = True,
 ) -> HaloUVPipelineResult:
     """Run the main mah -> sfr -> UV pipeline and return per-halo UV luminosities."""
 
     imf_mode = validate_imf_mode(imf_mode)
     cosmology = Cosmology() if cosmology is None else cosmology
     workers = default_worker_count() if workers is None else int(workers)
+    if float(burst_scatter_dex) < 0.0:
+        raise ValueError("burst_scatter_dex must be non-negative")
+    if float(burst_scatter_timescale_myr) <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be positive")
+    metallicity_topheavy_max_zsun = imf_transition_parameters.metallicity_topheavy_max_zsun
+    if metallicity_topheavy_max_zsun is not None and float(metallicity_topheavy_max_zsun) <= 0.0:
+        raise ValueError("metallicity_topheavy_max_zsun must be positive when provided")
+    if (
+        imf_mode != IMF_MODE_CANONICAL
+        and metallicity_topheavy_max_zsun is not None
+        and metal_enrichment_parameters is None
+    ):
+        raise ValueError("metal_enrichment_parameters must be provided when metallicity_topheavy_max_zsun is set")
     if int(n_grid) < 2:
         raise ValueError("n_grid must be at least 2")
     astro = _build_astropy_cosmology(cosmology)
@@ -332,15 +424,49 @@ def run_halo_uv_pipeline(
     sfr_grid = np.asarray(sfr_tracks["SFR"], dtype=float).reshape(n_halos, steps_per_halo)
     active_grid = np.asarray(sfr_tracks["active_flag"], dtype=bool).reshape(n_halos, steps_per_halo)
     z_grid = np.asarray(sfr_tracks["z"], dtype=float).reshape(n_halos, steps_per_halo)
+    burst_scatter_seed_used = (
+        burst_scatter_random_seed
+        if burst_scatter_random_seed is not None
+        else random_seed
+    )
+    sfr_grid, burst_sfr_multiplier_grid = _apply_burst_scatter_to_sfr_grid(
+        sfr_grid=sfr_grid,
+        active_grid=active_grid,
+        t_grid=t_grid,
+        scatter_dex=float(burst_scatter_dex),
+        correlation_timescale_myr=float(burst_scatter_timescale_myr),
+        random_seed=None if burst_scatter_seed_used is None else int(burst_scatter_seed_used),
+        preserve_mean=bool(burst_scatter_preserve_mean),
+    )
+    sfr_tracks["SFR"] = sfr_grid.reshape(-1)
     starforming_grid = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
-    topheavy_source_grid = compute_topheavy_source_flags(
+    candidate_transition_parameters = replace(imf_transition_parameters, metallicity_topheavy_max_zsun=None)
+    candidate_topheavy_source_grid = compute_topheavy_source_flags(
         imf_mode=imf_mode,
         z_grid=z_grid,
         mh_grid=mh_grid,
         dmhdt_grid=dmhdt_grid,
         active_grid=starforming_grid,
-        transition_parameters=imf_transition_parameters,
+        transition_parameters=candidate_transition_parameters,
     )
+    topheavy_source_grid = candidate_topheavy_source_grid
+
+    metallicity_result: MetallicityEvolutionResult | None = None
+    if metal_enrichment_parameters is not None:
+        metallicity_result = evolve_stochastic_metallicity(
+            t_grid_gyr=t_grid,
+            z_grid=z_grid,
+            mh_grid=mh_grid,
+            dmhdt_grid=dmhdt_grid,
+            sfr_grid=sfr_grid,
+            active_grid=starforming_grid,
+            baryon_fraction=cosmology.omega_b / cosmology.omega_m,
+            parameters=metal_enrichment_parameters,
+            random_seed=metallicity_random_seed,
+            topheavy_source_grid=candidate_topheavy_source_grid,
+            topheavy_birth_metallicity_max_zsun=metallicity_topheavy_max_zsun,
+        )
+        topheavy_source_grid = np.asarray(metallicity_result.topheavy_source_grid, dtype=bool)
 
     floor_mass = np.zeros_like(redshift_grid, dtype=float)
     active_flat = active_grid.reshape(-1)
@@ -389,7 +515,15 @@ def run_halo_uv_pipeline(
         "imf_transition_parameters": {
             "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
             "growth_time_threshold_myr": float(imf_transition_parameters.growth_time_threshold_myr),
+            "metallicity_topheavy_max_zsun": None
+            if imf_transition_parameters.metallicity_topheavy_max_zsun is None
+            else float(imf_transition_parameters.metallicity_topheavy_max_zsun),
         },
+        "metallicity_topheavy_gate_applied": metallicity_topheavy_max_zsun is not None,
+        "topheavy_candidate_source_fraction": float(np.mean(candidate_topheavy_source_grid[starforming_grid]))
+        if np.any(starforming_grid)
+        else 0.0,
+        "topheavy_candidate_source_count": int(np.count_nonzero(candidate_topheavy_source_grid & starforming_grid)),
         "topheavy_source_fraction": float(np.mean(topheavy_source_grid[starforming_grid]))
         if np.any(starforming_grid)
         else 0.0,
@@ -398,10 +532,41 @@ def run_halo_uv_pipeline(
         "topheavy_light_fraction_median": float(np.median(topheavy_light_fraction[positive_light]))
         if np.any(positive_light)
         else 0.0,
+        "stochastic_metallicity_enabled": metallicity_result is not None,
+        "metallicity_random_seed": metallicity_random_seed,
+        "metal_enrichment_parameters": metal_enrichment_parameters.as_metadata()
+        if metal_enrichment_parameters is not None
+        else None,
+        "final_gas_metallicity_zsun_median": float(
+            np.nanmedian(metallicity_result.gas_metallicity_zsun_grid[:, -1])
+        )
+        if metallicity_result is not None
+        else None,
+        "birth_metallicity_zsun_starforming_median": float(
+            np.nanmedian(metallicity_result.birth_metallicity_zsun_grid[starforming_grid])
+        )
+        if metallicity_result is not None and np.any(starforming_grid)
+        else None,
         "enable_time_delay": enable_time_delay,
         "time_grid_mode": "uniform_in_t",
         "dt_gyr": float(dt_gyr),
         "burst_lookback_max_myr": float(burst_lookback_max_myr),
+        "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
+        "burst_scatter_dex": float(burst_scatter_dex),
+        "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
+        "burst_scatter_random_seed": None
+        if burst_scatter_seed_used is None
+        else int(burst_scatter_seed_used),
+        "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
+        "burst_sfr_multiplier_median": float(np.median(burst_sfr_multiplier_grid[starforming_grid]))
+        if np.any(starforming_grid)
+        else 1.0,
+        "burst_sfr_multiplier_p16": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 16.0))
+        if np.any(starforming_grid)
+        else 1.0,
+        "burst_sfr_multiplier_p84": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 84.0))
+        if np.any(starforming_grid)
+        else 1.0,
         "ssp_lookback_max_myr": float(ssp_lookback_max_myr),
         "sfr_model_parameters": {
             "epsilon_0": sfr_model_parameters.epsilon_0,
@@ -429,4 +594,14 @@ def run_halo_uv_pipeline(
         active_grid=active_grid,
         imf_topheavy_source_grid=topheavy_source_grid,
         metadata=metadata,
+        gas_metallicity_zsun_grid=None
+        if metallicity_result is None
+        else np.asarray(metallicity_result.gas_metallicity_zsun_grid, dtype=float),
+        birth_metallicity_zsun_grid=None
+        if metallicity_result is None
+        else np.asarray(metallicity_result.birth_metallicity_zsun_grid, dtype=float),
+        metal_mass_grid=None
+        if metallicity_result is None
+        else np.asarray(metallicity_result.metal_mass_grid, dtype=float),
+        gas_mass_grid=None if metallicity_result is None else np.asarray(metallicity_result.gas_mass_grid, dtype=float),
     )
