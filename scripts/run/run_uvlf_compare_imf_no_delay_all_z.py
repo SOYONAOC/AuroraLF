@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
 from auroralf.uvlf import (
+    DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
     DEFAULT_MASS_FUNCTION_MODEL,
     compute_dust_attenuated_uvlf,
     sample_uvlf_from_hmf,
@@ -56,7 +57,7 @@ def _default_output_prefix(project_root: Path) -> Path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare no-delay UVLFs for canonical Pop II and two mild top-heavy Pop II IMF variants. "
+            "Compare delayed-SFR UVLFs for canonical Pop II and two mild top-heavy Pop II IMF variants. "
             "The variants are source-time z-gated and MAH-burst-gated, not global SSP replacements."
         )
     )
@@ -75,6 +76,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--z-start-max", type=float, default=50.0)
     parser.add_argument("--n-grid", type=int, default=240)
     parser.add_argument("--sampler", type=str, default="mcbride")
+    time_delay_group = parser.add_mutually_exclusive_group()
+    time_delay_group.add_argument("--enable-time-delay", dest="enable_time_delay", action="store_true", default=True)
+    time_delay_group.add_argument("--disable-time-delay", dest="enable_time_delay", action="store_false")
     parser.add_argument("--epsilon-0", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.epsilon_0)
     parser.add_argument("--fstar-characteristic-mass", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.characteristic_mass)
     parser.add_argument("--fstar-beta", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.beta_star)
@@ -88,6 +92,10 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_IMF_TRANSITION_PARAMETERS.growth_time_threshold_myr,
     )
+    parser.add_argument("--burst-scatter-dex", type=float, default=0.0)
+    parser.add_argument("--burst-scatter-timescale-myr", type=float, default=DEFAULT_BURST_SCATTER_TIMESCALE_MYR)
+    parser.add_argument("--burst-scatter-random-seed", type=int, default=None)
+    parser.add_argument("--disable-burst-scatter-mean-preservation", action="store_true")
     parser.add_argument("--output-prefix", type=str, default=None)
     parser.add_argument("--apply-dust", action="store_true")
     parser.add_argument("--print-progress", action="store_true")
@@ -127,6 +135,7 @@ def _run_single_imf_mode_uvlf(
     n_grid: int,
     sampler: str,
     workers: int,
+    enable_time_delay: bool,
     canonical_ssp_file: Path,
     topheavy_ssp_file: Path,
     topheavy_ssp_metallicity: float | None,
@@ -135,6 +144,10 @@ def _run_single_imf_mode_uvlf(
     progress_path: Path,
     print_progress: bool,
     sfr_model_parameters: SFRModelParameters,
+    burst_scatter_dex: float,
+    burst_scatter_timescale_myr: float,
+    burst_scatter_random_seed: int | None,
+    burst_scatter_preserve_mean: bool,
     mass_function_model: str,
 ) -> dict[str, np.ndarray | dict[str, object]]:
     result = sample_uvlf_from_hmf(
@@ -149,7 +162,7 @@ def _run_single_imf_mode_uvlf(
         z_start_max=z_start_max,
         n_grid=n_grid,
         sampler=sampler,
-        enable_time_delay=False,
+        enable_time_delay=enable_time_delay,
         pipeline_workers=workers,
         ssp_file=str(canonical_ssp_file),
         topheavy_ssp_file=str(topheavy_ssp_file),
@@ -159,6 +172,10 @@ def _run_single_imf_mode_uvlf(
         progress_path=progress_path,
         print_progress=print_progress,
         sfr_model_parameters=sfr_model_parameters,
+        burst_scatter_dex=burst_scatter_dex,
+        burst_scatter_timescale_myr=burst_scatter_timescale_myr,
+        burst_scatter_random_seed=burst_scatter_random_seed,
+        burst_scatter_preserve_mean=burst_scatter_preserve_mean,
         mass_function_model=mass_function_model,
     )
     return {
@@ -250,6 +267,10 @@ def main() -> None:
         raise ValueError("fstar-beta must be non-negative")
     if float(args.fstar_gamma) < 0.0:
         raise ValueError("fstar-gamma must be non-negative")
+    if float(args.burst_scatter_dex) < 0.0:
+        raise ValueError("burst-scatter-dex must be non-negative")
+    if float(args.burst_scatter_timescale_myr) <= 0.0:
+        raise ValueError("burst-scatter-timescale-myr must be positive")
 
     imf_transition_parameters = IMFTransitionParameters(
         z_topheavy_min=float(args.z_topheavy_min),
@@ -281,6 +302,14 @@ def main() -> None:
         "logM_max": np.asarray([float(args.logM_max)], dtype=float),
         "apply_dust": np.asarray([bool(args.apply_dust)]),
         "mass_function_model": np.asarray([mass_function_model]),
+        "enable_time_delay": np.asarray([bool(args.enable_time_delay)]),
+        "burst_scatter_dex": np.asarray([float(args.burst_scatter_dex)], dtype=float),
+        "burst_scatter_timescale_myr": np.asarray([float(args.burst_scatter_timescale_myr)], dtype=float),
+        "burst_scatter_random_seed": np.asarray(
+            [-1 if args.burst_scatter_random_seed is None else int(args.burst_scatter_random_seed)],
+            dtype=int,
+        ),
+        "burst_scatter_preserve_mean": np.asarray([not bool(args.disable_burst_scatter_mean_preservation)]),
         "epsilon_0": np.asarray([float(args.epsilon_0)], dtype=float),
         "fstar_characteristic_mass": np.asarray([float(args.fstar_characteristic_mass)], dtype=float),
         "fstar_beta": np.asarray([float(args.fstar_beta)], dtype=float),
@@ -321,7 +350,11 @@ def main() -> None:
         f"fstar_characteristic_mass: {float(args.fstar_characteristic_mass)}",
         f"fstar_beta: {float(args.fstar_beta)}",
         f"fstar_gamma: {float(args.fstar_gamma)}",
-        "enable_time_delay: False",
+        f"enable_time_delay: {bool(args.enable_time_delay)}",
+        f"burst_scatter_dex: {float(args.burst_scatter_dex)}",
+        f"burst_scatter_timescale_myr: {float(args.burst_scatter_timescale_myr)}",
+        f"burst_scatter_random_seed: {args.burst_scatter_random_seed}",
+        f"burst_scatter_preserve_mean: {not bool(args.disable_burst_scatter_mean_preservation)}",
         "",
     ]
 
@@ -329,11 +362,13 @@ def main() -> None:
     for z_index, z_obs in enumerate(z_values):
         z_tag = _tag_from_z(z_obs)
         seed = int(args.random_seed + 1000 * z_index)
+        burst_seed = None if args.burst_scatter_random_seed is None else int(args.burst_scatter_random_seed + 1000 * z_index)
         mode_results: dict[str, dict[str, np.ndarray | dict[str, object]]] = {}
 
         print(
             f"Computing z={z_obs:g} with shared seed={seed}, workers={args.workers}, "
-            f"mass_function_model={mass_function_model}, modes={','.join(imf_modes)}",
+            f"mass_function_model={mass_function_model}, modes={','.join(imf_modes)}, "
+            f"enable_time_delay={bool(args.enable_time_delay)}, burst_scatter_dex={float(args.burst_scatter_dex):g}",
             flush=True,
         )
 
@@ -351,6 +386,7 @@ def main() -> None:
                 n_grid=int(args.n_grid),
                 sampler=str(args.sampler),
                 workers=int(args.workers),
+                enable_time_delay=bool(args.enable_time_delay),
                 canonical_ssp_file=canonical_ssp_file,
                 topheavy_ssp_file=topheavy_ssp_file,
                 topheavy_ssp_metallicity=args.topheavy_ssp_metallicity,
@@ -359,6 +395,10 @@ def main() -> None:
                 progress_path=progress,
                 print_progress=bool(args.print_progress),
                 sfr_model_parameters=sfr_model_parameters,
+                burst_scatter_dex=float(args.burst_scatter_dex),
+                burst_scatter_timescale_myr=float(args.burst_scatter_timescale_myr),
+                burst_scatter_random_seed=burst_seed,
+                burst_scatter_preserve_mean=not bool(args.disable_burst_scatter_mean_preservation),
                 mass_function_model=mass_function_model,
             )
 
@@ -382,6 +422,7 @@ def main() -> None:
         payload[f"{z_tag}_bin_centers"] = centers
         payload[f"{z_tag}_bin_width"] = bin_width
         payload[f"{z_tag}_seed"] = np.asarray([seed], dtype=int)
+        payload[f"{z_tag}_burst_scatter_seed"] = np.asarray([-1 if burst_seed is None else int(burst_seed)], dtype=int)
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_intrinsic_phi"] = canonical_phi_intrinsic
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_intrinsic_phi_sigma"] = canonical_phi_intrinsic_sigma
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_phi"] = canonical_phi_final
@@ -412,6 +453,7 @@ def main() -> None:
 
         summary_lines.append(f"z={z_obs:g}")
         summary_lines.append(f"  seed={seed}")
+        summary_lines.append(f"  burst_scatter_seed={burst_seed}")
         summary_lines.append(
             f"  {IMF_MODE_CANONICAL}_sampling_seconds={float(canonical['metadata']['sampling_seconds']):.3f}"
         )

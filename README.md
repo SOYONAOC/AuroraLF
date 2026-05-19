@@ -380,6 +380,14 @@ from auroralf.uvlf import run_halo_uv_pipeline
   `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
 - `enable_time_delay`
   是否在 `auroralf.sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
+- `burst_scatter_dex`
+  对源时刻 SFR 施加 lognormal burst scatter 的标准差，单位 dex；默认 `0.0` 表示关闭
+- `burst_scatter_timescale_myr`
+  burst scatter 在同一 halo 内保持相关的时间尺度，单位 `Myr`；默认 `20.0`
+- `burst_scatter_random_seed`
+  burst scatter 随机种子；若未提供，则每次调用由 `numpy` generator 自行初始化
+- `burst_scatter_preserve_mean`
+  是否使用 unit-mean lognormal shift，使 ensemble-mean SFR 不因 scatter 系统性升高；默认 `True`
 - `workers`
   保留的接口参数；当前实现中 `run_halo_uv_pipeline()` 内部 UV 卷积按串行执行
 
@@ -410,7 +418,7 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `imf_topheavy_source_grid`
   每个 halo 每个源时刻是否使用 mild top-heavy SSP kernel
 - `metadata`
-  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`enable_time_delay` 和各阶段耗时
+  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`burst_scatter_dex`、`burst_sfr_multiplier_median`、`enable_time_delay` 和各阶段耗时
 
 说明：
 
@@ -418,6 +426,10 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `auroralf.mah` 部分使用默认 `M_min`，即 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
 - Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
+- 可选 burst scatter 使用
+  `SFR_burst(t)=SFR_smooth(t) 10^Delta`，其中
+  `Delta ~ Normal(-0.5 ln(10) sigma_burst^2, sigma_burst)`；该均值位移保证
+  `E[10^Delta]=1`，因此 scatter 默认不整体抬高平均 SFR
 - `load_uv1600_table()` 读出的 SSP 年龄网格会自动从 `Myr` 转成 `Gyr` 后再参与卷积
 
 最小调用：
@@ -484,6 +496,14 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   mild top-heavy IMF 的源时刻触发参数
 - `progress_path`
   可选进度文件路径；若提供，会把外层 `N_mass` 循环进度持续写入该 txt 文件
+- `burst_scatter_dex`
+  对内层 `run_halo_uv_pipeline()` 的 SFR 历史施加 lognormal burst scatter；默认 `0.0` 表示关闭
+- `burst_scatter_timescale_myr`
+  burst scatter 的时间相关尺度，单位 `Myr`；默认 `20.0`
+- `burst_scatter_random_seed`
+  burst scatter 随机种子；若提供，外层不同 halo mass 点会按 mass index 偏移，避免复用同一组 burst
+- `burst_scatter_preserve_mean`
+  是否保持 ensemble-mean SFR；默认 `True`
 - `mass_function_model`
   外层 halo mass function 权重模型；当前生产接口只支持 `"hmf_reed07"`，使用 `hmf` 包中的 Reed07 fitting function。旧的 `"massfunc_st"` 和 Watson13 分支已禁用。
 
@@ -532,6 +552,7 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - 内层条件采样器直接复用 `auroralf.uvlf.run_halo_uv_pipeline()`
 - 当前并行层级放在外层 `N_mass` 循环；`run_halo_uv_pipeline()` 内部 UV 卷积保持串行，避免嵌套进程池
 - 若设置 `progress_path`，外层 `N_mass` 进度条会实时写入文本文件
+- `burst_scatter_dex > 0` 时，UV 卷积使用 burst 后的同一条 SFR 历史；canonical 与 top-heavy mode 若使用同一个 `burst_scatter_random_seed`，会共享同一组 burst realization
 
 最小调用：
 
@@ -547,6 +568,23 @@ result = sample_uvlf_from_hmf(
 
 print(result.samples["Muv"].shape)
 print(result.uvlf["phi"])
+```
+
+## 生产 UVLF 脚本中的 SFR burst 选项
+
+生产脚本 `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` 必须通过 SLURM wrapper 提交。
+生产脚本默认启用 `enable_time_delay=True`；若要做历史 no-delay 对照，需要显式传入 `--disable-time-delay`。
+
+dry-run 示例：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --burst-scatter-dex 0.5 --burst-scatter-random-seed 123
+```
+
+no-delay 对照示例：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --disable-time-delay --burst-scatter-dex 0.5 --burst-scatter-random-seed 123
 ```
 
 ## `auroralf.uvlf.compute_dust_attenuated_uvlf()`

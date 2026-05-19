@@ -12,6 +12,7 @@ from hmf import MassFunction
 from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
 from .imf import DEFAULT_IMF_TRANSITION_PARAMETERS, IMFTransitionParameters, validate_imf_mode
 from .pipeline import (
+    DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
     DEFAULT_SSP_FILE,
     DEFAULT_TOPHEAVY_SSP_FILE,
     DEFAULT_TOPHEAVY_SSP_METALLICITY,
@@ -218,6 +219,10 @@ def _run_single_mass_sample(
         str,
         IMFTransitionParameters,
         int | None,
+        float,
+        float,
+        int | None,
+        bool,
         SFRModelParameters,
     ],
 ) -> tuple[int, float, np.ndarray, np.ndarray, float, int, int]:
@@ -238,6 +243,10 @@ def _run_single_mass_sample(
         imf_mode,
         imf_transition_parameters,
         random_seed,
+        burst_scatter_dex,
+        burst_scatter_timescale_myr,
+        burst_scatter_random_seed,
+        burst_scatter_preserve_mean,
         sfr_model_parameters,
     ) = args
 
@@ -257,6 +266,10 @@ def _run_single_mass_sample(
         topheavy_ssp_metallicity=topheavy_ssp_metallicity,
         imf_mode=imf_mode,
         imf_transition_parameters=imf_transition_parameters,
+        burst_scatter_dex=burst_scatter_dex,
+        burst_scatter_timescale_myr=burst_scatter_timescale_myr,
+        burst_scatter_random_seed=burst_scatter_random_seed,
+        burst_scatter_preserve_mean=burst_scatter_preserve_mean,
         sfr_model_parameters=sfr_model_parameters,
     )
     duration = time.perf_counter() - t0
@@ -299,6 +312,10 @@ def sample_uvlf_from_hmf(
     progress_path: str | Path | None = None,
     print_progress: bool = False,
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
+    burst_scatter_dex: float = 0.0,
+    burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    burst_scatter_random_seed: int | None = None,
+    burst_scatter_preserve_mean: bool = True,
     mass_function_model: str = DEFAULT_MASS_FUNCTION_MODEL,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
 ) -> UVLFSamplingResult:
@@ -312,6 +329,10 @@ def sample_uvlf_from_hmf(
         raise ValueError("logM_max must be larger than logM_min")
     imf_mode = validate_imf_mode(imf_mode)
     mass_function_model = validate_mass_function_model(mass_function_model)
+    if burst_scatter_dex < 0.0:
+        raise ValueError("burst_scatter_dex must be non-negative")
+    if burst_scatter_timescale_myr <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be positive")
     if topheavy_ssp_file is None:
         topheavy_ssp_file = DEFAULT_TOPHEAVY_SSP_FILE
 
@@ -371,6 +392,10 @@ def sample_uvlf_from_hmf(
             imf_mode,
             imf_transition_parameters,
             None if random_seed is None else int(random_seed + mass_index),
+            float(burst_scatter_dex),
+            float(burst_scatter_timescale_myr),
+            None if burst_scatter_random_seed is None else int(burst_scatter_random_seed + mass_index),
+            bool(burst_scatter_preserve_mean),
             sfr_model_parameters,
         )
         for mass_index, (log_mass, mass, weight) in enumerate(zip(logMh, Mh, mass_weight, strict=True))
@@ -552,6 +577,11 @@ def sample_uvlf_from_hmf(
             "growth_time_threshold_myr": float(imf_transition_parameters.growth_time_threshold_myr),
         },
         "enable_time_delay": enable_time_delay,
+        "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
+        "burst_scatter_dex": float(burst_scatter_dex),
+        "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
+        "burst_scatter_random_seed": burst_scatter_random_seed,
+        "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
         "sfr_model_parameters": {
             "epsilon_0": sfr_model_parameters.epsilon_0,
             "characteristic_mass": sfr_model_parameters.characteristic_mass,

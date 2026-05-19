@@ -35,6 +35,7 @@ DEFAULT_SSP_FILE = DEFAULT_CANONICAL_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_FILE = DEFAULT_MILD_TOPHEAVY_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_METALLICITY = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 YEARS_PER_GYR = 1.0e9
+DEFAULT_BURST_SCATTER_TIMESCALE_MYR = 20.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,72 @@ def compute_uv_luminosities_parallel(
 
 def default_worker_count() -> int:
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+
+
+def _lognormal_unit_mean_shift_dex(scatter_dex: float) -> float:
+    return -0.5 * np.log(10.0) * float(scatter_dex) ** 2
+
+
+def _draw_burst_multiplier_for_segments(
+    *,
+    rng: np.random.Generator,
+    segment_ids: np.ndarray,
+    scatter_dex: float,
+    preserve_mean: bool,
+) -> np.ndarray:
+    unique_segments, inverse = np.unique(segment_ids, return_inverse=True)
+    loc = _lognormal_unit_mean_shift_dex(scatter_dex) if preserve_mean else 0.0
+    delta_dex = rng.normal(loc=loc, scale=float(scatter_dex), size=unique_segments.size)
+    return np.power(10.0, delta_dex[inverse])
+
+
+def _apply_burst_scatter_to_sfr_grid(
+    *,
+    sfr_grid: np.ndarray,
+    active_grid: np.ndarray,
+    t_grid: np.ndarray,
+    scatter_dex: float,
+    correlation_timescale_myr: float,
+    random_seed: int | None,
+    preserve_mean: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    scatter_dex = float(scatter_dex)
+    correlation_timescale_myr = float(correlation_timescale_myr)
+    if scatter_dex < 0.0:
+        raise ValueError("burst_scatter_dex must be non-negative")
+    if correlation_timescale_myr <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be positive")
+
+    sfr = np.asarray(sfr_grid, dtype=float)
+    active = np.asarray(active_grid, dtype=bool)
+    time = np.asarray(t_grid, dtype=float)
+    if sfr.shape != active.shape or sfr.shape != time.shape:
+        raise ValueError("sfr_grid, active_grid, and t_grid must have the same shape")
+
+    multiplier = np.ones_like(sfr, dtype=float)
+    if scatter_dex == 0.0:
+        return sfr.copy(), multiplier
+
+    rng = np.random.default_rng(random_seed)
+    correlation_gyr = correlation_timescale_myr / 1.0e3
+    burst_sfr = sfr.copy()
+    source_grid = active & np.isfinite(sfr) & (sfr > 0.0) & np.isfinite(time)
+    for halo_index in range(sfr.shape[0]):
+        source = source_grid[halo_index]
+        if not np.any(source):
+            continue
+        first_time = float(time[halo_index, np.flatnonzero(source)[0]])
+        segment_ids = np.floor((time[halo_index, source] - first_time) / correlation_gyr).astype(np.int64)
+        row_multiplier = _draw_burst_multiplier_for_segments(
+            rng=rng,
+            segment_ids=segment_ids,
+            scatter_dex=scatter_dex,
+            preserve_mean=preserve_mean,
+        )
+        multiplier[halo_index, source] = row_multiplier
+        burst_sfr[halo_index, source] = sfr[halo_index, source] * row_multiplier
+
+    return burst_sfr, multiplier
 
 
 def _resolve_regular_time_grid(t_grid: np.ndarray) -> np.ndarray | None:
@@ -272,6 +339,10 @@ def run_halo_uv_pipeline(
     burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
     ssp_lookback_max_myr: float = SSP_UV_LOOKBACK_MAX_MYR,
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
+    burst_scatter_dex: float = 0.0,
+    burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    burst_scatter_random_seed: int | None = None,
+    burst_scatter_preserve_mean: bool = True,
 ) -> HaloUVPipelineResult:
     """Run the main mah -> sfr -> UV pipeline and return per-halo UV luminosities."""
 
@@ -280,6 +351,10 @@ def run_halo_uv_pipeline(
     workers = default_worker_count() if workers is None else int(workers)
     if int(n_grid) < 2:
         raise ValueError("n_grid must be at least 2")
+    if burst_scatter_dex < 0.0:
+        raise ValueError("burst_scatter_dex must be non-negative")
+    if burst_scatter_timescale_myr <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be positive")
     astro = _build_astropy_cosmology(cosmology)
     t_start_gyr = float(astro.age(z_start_max).value)
     t_end_gyr = float(astro.age(z_final).value)
@@ -332,6 +407,17 @@ def run_halo_uv_pipeline(
     sfr_grid = np.asarray(sfr_tracks["SFR"], dtype=float).reshape(n_halos, steps_per_halo)
     active_grid = np.asarray(sfr_tracks["active_flag"], dtype=bool).reshape(n_halos, steps_per_halo)
     z_grid = np.asarray(sfr_tracks["z"], dtype=float).reshape(n_halos, steps_per_halo)
+    burst_scatter_seed_used = burst_scatter_random_seed if burst_scatter_random_seed is not None else random_seed
+    sfr_grid, burst_sfr_multiplier_grid = _apply_burst_scatter_to_sfr_grid(
+        sfr_grid=sfr_grid,
+        active_grid=active_grid,
+        t_grid=t_grid,
+        scatter_dex=float(burst_scatter_dex),
+        correlation_timescale_myr=float(burst_scatter_timescale_myr),
+        random_seed=None if burst_scatter_seed_used is None else int(burst_scatter_seed_used),
+        preserve_mean=bool(burst_scatter_preserve_mean),
+    )
+    sfr_tracks["SFR"] = sfr_grid.reshape(-1)
     starforming_grid = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
     topheavy_source_grid = compute_topheavy_source_flags(
         imf_mode=imf_mode,
@@ -403,6 +489,20 @@ def run_halo_uv_pipeline(
         "dt_gyr": float(dt_gyr),
         "burst_lookback_max_myr": float(burst_lookback_max_myr),
         "ssp_lookback_max_myr": float(ssp_lookback_max_myr),
+        "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
+        "burst_scatter_dex": float(burst_scatter_dex),
+        "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
+        "burst_scatter_random_seed": None if burst_scatter_seed_used is None else int(burst_scatter_seed_used),
+        "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
+        "burst_sfr_multiplier_median": float(np.median(burst_sfr_multiplier_grid[starforming_grid]))
+        if np.any(starforming_grid)
+        else 1.0,
+        "burst_sfr_multiplier_p16": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 16.0))
+        if np.any(starforming_grid)
+        else 1.0,
+        "burst_sfr_multiplier_p84": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 84.0))
+        if np.any(starforming_grid)
+        else 1.0,
         "sfr_model_parameters": {
             "epsilon_0": sfr_model_parameters.epsilon_0,
             "characteristic_mass": sfr_model_parameters.characteristic_mass,
