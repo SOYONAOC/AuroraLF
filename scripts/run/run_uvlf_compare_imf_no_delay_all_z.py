@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.chemistry import CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER, MetalEnrichmentParameters
 from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
 from auroralf.uvlf import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
@@ -26,6 +27,7 @@ from auroralf.uvlf.imf import (
     DEFAULT_IMF_TRANSITION_PARAMETERS,
     DEFAULT_MILD_TOPHEAVY_SSP_FILE,
     DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY,
+    DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN,
     IMF_MODE_CANONICAL,
     IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
     IMF_MODE_Z_GATED_MILD_TOPHEAVY,
@@ -57,7 +59,7 @@ def _default_output_prefix(project_root: Path) -> Path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare delayed-SFR UVLFs for canonical Pop II and two mild top-heavy Pop II IMF variants. "
+            "Compare UVLFs for canonical Pop II and two mild top-heavy Pop II IMF variants. "
             "The variants are source-time z-gated and MAH-burst-gated, not global SSP replacements."
         )
     )
@@ -77,25 +79,38 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--n-grid", type=int, default=240)
     parser.add_argument("--sampler", type=str, default="mcbride")
     time_delay_group = parser.add_mutually_exclusive_group()
-    time_delay_group.add_argument("--enable-time-delay", dest="enable_time_delay", action="store_true", default=True)
+    time_delay_group.add_argument("--enable-time-delay", dest="enable_time_delay", action="store_true")
     time_delay_group.add_argument("--disable-time-delay", dest="enable_time_delay", action="store_false")
+    parser.set_defaults(enable_time_delay=True)
     parser.add_argument("--epsilon-0", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.epsilon_0)
     parser.add_argument("--fstar-characteristic-mass", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.characteristic_mass)
     parser.add_argument("--fstar-beta", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.beta_star)
     parser.add_argument("--fstar-gamma", type=float, default=DEFAULT_SFR_MODEL_PARAMETERS.gamma_star)
+    parser.add_argument("--burst-scatter-dex", type=float, default=0.0)
+    parser.add_argument("--burst-scatter-timescale-myr", type=float, default=DEFAULT_BURST_SCATTER_TIMESCALE_MYR)
+    parser.add_argument("--burst-scatter-random-seed", type=int, default=None)
+    parser.add_argument("--disable-burst-scatter-mean-preservation", action="store_true")
+    parser.add_argument("--enable-stochastic-metallicity", action="store_true")
+    parser.add_argument("--metallicity-random-seed", type=int, default=None)
+    parser.add_argument("--metal-gas-fraction-of-baryons", type=float, default=0.5)
+    parser.add_argument("--metal-yield", type=float, default=0.02)
+    parser.add_argument("--metal-topheavy-yield-multiplier", type=float, default=CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER)
+    parser.add_argument("--metal-returned-fraction", type=float, default=0.4)
+    parser.add_argument("--metal-mass-loading-norm", type=float, default=5.0)
+    parser.add_argument("--metal-yield-scatter-dex", type=float, default=0.2)
+    parser.add_argument("--metal-mass-loading-scatter-dex", type=float, default=0.3)
+    parser.add_argument("--metal-birth-scatter-dex", type=float, default=0.15)
     parser.add_argument("--canonical-ssp-file", type=str, default=DEFAULT_CANONICAL_SSP_FILE)
     parser.add_argument("--topheavy-ssp-file", type=str, default=DEFAULT_MILD_TOPHEAVY_SSP_FILE)
     parser.add_argument("--topheavy-ssp-metallicity", type=float, default=DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY)
     parser.add_argument("--z-topheavy-min", type=float, default=DEFAULT_IMF_TRANSITION_PARAMETERS.z_topheavy_min)
+    parser.add_argument("--metallicity-topheavy-max-zsun", type=float, default=DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN)
+    parser.add_argument("--disable-metallicity-topheavy-gate", action="store_true")
     parser.add_argument(
         "--growth-time-threshold-myr",
         type=float,
         default=DEFAULT_IMF_TRANSITION_PARAMETERS.growth_time_threshold_myr,
     )
-    parser.add_argument("--burst-scatter-dex", type=float, default=0.0)
-    parser.add_argument("--burst-scatter-timescale-myr", type=float, default=DEFAULT_BURST_SCATTER_TIMESCALE_MYR)
-    parser.add_argument("--burst-scatter-random-seed", type=int, default=None)
-    parser.add_argument("--disable-burst-scatter-mean-preservation", action="store_true")
     parser.add_argument("--output-prefix", type=str, default=None)
     parser.add_argument("--apply-dust", action="store_true")
     parser.add_argument("--print-progress", action="store_true")
@@ -135,7 +150,6 @@ def _run_single_imf_mode_uvlf(
     n_grid: int,
     sampler: str,
     workers: int,
-    enable_time_delay: bool,
     canonical_ssp_file: Path,
     topheavy_ssp_file: Path,
     topheavy_ssp_metallicity: float | None,
@@ -144,11 +158,14 @@ def _run_single_imf_mode_uvlf(
     progress_path: Path,
     print_progress: bool,
     sfr_model_parameters: SFRModelParameters,
+    mass_function_model: str,
+    metal_enrichment_parameters: MetalEnrichmentParameters | None,
+    metallicity_random_seed: int | None,
+    enable_time_delay: bool,
     burst_scatter_dex: float,
     burst_scatter_timescale_myr: float,
     burst_scatter_random_seed: int | None,
     burst_scatter_preserve_mean: bool,
-    mass_function_model: str,
 ) -> dict[str, np.ndarray | dict[str, object]]:
     result = sample_uvlf_from_hmf(
         z_obs=z_obs,
@@ -172,11 +189,13 @@ def _run_single_imf_mode_uvlf(
         progress_path=progress_path,
         print_progress=print_progress,
         sfr_model_parameters=sfr_model_parameters,
+        mass_function_model=mass_function_model,
+        metal_enrichment_parameters=metal_enrichment_parameters,
+        metallicity_random_seed=metallicity_random_seed,
         burst_scatter_dex=burst_scatter_dex,
         burst_scatter_timescale_myr=burst_scatter_timescale_myr,
         burst_scatter_random_seed=burst_scatter_random_seed,
         burst_scatter_preserve_mean=burst_scatter_preserve_mean,
-        mass_function_model=mass_function_model,
     )
     return {
         "bin_edges": np.asarray(result.uvlf["bin_edges"], dtype=float),
@@ -271,16 +290,56 @@ def main() -> None:
         raise ValueError("burst-scatter-dex must be non-negative")
     if float(args.burst_scatter_timescale_myr) <= 0.0:
         raise ValueError("burst-scatter-timescale-myr must be positive")
+    if float(args.metal_gas_fraction_of_baryons) <= 0.0:
+        raise ValueError("metal-gas-fraction-of-baryons must be positive")
+    if float(args.metal_yield) < 0.0:
+        raise ValueError("metal-yield must be non-negative")
+    if float(args.metal_topheavy_yield_multiplier) <= 0.0:
+        raise ValueError("metal-topheavy-yield-multiplier must be positive")
+    if not 0.0 <= float(args.metal_returned_fraction) < 1.0:
+        raise ValueError("metal-returned-fraction must lie in [0, 1)")
+    if float(args.metal_mass_loading_norm) < 0.0:
+        raise ValueError("metal-mass-loading-norm must be non-negative")
+    if float(args.metal_yield_scatter_dex) < 0.0:
+        raise ValueError("metal-yield-scatter-dex must be non-negative")
+    if float(args.metal_mass_loading_scatter_dex) < 0.0:
+        raise ValueError("metal-mass-loading-scatter-dex must be non-negative")
+    if float(args.metal_birth_scatter_dex) < 0.0:
+        raise ValueError("metal-birth-scatter-dex must be non-negative")
+    metallicity_topheavy_max_zsun = (
+        None if args.disable_metallicity_topheavy_gate else float(args.metallicity_topheavy_max_zsun)
+    )
+    if metallicity_topheavy_max_zsun is not None and metallicity_topheavy_max_zsun <= 0.0:
+        raise ValueError("metallicity-topheavy-max-zsun must be positive")
+    if variant_modes and metallicity_topheavy_max_zsun is not None and not args.enable_stochastic_metallicity:
+        raise ValueError(
+            "enable-stochastic-metallicity is required for metallicity-gated top-heavy IMF variants"
+        )
 
     imf_transition_parameters = IMFTransitionParameters(
         z_topheavy_min=float(args.z_topheavy_min),
         growth_time_threshold_myr=float(args.growth_time_threshold_myr),
+        metallicity_topheavy_max_zsun=metallicity_topheavy_max_zsun,
     )
     sfr_model_parameters = SFRModelParameters(
         epsilon_0=float(args.epsilon_0),
         characteristic_mass=float(args.fstar_characteristic_mass),
         beta_star=float(args.fstar_beta),
         gamma_star=float(args.fstar_gamma),
+    )
+    metal_enrichment_parameters = (
+        MetalEnrichmentParameters(
+            gas_fraction_of_baryons=float(args.metal_gas_fraction_of_baryons),
+            metal_yield=float(args.metal_yield),
+            topheavy_yield_multiplier=float(args.metal_topheavy_yield_multiplier),
+            returned_fraction=float(args.metal_returned_fraction),
+            mass_loading_norm=float(args.metal_mass_loading_norm),
+            yield_scatter_dex=float(args.metal_yield_scatter_dex),
+            mass_loading_scatter_dex=float(args.metal_mass_loading_scatter_dex),
+            birth_metallicity_scatter_dex=float(args.metal_birth_scatter_dex),
+        )
+        if args.enable_stochastic_metallicity
+        else None
     )
 
     bins = np.linspace(float(args.muv_min), float(args.muv_max), int(args.bins) + 1, dtype=float)
@@ -301,19 +360,46 @@ def main() -> None:
         "logM_min": np.asarray([float(args.logM_min)], dtype=float),
         "logM_max": np.asarray([float(args.logM_max)], dtype=float),
         "apply_dust": np.asarray([bool(args.apply_dust)]),
-        "mass_function_model": np.asarray([mass_function_model]),
         "enable_time_delay": np.asarray([bool(args.enable_time_delay)]),
+        "mass_function_model": np.asarray([mass_function_model]),
+        "epsilon_0": np.asarray([float(args.epsilon_0)], dtype=float),
+        "fstar_characteristic_mass": np.asarray([float(args.fstar_characteristic_mass)], dtype=float),
+        "fstar_beta": np.asarray([float(args.fstar_beta)], dtype=float),
+        "fstar_gamma": np.asarray([float(args.fstar_gamma)], dtype=float),
         "burst_scatter_dex": np.asarray([float(args.burst_scatter_dex)], dtype=float),
         "burst_scatter_timescale_myr": np.asarray([float(args.burst_scatter_timescale_myr)], dtype=float),
         "burst_scatter_random_seed": np.asarray(
             [-1 if args.burst_scatter_random_seed is None else int(args.burst_scatter_random_seed)],
             dtype=int,
         ),
-        "burst_scatter_preserve_mean": np.asarray([not bool(args.disable_burst_scatter_mean_preservation)]),
-        "epsilon_0": np.asarray([float(args.epsilon_0)], dtype=float),
-        "fstar_characteristic_mass": np.asarray([float(args.fstar_characteristic_mass)], dtype=float),
-        "fstar_beta": np.asarray([float(args.fstar_beta)], dtype=float),
-        "fstar_gamma": np.asarray([float(args.fstar_gamma)], dtype=float),
+        "burst_scatter_preserve_mean": np.asarray(
+            [not bool(args.disable_burst_scatter_mean_preservation)],
+            dtype=bool,
+        ),
+        "burst_scatter_mass_conserving": np.asarray(
+            [not bool(args.disable_burst_scatter_mean_preservation)],
+            dtype=bool,
+        ),
+        "stochastic_metallicity_enabled": np.asarray([bool(args.enable_stochastic_metallicity)]),
+        "metallicity_random_seed": np.asarray(
+            [-1 if args.metallicity_random_seed is None else int(args.metallicity_random_seed)],
+            dtype=int,
+        ),
+        "metal_gas_fraction_of_baryons": np.asarray([float(args.metal_gas_fraction_of_baryons)], dtype=float),
+        "metal_yield": np.asarray([float(args.metal_yield)], dtype=float),
+        "metal_topheavy_yield_multiplier": np.asarray(
+            [float(args.metal_topheavy_yield_multiplier)],
+            dtype=float,
+        ),
+        "metal_returned_fraction": np.asarray([float(args.metal_returned_fraction)], dtype=float),
+        "metal_mass_loading_norm": np.asarray([float(args.metal_mass_loading_norm)], dtype=float),
+        "metal_yield_scatter_dex": np.asarray([float(args.metal_yield_scatter_dex)], dtype=float),
+        "metal_mass_loading_scatter_dex": np.asarray([float(args.metal_mass_loading_scatter_dex)], dtype=float),
+        "metal_birth_scatter_dex": np.asarray([float(args.metal_birth_scatter_dex)], dtype=float),
+        "metallicity_topheavy_max_zsun": np.asarray(
+            [np.nan if metallicity_topheavy_max_zsun is None else float(metallicity_topheavy_max_zsun)],
+            dtype=float,
+        ),
         "canonical_ssp_file": np.asarray([str(canonical_ssp_file)]),
         "topheavy_ssp_file": np.asarray([str(topheavy_ssp_file)]),
         "topheavy_ssp_metallicity": np.asarray(
@@ -337,6 +423,7 @@ def main() -> None:
         f"imf_modes: {' '.join(imf_modes)}",
         f"z_topheavy_min: {imf_transition_parameters.z_topheavy_min:g}",
         f"growth_time_threshold_myr: {imf_transition_parameters.growth_time_threshold_myr:g}",
+        f"metallicity_topheavy_max_zsun: {metallicity_topheavy_max_zsun}",
         f"workers: {args.workers}",
         f"N_mass: {args.N_mass}",
         f"n_tracks: {args.n_tracks}",
@@ -345,16 +432,27 @@ def main() -> None:
         f"logM_range: [{args.logM_min}, {args.logM_max}]",
         f"z_values: {' '.join(str(z) for z in z_values)}",
         f"apply_dust: {bool(args.apply_dust)}",
+        f"enable_time_delay: {bool(args.enable_time_delay)}",
         f"mass_function_model: {mass_function_model}",
         f"epsilon_0: {float(args.epsilon_0)}",
         f"fstar_characteristic_mass: {float(args.fstar_characteristic_mass)}",
         f"fstar_beta: {float(args.fstar_beta)}",
         f"fstar_gamma: {float(args.fstar_gamma)}",
-        f"enable_time_delay: {bool(args.enable_time_delay)}",
         f"burst_scatter_dex: {float(args.burst_scatter_dex)}",
         f"burst_scatter_timescale_myr: {float(args.burst_scatter_timescale_myr)}",
         f"burst_scatter_random_seed: {args.burst_scatter_random_seed}",
         f"burst_scatter_preserve_mean: {not bool(args.disable_burst_scatter_mean_preservation)}",
+        f"burst_scatter_mass_conserving: {not bool(args.disable_burst_scatter_mean_preservation)}",
+        f"stochastic_metallicity_enabled: {bool(args.enable_stochastic_metallicity)}",
+        f"metallicity_random_seed: {args.metallicity_random_seed}",
+        f"metal_gas_fraction_of_baryons: {float(args.metal_gas_fraction_of_baryons)}",
+        f"metal_yield: {float(args.metal_yield)}",
+        f"metal_topheavy_yield_multiplier: {float(args.metal_topheavy_yield_multiplier)}",
+        f"metal_returned_fraction: {float(args.metal_returned_fraction)}",
+        f"metal_mass_loading_norm: {float(args.metal_mass_loading_norm)}",
+        f"metal_yield_scatter_dex: {float(args.metal_yield_scatter_dex)}",
+        f"metal_mass_loading_scatter_dex: {float(args.metal_mass_loading_scatter_dex)}",
+        f"metal_birth_scatter_dex: {float(args.metal_birth_scatter_dex)}",
         "",
     ]
 
@@ -362,18 +460,26 @@ def main() -> None:
     for z_index, z_obs in enumerate(z_values):
         z_tag = _tag_from_z(z_obs)
         seed = int(args.random_seed + 1000 * z_index)
-        burst_seed = None if args.burst_scatter_random_seed is None else int(args.burst_scatter_random_seed + 1000 * z_index)
         mode_results: dict[str, dict[str, np.ndarray | dict[str, object]]] = {}
 
         print(
             f"Computing z={z_obs:g} with shared seed={seed}, workers={args.workers}, "
-            f"mass_function_model={mass_function_model}, modes={','.join(imf_modes)}, "
-            f"enable_time_delay={bool(args.enable_time_delay)}, burst_scatter_dex={float(args.burst_scatter_dex):g}",
+            f"mass_function_model={mass_function_model}, modes={','.join(imf_modes)}",
             flush=True,
         )
 
         for imf_mode in imf_modes:
             progress = outputs_dir / f"{stem}_{z_tag}_{imf_mode}_progress.txt"
+            mode_metallicity_seed = (
+                None
+                if args.metallicity_random_seed is None
+                else int(args.metallicity_random_seed + 1000 * z_index + 100000 * imf_modes.index(imf_mode))
+            )
+            mode_burst_scatter_seed = (
+                None
+                if args.burst_scatter_random_seed is None
+                else int(args.burst_scatter_random_seed + 1000 * z_index)
+            )
             mode_results[imf_mode] = _run_single_imf_mode_uvlf(
                 z_obs=z_obs,
                 n_mass=int(args.N_mass),
@@ -386,7 +492,6 @@ def main() -> None:
                 n_grid=int(args.n_grid),
                 sampler=str(args.sampler),
                 workers=int(args.workers),
-                enable_time_delay=bool(args.enable_time_delay),
                 canonical_ssp_file=canonical_ssp_file,
                 topheavy_ssp_file=topheavy_ssp_file,
                 topheavy_ssp_metallicity=args.topheavy_ssp_metallicity,
@@ -395,11 +500,14 @@ def main() -> None:
                 progress_path=progress,
                 print_progress=bool(args.print_progress),
                 sfr_model_parameters=sfr_model_parameters,
+                mass_function_model=mass_function_model,
+                metal_enrichment_parameters=metal_enrichment_parameters,
+                metallicity_random_seed=mode_metallicity_seed,
+                enable_time_delay=bool(args.enable_time_delay),
                 burst_scatter_dex=float(args.burst_scatter_dex),
                 burst_scatter_timescale_myr=float(args.burst_scatter_timescale_myr),
-                burst_scatter_random_seed=burst_seed,
+                burst_scatter_random_seed=mode_burst_scatter_seed,
                 burst_scatter_preserve_mean=not bool(args.disable_burst_scatter_mean_preservation),
-                mass_function_model=mass_function_model,
             )
 
         canonical = mode_results[IMF_MODE_CANONICAL]
@@ -422,7 +530,6 @@ def main() -> None:
         payload[f"{z_tag}_bin_centers"] = centers
         payload[f"{z_tag}_bin_width"] = bin_width
         payload[f"{z_tag}_seed"] = np.asarray([seed], dtype=int)
-        payload[f"{z_tag}_burst_scatter_seed"] = np.asarray([-1 if burst_seed is None else int(burst_seed)], dtype=int)
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_intrinsic_phi"] = canonical_phi_intrinsic
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_intrinsic_phi_sigma"] = canonical_phi_intrinsic_sigma
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_phi"] = canonical_phi_final
@@ -450,10 +557,20 @@ def main() -> None:
             [float(canonical["metadata"].get("topheavy_light_fraction_median", 0.0))],
             dtype=float,
         )
+        payload[f"{z_tag}_{IMF_MODE_CANONICAL}_final_gas_metallicity_zsun_median_by_mass"] = np.asarray(
+            canonical["metadata"].get("final_gas_metallicity_zsun_median_by_mass", np.full(args.N_mass, np.nan)),
+            dtype=float,
+        )
+        payload[f"{z_tag}_{IMF_MODE_CANONICAL}_birth_metallicity_zsun_starforming_median_by_mass"] = np.asarray(
+            canonical["metadata"].get(
+                "birth_metallicity_zsun_starforming_median_by_mass",
+                np.full(args.N_mass, np.nan),
+            ),
+            dtype=float,
+        )
 
         summary_lines.append(f"z={z_obs:g}")
         summary_lines.append(f"  seed={seed}")
-        summary_lines.append(f"  burst_scatter_seed={burst_seed}")
         summary_lines.append(
             f"  {IMF_MODE_CANONICAL}_sampling_seconds={float(canonical['metadata']['sampling_seconds']):.3f}"
         )
@@ -469,6 +586,16 @@ def main() -> None:
         )
         summary_lines.append(
             f"  {IMF_MODE_CANONICAL}_phi_median={float(np.nanmedian(canonical_phi_final[np.isfinite(canonical_phi_final)])):.6e}"
+        )
+        summary_lines.append(
+            "  "
+            f"{IMF_MODE_CANONICAL}_final_gas_metallicity_zsun_median="
+            f"{canonical['metadata'].get('final_gas_metallicity_zsun_median')}"
+        )
+        summary_lines.append(
+            "  "
+            f"{IMF_MODE_CANONICAL}_birth_metallicity_zsun_starforming_median="
+            f"{canonical['metadata'].get('birth_metallicity_zsun_starforming_median')}"
         )
 
         for imf_mode in variant_modes:
@@ -522,6 +649,17 @@ def main() -> None:
                 [float(result["metadata"].get("topheavy_light_fraction_median", 0.0))],
                 dtype=float,
             )
+            payload[f"{z_tag}_{imf_mode}_final_gas_metallicity_zsun_median_by_mass"] = np.asarray(
+                result["metadata"].get("final_gas_metallicity_zsun_median_by_mass", np.full(args.N_mass, np.nan)),
+                dtype=float,
+            )
+            payload[f"{z_tag}_{imf_mode}_birth_metallicity_zsun_starforming_median_by_mass"] = np.asarray(
+                result["metadata"].get(
+                    "birth_metallicity_zsun_starforming_median_by_mass",
+                    np.full(args.N_mass, np.nan),
+                ),
+                dtype=float,
+            )
 
             overlap = np.isfinite(ratio) & np.isfinite(canonical_phi_final) & np.isfinite(phi_final)
             summary_lines.append(f"  {imf_mode}_sampling_seconds={float(result['metadata']['sampling_seconds']):.3f}")
@@ -534,6 +672,16 @@ def main() -> None:
                 "  "
                 f"{imf_mode}_topheavy_light_fraction_median="
                 f"{float(result['metadata'].get('topheavy_light_fraction_median', 0.0)):.6f}"
+            )
+            summary_lines.append(
+                "  "
+                f"{imf_mode}_final_gas_metallicity_zsun_median="
+                f"{result['metadata'].get('final_gas_metallicity_zsun_median')}"
+            )
+            summary_lines.append(
+                "  "
+                f"{imf_mode}_birth_metallicity_zsun_starforming_median="
+                f"{result['metadata'].get('birth_metallicity_zsun_starforming_median')}"
             )
             if np.any(overlap):
                 summary_lines.append(f"  {imf_mode}_ratio_median={float(np.nanmedian(ratio[overlap])):.6f}")
