@@ -376,6 +376,10 @@ def main() -> None:
             [not bool(args.disable_burst_scatter_mean_preservation)],
             dtype=bool,
         ),
+        "burst_scatter_mass_conserving": np.asarray(
+            [not bool(args.disable_burst_scatter_mean_preservation)],
+            dtype=bool,
+        ),
         "stochastic_metallicity_enabled": np.asarray([bool(args.enable_stochastic_metallicity)]),
         "metallicity_random_seed": np.asarray(
             [-1 if args.metallicity_random_seed is None else int(args.metallicity_random_seed)],
@@ -438,6 +442,7 @@ def main() -> None:
         f"burst_scatter_timescale_myr: {float(args.burst_scatter_timescale_myr)}",
         f"burst_scatter_random_seed: {args.burst_scatter_random_seed}",
         f"burst_scatter_preserve_mean: {not bool(args.disable_burst_scatter_mean_preservation)}",
+        f"burst_scatter_mass_conserving: {not bool(args.disable_burst_scatter_mean_preservation)}",
         f"stochastic_metallicity_enabled: {bool(args.enable_stochastic_metallicity)}",
         f"metallicity_random_seed: {args.metallicity_random_seed}",
         f"metal_gas_fraction_of_baryons: {float(args.metal_gas_fraction_of_baryons)}",

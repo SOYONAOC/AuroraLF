@@ -630,6 +630,7 @@ def sample_uvlf_from_hmf(
         "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
         "burst_scatter_random_seed": burst_scatter_random_seed,
         "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
+        "burst_scatter_mass_conserving": bool(burst_scatter_preserve_mean),
         "sfr_model_parameters": {
             "epsilon_0": sfr_model_parameters.epsilon_0,
             "characteristic_mass": sfr_model_parameters.characteristic_mass,
