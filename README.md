@@ -466,7 +466,8 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `burst_scatter_random_seed`
   burst scatter 随机种子；若未提供，则复用该 halo 的 MAH `random_seed`
 - `burst_scatter_preserve_mean`
-  是否使用 unit-mean lognormal shift，使 ensemble-mean SFR 不因 scatter 系统性升高；默认 `True`
+  是否对每条 halo 的 burst 后 SFR 逐条归一化，使 `integral SFR dt` 与 no-burst 历史一致；默认 `True`。
+  关闭后仅使用原始 lognormal multiplier，不保证单条 halo 的形成恒星质量守恒
 
 输出：
 
@@ -504,7 +505,7 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `gas_mass_grid`
   若启用金属演化，返回诊断 gas reservoir mass，单位 `Msun`
 - `metadata`
-  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`topheavy_candidate_source_fraction`、`stochastic_metallicity_enabled`、`final_gas_metallicity_zsun_median`、`birth_metallicity_zsun_starforming_median`、`burst_scatter_dex`、`burst_sfr_multiplier_median`、`enable_time_delay` 和各阶段耗时
+  包含 `n_tracks`、`steps_per_halo`、`workers`、`canonical_ssp_file`、`topheavy_ssp_file`、`imf_mode`、`topheavy_source_fraction`、`topheavy_candidate_source_fraction`、`stochastic_metallicity_enabled`、`final_gas_metallicity_zsun_median`、`birth_metallicity_zsun_starforming_median`、`burst_scatter_dex`、`burst_scatter_mass_conserving`、`burst_sfr_multiplier_median`、`enable_time_delay` 和各阶段耗时
 
 说明：
 
@@ -599,7 +600,7 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - `burst_scatter_random_seed`
   burst scatter 随机种子；外层每个质量点会使用 `burst_scatter_random_seed + mass_index`
 - `burst_scatter_preserve_mean`
-  是否保持 lognormal multiplier 的 ensemble mean 为 1；默认 `True`
+  是否对每条 halo 的 burst 后 SFR 逐条归一化，使 `integral SFR dt` 与 no-burst 历史一致；默认 `True`
 
 输出：
 
@@ -650,6 +651,8 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   关闭该 gate 时可把 `IMFTransitionParameters.metallicity_topheavy_max_zsun` 设为 `None`
 - `burst_scatter_dex > 0` 时，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
   canonical 与 top-heavy mode 若使用同一个 `burst_scatter_random_seed`，会共享同一组 burst realization
+- 默认 `burst_scatter_preserve_mean=True` 时，每条 halo 的 burst 历史会做 mass-conserving 归一化：
+  `SFR_burst(t) = SFR_0(t) B(t) integral SFR_0 dt / integral SFR_0(t) B(t) dt`
 
 最小调用：
 
@@ -726,9 +729,9 @@ PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-ru
   burst scatter 随机种子；生产脚本对不同红移加 `1000*z_index`，对不同 IMF mode 保持相同 seed，
   因此 canonical 与 top-heavy 分支使用同一组 burst realization
 - `--disable-burst-scatter-mean-preservation`
-  关闭 unit-mean lognormal 修正；默认不关闭
+  关闭逐 halo 的 mass-conserving burst 归一化；默认不关闭。该参数名沿用历史接口
 
-脚本输出的 `.npz` 会记录 `burst_scatter_dex`、`burst_scatter_timescale_myr`、`burst_scatter_random_seed` 和 `burst_scatter_preserve_mean`。
+脚本输出的 `.npz` 会记录 `burst_scatter_dex`、`burst_scatter_timescale_myr`、`burst_scatter_random_seed`、`burst_scatter_preserve_mean` 和 `burst_scatter_mass_conserving`。
 
 ## `auroralf.uvlf.compute_dust_attenuated_uvlf()`
 

@@ -199,6 +199,15 @@ def _apply_burst_scatter_to_sfr_grid(
             scatter_dex=scatter_dex,
             preserve_mean=preserve_mean,
         )
+        if preserve_mean and row_multiplier.size >= 2:
+            source_time = time[halo_index, source]
+            if np.any(np.diff(source_time) <= 0.0):
+                raise ValueError("t_grid values for active SFR bins must be strictly increasing")
+            original_mass = float(np.trapezoid(sfr[halo_index, source], source_time))
+            burst_mass = float(np.trapezoid(sfr[halo_index, source] * row_multiplier, source_time))
+            if burst_mass <= 0.0:
+                raise RuntimeError("burst SFR normalization integral must be positive")
+            row_multiplier = row_multiplier * (original_mass / burst_mass)
         multiplier[halo_index, source] = row_multiplier
         burst_sfr[halo_index, source] = sfr[halo_index, source] * row_multiplier
 
@@ -558,6 +567,7 @@ def run_halo_uv_pipeline(
         if burst_scatter_seed_used is None
         else int(burst_scatter_seed_used),
         "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
+        "burst_scatter_mass_conserving": bool(burst_scatter_preserve_mean),
         "burst_sfr_multiplier_median": float(np.median(burst_sfr_multiplier_grid[starforming_grid]))
         if np.any(starforming_grid)
         else 1.0,
