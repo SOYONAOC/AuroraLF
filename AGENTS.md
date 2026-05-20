@@ -24,6 +24,8 @@ code-level detail.
 
 - `auroralf/mah/`: Monte Carlo halo assembly history generation.
 - `auroralf/sfr/`: star-formation model utilities.
+- `auroralf/chemistry/`: stochastic one-zone metal enrichment diagnostics
+  along fixed MAH/SFR histories.
 - `auroralf/ssp/`: SSP loading and UV convolution utilities.
 - `auroralf/uvlf/`: UV luminosity function sampling, HMF weighting, dust
   correction, and Pop II IMF mode logic.
@@ -96,11 +98,15 @@ default paths, or silently skipping the calculation.
 - Fail fast. Do not hide missing data, failed imports, invalid parameters, or
   failed jobs with broad fallbacks, placeholder arrays, synthetic data, cached
   plots, or silent default values.
+- `main` is the unified production branch. Do not maintain a separate old
+  `topheavyIMF` path in parallel; use switches in the unified model for
+  historical comparisons.
 - Preserve units and conversions:
   - halo mass: `Msun`
   - SFR: `Msun/yr`
   - UV luminosity: `erg/s/Hz`
   - HMF: `Mpc^-3 Msun^-1`
+  - metallicity gates and chemistry summaries: linear `Z/Zsun`
   - SSP tables commonly provide ages in `Myr`; convert to `Gyr` before
     convolving with MAH/SFR histories stored in `Gyr`.
 - The current production HMF path is `hmf` Reed07. Deprecated model names such
@@ -109,9 +115,43 @@ default paths, or silently skipping the calculation.
 - Pop II top-heavy IMF variants are source-time gated. Do not replace the SSP
   globally when the intended behavior is `z10_mild_topheavy` or
   `mah_burst_mild_topheavy`.
+- Current IMF modes are `canonical`, `z10_mild_topheavy`, and
+  `mah_burst_mild_topheavy`. The default transition parameters are
+  `z_topheavy_min=10.0`, `growth_time_threshold_myr=50.0`, and
+  `metallicity_topheavy_max_zsun=0.05`.
+- `IMFTransitionParameters.metallicity_topheavy_max_zsun=None` disables the
+  birth-metallicity gate and recovers the historical top-heavy behavior. The
+  production CLI equivalent is `--disable-metallicity-topheavy-gate`.
+- Non-canonical IMF modes with a non-`None` metallicity gate require
+  `MetalEnrichmentParameters` / `--enable-stochastic-metallicity`; keep this as
+  an explicit error rather than silently dropping the gate.
+- `topheavy_ssp_metallicity` selects the HDF5 SSP template metallicity. It is
+  not the gas birth-metallicity gate, even though the default value is also
+  `0.05 Zsun`.
+- Stochastic metallicity evolution is diagnostic along fixed MAH/SFR tracks and
+  must not feed back into the SFR model. `birth_metallicity_zsun_grid` is the
+  pre-star-formation metallicity used for IMF gating; `gas_metallicity_zsun_grid`
+  is the post-step gas metallicity.
+- The calibrated top-heavy metal yield multiplier is
+  `CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER = 1.28`. Use larger values only for an
+  explicit parameter sweep or historical comparison.
+- The SFR delay model is controlled by `enable_time_delay`. Low-level Python
+  APIs keep `False` as their backward-compatible default; the production UVLF
+  script defaults to delay enabled and uses `--disable-time-delay` only for
+  historical no-delay comparisons.
+- `burst_scatter_dex > 0` applies a correlated lognormal multiplier to the SFR
+  after the delay-SFR calculation and before metallicity/UV convolution. The
+  default correlation timescale is `20 Myr`.
+- The default burst scatter is mass-conserving per halo:
+  `SFR_burst(t) = SFR_0(t) B(t) integral SFR_0 dt / integral SFR_0(t) B(t) dt`.
+  This is recorded as `burst_scatter_mass_conserving=True`. Do not switch to
+  non-conserving scatter unless the user explicitly asks for that comparison.
 - UV convolution should use valid active history segments only. Do not adjust
   scientific parameters, mass cuts, redshift cuts, or units just to make a test
   or run finish.
+- HDF5 top-heavy SSP loading requires an exact linear `Z/Zsun` bin, for example
+  `0.05`. If required SSP data or `h5py` are missing, surface the exact missing
+  dependency/path.
 - The dust-corrected UVLF currently applies the physical clipping
   `phi_obs = min(phi_obs_raw, phi_nodust_obs)`.
 
@@ -124,10 +164,43 @@ instead of running the production target directly on a login node:
 PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --canonical-only
 ```
 
-The target script `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` requires
-a SLURM allocation. The older
+The target script `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` is the
+unified production entry point for canonical, top-heavy, metallicity-gated, and
+burst-scatter UVLF runs. It requires a SLURM allocation and defaults to
+`enable_time_delay=True`. The older
 `scripts/run/run_uvlf_mass_function_compare_full.py` entry point is intentionally
 disabled and points users to the Reed07 HMF workflow.
+
+When running non-canonical IMF modes with the default metallicity gate, include
+the stochastic-metallicity switch, for example:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --enable-stochastic-metallicity --metallicity-random-seed 123
+```
+
+Use `scripts/analysis/run_metallicity_history_grid.py` for representative halo
+metallicity histories and `scripts/analysis/sweep_metal_yield_multiplier_mzr.py`
+for MZR yield-multiplier checks. Plotting scripts under `scripts/plot/` and
+`scripts/analysis/` expect real observational/source files under
+`external_data/`; do not synthesize missing observations.
+
+## Verification
+
+Run the full focused suite after model changes:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests
+```
+
+For narrower edits, use the relevant tests:
+
+- IMF and source-time gate behavior: `tests/test_imf_modes.py`
+- stochastic metallicity and pipeline metadata: `tests/test_chemistry.py`
+- mass-conserving SFR burst scatter and production CLI defaults:
+  `tests/test_burst_scatter.py`
+- HMF validation and Reed07 unit handling: `tests/test_hmf_sampling.py`
+- metallicity history summaries: `tests/test_metallicity_history_summary.py`
+- MZR calibration helpers: `tests/test_mzr_constraints.py`
 
 ## Editing Rules
 
