@@ -219,6 +219,21 @@ def test_pipeline_requires_metallicity_when_topheavy_metallicity_gate_is_enabled
         )
 
 
+def test_canonical_pipeline_metadata_does_not_report_topheavy_metallicity_gate() -> None:
+    result = run_halo_uv_pipeline(
+        n_tracks=1,
+        z_final=6.0,
+        Mh_final=1.0e10,
+        z_start_max=10.0,
+        n_grid=4,
+        random_seed=101,
+        workers=1,
+        imf_mode="canonical",
+    )
+
+    assert result.metadata["metallicity_topheavy_gate_applied"] is False
+
+
 def test_pipeline_applies_topheavy_metallicity_gate_to_birth_metallicity() -> None:
     result = run_halo_uv_pipeline(
         n_tracks=2,
