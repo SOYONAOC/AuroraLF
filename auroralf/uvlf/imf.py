@@ -24,6 +24,7 @@ DEFAULT_MILD_TOPHEAVY_SSP_FILE = (
     "SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5"
 )
 DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY = 0.05
+DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 
 
 @dataclass(frozen=True)
@@ -33,10 +34,13 @@ class IMFTransitionParameters:
     The MAH-burst mode marks a star-forming time step as mild top-heavy when the
     halo growth time Mh / dMh_dt is shorter than ``growth_time_threshold_myr``.
     The code assumes dMh_dt is stored in Msun/Gyr, matching the SFR module.
+    When ``metallicity_topheavy_max_zsun`` is not ``None``, a source time must
+    also have pre-star-formation birth metallicity below this threshold.
     """
 
     z_topheavy_min: float = 10.0
     growth_time_threshold_myr: float = 50.0
+    metallicity_topheavy_max_zsun: float | None = DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN
 
 
 DEFAULT_IMF_TRANSITION_PARAMETERS = IMFTransitionParameters()
@@ -64,6 +68,7 @@ def compute_topheavy_source_flags(
     mh_grid: np.ndarray,
     dmhdt_grid: np.ndarray,
     active_grid: np.ndarray,
+    birth_metallicity_zsun_grid: np.ndarray | None = None,
     transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
 ) -> np.ndarray:
     """Return True where source-time star formation should use the mild top-heavy SSP."""
@@ -86,9 +91,27 @@ def compute_topheavy_source_flags(
     if mode == IMF_MODE_CANONICAL:
         return np.zeros_like(active, dtype=bool)
 
+    metallicity_max = transition_parameters.metallicity_topheavy_max_zsun
+    if metallicity_max is None:
+        metallicity_gate = np.ones_like(active, dtype=bool)
+    else:
+        if float(metallicity_max) <= 0.0:
+            raise ValueError("metallicity_topheavy_max_zsun must be positive when provided")
+        if birth_metallicity_zsun_grid is None:
+            raise ValueError(
+                "birth_metallicity_zsun_grid must be provided when metallicity_topheavy_max_zsun is set"
+            )
+        birth_metallicity = np.asarray(birth_metallicity_zsun_grid, dtype=float)
+        if birth_metallicity.shape != mh.shape:
+            raise ValueError("birth_metallicity_zsun_grid must match mh_grid shape")
+        invalid_active_metallicity = active & (~np.isfinite(birth_metallicity) | (birth_metallicity < 0.0))
+        if np.any(invalid_active_metallicity):
+            raise ValueError("birth_metallicity_zsun_grid must be finite and non-negative for active sources")
+        metallicity_gate = birth_metallicity <= float(metallicity_max)
+
     z_gate = active & np.isfinite(z) & (z >= float(transition_parameters.z_topheavy_min))
     if mode == IMF_MODE_Z_GATED_MILD_TOPHEAVY:
-        return z_gate
+        return z_gate & metallicity_gate
 
     threshold_gyr = float(transition_parameters.growth_time_threshold_myr) / 1.0e3
     if threshold_gyr <= 0.0:
@@ -97,4 +120,4 @@ def compute_topheavy_source_flags(
     growth_time_gyr = np.full_like(mh, np.inf, dtype=float)
     positive_growth = np.isfinite(mh) & np.isfinite(dmhdt) & (mh > 0.0) & (dmhdt > 0.0)
     growth_time_gyr[positive_growth] = mh[positive_growth] / dmhdt[positive_growth]
-    return z_gate & (growth_time_gyr <= threshold_gyr)
+    return z_gate & (growth_time_gyr <= threshold_gyr) & metallicity_gate

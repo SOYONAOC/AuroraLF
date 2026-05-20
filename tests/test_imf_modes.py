@@ -48,7 +48,10 @@ def test_z_gated_mode_flags_only_active_high_redshift_sources() -> None:
         mh_grid=mh_grid,
         dmhdt_grid=dmhdt_grid,
         active_grid=active_grid,
-        transition_parameters=IMFTransitionParameters(z_topheavy_min=10.0),
+        transition_parameters=IMFTransitionParameters(
+            z_topheavy_min=10.0,
+            metallicity_topheavy_max_zsun=None,
+        ),
     )
 
     np.testing.assert_array_equal(flags, np.array([[True, True, False, False]]))
@@ -69,6 +72,7 @@ def test_mah_burst_mode_requires_fast_growth_time() -> None:
         transition_parameters=IMFTransitionParameters(
             z_topheavy_min=10.0,
             growth_time_threshold_myr=200.0,
+            metallicity_topheavy_max_zsun=None,
         ),
     )
 
@@ -90,6 +94,70 @@ def test_canonical_mode_returns_no_topheavy_flags() -> None:
     )
 
     np.testing.assert_array_equal(flags, np.zeros_like(active_grid, dtype=bool))
+
+
+def test_z_gated_mode_requires_low_birth_metallicity_when_configured() -> None:
+    z_grid = np.array([[12.0, 12.0, 12.0, 9.0]])
+    mh_grid = np.full_like(z_grid, 1.0e10)
+    dmhdt_grid = np.full_like(z_grid, 1.0e11)
+    active_grid = np.ones_like(z_grid, dtype=bool)
+    birth_metallicity = np.array([[0.01, 0.05, 0.051, 0.01]], dtype=float)
+
+    flags = compute_topheavy_source_flags(
+        imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
+        z_grid=z_grid,
+        mh_grid=mh_grid,
+        dmhdt_grid=dmhdt_grid,
+        active_grid=active_grid,
+        birth_metallicity_zsun_grid=birth_metallicity,
+        transition_parameters=IMFTransitionParameters(
+            z_topheavy_min=10.0,
+            metallicity_topheavy_max_zsun=0.05,
+        ),
+    )
+
+    np.testing.assert_array_equal(flags, np.array([[True, True, False, False]]))
+
+
+def test_mah_burst_mode_requires_redshift_growth_and_low_birth_metallicity() -> None:
+    z_grid = np.array([[12.0, 12.0, 12.0, 12.0]])
+    mh_grid = np.full_like(z_grid, 1.0e10)
+    dmhdt_grid = np.array([[1.0e11, 1.0e11, 2.0e10, 1.0e11]])
+    active_grid = np.ones_like(z_grid, dtype=bool)
+    birth_metallicity = np.array([[0.01, 0.08, 0.01, 0.05]], dtype=float)
+
+    flags = compute_topheavy_source_flags(
+        imf_mode=IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
+        z_grid=z_grid,
+        mh_grid=mh_grid,
+        dmhdt_grid=dmhdt_grid,
+        active_grid=active_grid,
+        birth_metallicity_zsun_grid=birth_metallicity,
+        transition_parameters=IMFTransitionParameters(
+            z_topheavy_min=10.0,
+            growth_time_threshold_myr=200.0,
+            metallicity_topheavy_max_zsun=0.05,
+        ),
+    )
+
+    np.testing.assert_array_equal(flags, np.array([[True, False, False, True]]))
+
+
+def test_metallicity_gate_requires_birth_metallicity_grid() -> None:
+    z_grid = np.array([[12.0, 12.0]])
+    mh_grid = np.full_like(z_grid, 1.0e10)
+    dmhdt_grid = np.full_like(z_grid, 1.0e11)
+    active_grid = np.ones_like(z_grid, dtype=bool)
+
+    with pytest.raises(ValueError, match="birth_metallicity_zsun_grid"):
+        compute_topheavy_source_flags(
+            imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
+            z_grid=z_grid,
+            mh_grid=mh_grid,
+            dmhdt_grid=dmhdt_grid,
+            active_grid=active_grid,
+            transition_parameters=IMFTransitionParameters(metallicity_topheavy_max_zsun=0.05),
+        )
 
 
 def test_variable_imf_convolution_separates_canonical_and_topheavy_components() -> None:
