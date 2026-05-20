@@ -528,7 +528,7 @@ def run_halo_uv_pipeline(
             if imf_transition_parameters.metallicity_topheavy_max_zsun is None
             else float(imf_transition_parameters.metallicity_topheavy_max_zsun),
         },
-        "metallicity_topheavy_gate_applied": metallicity_topheavy_max_zsun is not None,
+        "metallicity_topheavy_gate_applied": imf_mode != IMF_MODE_CANONICAL and metallicity_topheavy_max_zsun is not None,
         "topheavy_candidate_source_fraction": float(np.mean(candidate_topheavy_source_grid[starforming_grid]))
         if np.any(starforming_grid)
         else 0.0,
