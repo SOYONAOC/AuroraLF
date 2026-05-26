@@ -10,7 +10,14 @@ from typing import Any
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
-from auroralf.chemistry import MetalEnrichmentParameters, MetallicityEvolutionResult, evolve_stochastic_metallicity
+from auroralf.chemistry import (
+    MZRBirthMetallicityParameters,
+    MZRBirthMetallicityResult,
+    MetalEnrichmentParameters,
+    MetallicityEvolutionResult,
+    compute_mzr_birth_metallicity,
+    evolve_stochastic_metallicity,
+)
 from auroralf.mah import Cosmology, HaloHistoryResult, generate_halo_histories
 from auroralf.sfr import (
     DEFAULT_SFR_MODEL_PARAMETERS,
@@ -355,6 +362,7 @@ def run_halo_uv_pipeline(
     ssp_lookback_max_myr: float = SSP_UV_LOOKBACK_MAX_MYR,
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
     metal_enrichment_parameters: MetalEnrichmentParameters | None = None,
+    mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
     metallicity_random_seed: int | None = None,
     burst_scatter_dex: float = 0.0,
     burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
@@ -373,12 +381,13 @@ def run_halo_uv_pipeline(
     metallicity_topheavy_max_zsun = imf_transition_parameters.metallicity_topheavy_max_zsun
     if metallicity_topheavy_max_zsun is not None and float(metallicity_topheavy_max_zsun) <= 0.0:
         raise ValueError("metallicity_topheavy_max_zsun must be positive when provided")
-    if (
-        imf_mode != IMF_MODE_CANONICAL
-        and metallicity_topheavy_max_zsun is not None
-        and metal_enrichment_parameters is None
-    ):
-        raise ValueError("metal_enrichment_parameters must be provided when metallicity_topheavy_max_zsun is set")
+    if metal_enrichment_parameters is not None and mzr_metallicity_parameters is not None:
+        raise ValueError("provide only one birth metallicity source: metal_enrichment_parameters or mzr_metallicity_parameters")
+    birth_metallicity_source_enabled = metal_enrichment_parameters is not None or mzr_metallicity_parameters is not None
+    if imf_mode != IMF_MODE_CANONICAL and metallicity_topheavy_max_zsun is not None and not birth_metallicity_source_enabled:
+        raise ValueError(
+            "a birth metallicity source must be provided when metallicity_topheavy_max_zsun is set"
+        )
     if int(n_grid) < 2:
         raise ValueError("n_grid must be at least 2")
     astro = _build_astropy_cosmology(cosmology)
@@ -461,6 +470,9 @@ def run_halo_uv_pipeline(
     topheavy_source_grid = candidate_topheavy_source_grid
 
     metallicity_result: MetallicityEvolutionResult | None = None
+    mzr_metallicity_result: MZRBirthMetallicityResult | None = None
+    birth_metallicity_zsun_grid: np.ndarray | None = None
+    metallicity_source = "none"
     if metal_enrichment_parameters is not None:
         metallicity_result = evolve_stochastic_metallicity(
             t_grid_gyr=t_grid,
@@ -476,6 +488,28 @@ def run_halo_uv_pipeline(
             topheavy_birth_metallicity_max_zsun=metallicity_topheavy_max_zsun,
         )
         topheavy_source_grid = np.asarray(metallicity_result.topheavy_source_grid, dtype=bool)
+        birth_metallicity_zsun_grid = np.asarray(metallicity_result.birth_metallicity_zsun_grid, dtype=float)
+        metallicity_source = "one_zone"
+    elif mzr_metallicity_parameters is not None:
+        mzr_metallicity_result = compute_mzr_birth_metallicity(
+            t_grid_gyr=t_grid,
+            z_grid=z_grid,
+            sfr_grid=sfr_grid,
+            active_grid=starforming_grid,
+            parameters=mzr_metallicity_parameters,
+            random_seed=metallicity_random_seed,
+        )
+        birth_metallicity_zsun_grid = np.asarray(mzr_metallicity_result.birth_metallicity_zsun_grid, dtype=float)
+        topheavy_source_grid = compute_topheavy_source_flags(
+            imf_mode=imf_mode,
+            z_grid=z_grid,
+            mh_grid=mh_grid,
+            dmhdt_grid=dmhdt_grid,
+            active_grid=starforming_grid,
+            birth_metallicity_zsun_grid=birth_metallicity_zsun_grid,
+            transition_parameters=imf_transition_parameters,
+        )
+        metallicity_source = "mzr"
 
     floor_mass = np.zeros_like(redshift_grid, dtype=float)
     active_flat = active_grid.reshape(-1)
@@ -542,10 +576,15 @@ def run_halo_uv_pipeline(
         "topheavy_light_fraction_median": float(np.median(topheavy_light_fraction[positive_light]))
         if np.any(positive_light)
         else 0.0,
+        "metallicity_source": metallicity_source,
         "stochastic_metallicity_enabled": metallicity_result is not None,
+        "mzr_metallicity_enabled": mzr_metallicity_result is not None,
         "metallicity_random_seed": metallicity_random_seed,
         "metal_enrichment_parameters": metal_enrichment_parameters.as_metadata()
         if metal_enrichment_parameters is not None
+        else None,
+        "mzr_metallicity_parameters": mzr_metallicity_parameters.as_metadata()
+        if mzr_metallicity_parameters is not None
         else None,
         "final_gas_metallicity_zsun_median": float(
             np.nanmedian(metallicity_result.gas_metallicity_zsun_grid[:, -1])
@@ -553,9 +592,9 @@ def run_halo_uv_pipeline(
         if metallicity_result is not None
         else None,
         "birth_metallicity_zsun_starforming_median": float(
-            np.nanmedian(metallicity_result.birth_metallicity_zsun_grid[starforming_grid])
+            np.nanmedian(birth_metallicity_zsun_grid[starforming_grid])
         )
-        if metallicity_result is not None and np.any(starforming_grid)
+        if birth_metallicity_zsun_grid is not None and np.any(starforming_grid)
         else None,
         "enable_time_delay": enable_time_delay,
         "time_grid_mode": "uniform_in_t",
@@ -608,9 +647,7 @@ def run_halo_uv_pipeline(
         gas_metallicity_zsun_grid=None
         if metallicity_result is None
         else np.asarray(metallicity_result.gas_metallicity_zsun_grid, dtype=float),
-        birth_metallicity_zsun_grid=None
-        if metallicity_result is None
-        else np.asarray(metallicity_result.birth_metallicity_zsun_grid, dtype=float),
+        birth_metallicity_zsun_grid=None if birth_metallicity_zsun_grid is None else birth_metallicity_zsun_grid,
         metal_mass_grid=None
         if metallicity_result is None
         else np.asarray(metallicity_result.metal_mass_grid, dtype=float),
