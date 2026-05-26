@@ -60,7 +60,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Compare UVLFs for canonical Pop II and two mild top-heavy Pop II IMF variants. "
-            "The variants are source-time z-gated and MAH-burst-gated, not global SSP replacements."
+            "The variants are source-time gated by metallicity and optionally MAH growth, "
+            "not global SSP replacements."
         )
     )
     parser.add_argument("--z-values", nargs="+", type=float, default=list(DEFAULT_Z_VALUES))
@@ -104,6 +105,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--topheavy-ssp-file", type=str, default=DEFAULT_MILD_TOPHEAVY_SSP_FILE)
     parser.add_argument("--topheavy-ssp-metallicity", type=float, default=DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY)
     parser.add_argument("--z-topheavy-min", type=float, default=DEFAULT_IMF_TRANSITION_PARAMETERS.z_topheavy_min)
+    parser.add_argument(
+        "--enable-source-redshift-topheavy-gate",
+        action="store_true",
+        help="Enable the historical source-time z >= z_topheavy_min gate for top-heavy Pop II comparisons.",
+    )
     parser.add_argument("--metallicity-topheavy-max-zsun", type=float, default=DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN)
     parser.add_argument("--disable-metallicity-topheavy-gate", action="store_true")
     parser.add_argument(
@@ -318,6 +324,7 @@ def main() -> None:
 
     imf_transition_parameters = IMFTransitionParameters(
         z_topheavy_min=float(args.z_topheavy_min),
+        source_redshift_gate_enabled=bool(args.enable_source_redshift_topheavy_gate),
         growth_time_threshold_myr=float(args.growth_time_threshold_myr),
         metallicity_topheavy_max_zsun=metallicity_topheavy_max_zsun,
     )
@@ -407,6 +414,10 @@ def main() -> None:
             dtype=float,
         ),
         "z_topheavy_min": np.asarray([float(imf_transition_parameters.z_topheavy_min)], dtype=float),
+        "source_redshift_gate_enabled": np.asarray(
+            [bool(imf_transition_parameters.source_redshift_gate_enabled)],
+            dtype=bool,
+        ),
         "growth_time_threshold_myr": np.asarray(
             [float(imf_transition_parameters.growth_time_threshold_myr)],
             dtype=float,
@@ -422,6 +433,7 @@ def main() -> None:
         f"topheavy_ssp_metallicity: {args.topheavy_ssp_metallicity}",
         f"imf_modes: {' '.join(imf_modes)}",
         f"z_topheavy_min: {imf_transition_parameters.z_topheavy_min:g}",
+        f"source_redshift_gate_enabled: {bool(imf_transition_parameters.source_redshift_gate_enabled)}",
         f"growth_time_threshold_myr: {imf_transition_parameters.growth_time_threshold_myr:g}",
         f"metallicity_topheavy_max_zsun: {metallicity_topheavy_max_zsun}",
         f"workers: {args.workers}",

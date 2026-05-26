@@ -142,6 +142,7 @@ def test_run_script_help_exposes_burst_scatter_arguments() -> None:
     assert "--burst-scatter-random-seed" in completed.stdout
     assert "--enable-time-delay" in completed.stdout
     assert "--disable-time-delay" in completed.stdout
+    assert "--enable-source-redshift-topheavy-gate" in completed.stdout
 
 
 def test_run_script_defaults_to_time_delay(monkeypatch: pytest.MonkeyPatch) -> None:

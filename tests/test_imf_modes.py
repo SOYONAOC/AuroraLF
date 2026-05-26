@@ -36,7 +36,7 @@ def test_validate_imf_mode_rejects_unknown_mode() -> None:
         validate_imf_mode("global_extreme_topheavy")
 
 
-def test_z_gated_mode_flags_only_active_high_redshift_sources() -> None:
+def test_legacy_z_mode_defaults_to_active_sources_without_redshift_gate() -> None:
     z_grid = np.array([[12.0, 10.0, 9.9, 12.0]])
     mh_grid = np.full_like(z_grid, 1.0e10)
     dmhdt_grid = np.full_like(z_grid, 1.0e11)
@@ -50,6 +50,28 @@ def test_z_gated_mode_flags_only_active_high_redshift_sources() -> None:
         active_grid=active_grid,
         transition_parameters=IMFTransitionParameters(
             z_topheavy_min=10.0,
+            metallicity_topheavy_max_zsun=None,
+        ),
+    )
+
+    np.testing.assert_array_equal(flags, np.array([[True, True, True, False]]))
+
+
+def test_historical_source_redshift_gate_can_be_enabled() -> None:
+    z_grid = np.array([[12.0, 10.0, 9.9, 12.0]])
+    mh_grid = np.full_like(z_grid, 1.0e10)
+    dmhdt_grid = np.full_like(z_grid, 1.0e11)
+    active_grid = np.array([[True, True, True, False]])
+
+    flags = compute_topheavy_source_flags(
+        imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
+        z_grid=z_grid,
+        mh_grid=mh_grid,
+        dmhdt_grid=dmhdt_grid,
+        active_grid=active_grid,
+        transition_parameters=IMFTransitionParameters(
+            z_topheavy_min=10.0,
+            source_redshift_gate_enabled=True,
             metallicity_topheavy_max_zsun=None,
         ),
     )
@@ -76,7 +98,7 @@ def test_mah_burst_mode_requires_fast_growth_time() -> None:
         ),
     )
 
-    np.testing.assert_array_equal(flags, np.array([[True, False, False, False]]))
+    np.testing.assert_array_equal(flags, np.array([[True, False, False, True]]))
 
 
 def test_canonical_mode_returns_no_topheavy_flags() -> None:
@@ -116,10 +138,10 @@ def test_z_gated_mode_requires_low_birth_metallicity_when_configured() -> None:
         ),
     )
 
-    np.testing.assert_array_equal(flags, np.array([[True, True, False, False]]))
+    np.testing.assert_array_equal(flags, np.array([[True, True, False, True]]))
 
 
-def test_mah_burst_mode_requires_redshift_growth_and_low_birth_metallicity() -> None:
+def test_mah_burst_mode_requires_growth_and_low_birth_metallicity() -> None:
     z_grid = np.array([[12.0, 12.0, 12.0, 12.0]])
     mh_grid = np.full_like(z_grid, 1.0e10)
     dmhdt_grid = np.array([[1.0e11, 1.0e11, 2.0e10, 1.0e11]])

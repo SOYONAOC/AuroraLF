@@ -28,7 +28,7 @@ OBS_FILES = {
 }
 MODE_LABELS = {
     "canonical": "canonical",
-    "z10_mild_topheavy": r"$z_{\rm src}\geq10$ TH",
+    "z10_mild_topheavy": "low-Z mild TH",
     "mah_burst_mild_topheavy": "MAH-burst TH",
 }
 MODE_COLORS = {
@@ -175,7 +175,7 @@ def main() -> None:
 
         for mode in mode_names:
             color = MODE_COLORS.get(mode, "0.4")
-            label = "gate TH" if single_mode and mode == "z10_mild_topheavy" else MODE_LABELS.get(mode, mode.replace("_", " "))
+            label = "low-Z TH" if single_mode and mode == "z10_mild_topheavy" else MODE_LABELS.get(mode, mode.replace("_", " "))
             phi_no = np.asarray(no_burst[f"{tag}_{mode}_phi"], dtype=float)
             phi_burst = np.asarray(burst[f"{tag}_{mode}_phi"], dtype=float)
             valid_no = np.isfinite(phi_no) & (phi_no > 0.0)

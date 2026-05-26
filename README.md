@@ -439,11 +439,14 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `imf_mode`
   Pop II IMF 模式，支持：
   - `"canonical"`：所有源时刻都使用 canonical Pop II SSP
-  - `"z10_mild_topheavy"`：源时刻满足 `z >= z_topheavy_min`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
-  - `"mah_burst_mild_topheavy"`：同时满足 `z >= z_topheavy_min`、`Mh / dMh_dt <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
+  - `"z10_mild_topheavy"`：保留的历史模式名；默认使用 active source-time 与 birth-metallicity gate，不再默认要求 `z >= z_topheavy_min`
+  - `"mah_burst_mild_topheavy"`：满足 `Mh / dMh_dt <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
 - `imf_transition_parameters`
-  `auroralf.uvlf.IMFTransitionParameters`，默认 `z_topheavy_min=10.0`、`growth_time_threshold_myr=50.0`、
-  `metallicity_topheavy_max_zsun=0.05`；若设为 `None`，则关闭金属丰度 gate
+  `auroralf.uvlf.IMFTransitionParameters`，默认
+  `source_redshift_gate_enabled=False`、`growth_time_threshold_myr=50.0`、
+  `metallicity_topheavy_max_zsun=0.05`。`z_topheavy_min=10.0` 只在显式启用
+  历史 source-redshift gate 时使用；若 `metallicity_topheavy_max_zsun` 设为
+  `None`，则关闭金属丰度 gate
 - `cosmology`
   `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
 - `random_seed`
@@ -514,9 +517,9 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
 - Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
 - 默认 mild top-heavy 还要求本步成星前 `Z_birth <= 0.05 Zsun`；这个阈值位于低金属 IMF 过渡区间内，并与当前 top-heavy SSP 的 `0.05 Zsun` 选择一致
-- 启用金属演化时，实际通过红移/MAH 和 birth-metallicity gate 的 top-heavy source-time 会同时决定 SSP kernel 与 `topheavy_yield_multiplier` 金属产额
+- 启用金属演化时，实际通过 MAH/growth 和 birth-metallicity gate 的 top-heavy source-time 会同时决定 SSP kernel 与 `topheavy_yield_multiplier` 金属产额
 - 当前标定值 `topheavy_yield_multiplier=1.28` 来自 `z=12.5` 代表性 halo 的 FIRE-2
-  高红移 MZR 约束；`3.0` 会使 redshift-gated top-heavy 分支明显过富集
+  高红移 MZR 约束；`3.0` 会使 mild top-heavy 分支明显过富集
 - 可选 burst scatter 使用
   `SFR_burst(t)=SFR_smooth(t) 10^Delta`，其中
   `Delta ~ Normal(-0.5 ln(10) sigma_burst^2, sigma_burst)`；该均值位移保证

@@ -36,9 +36,12 @@ class IMFTransitionParameters:
     The code assumes dMh_dt is stored in Msun/Gyr, matching the SFR module.
     When ``metallicity_topheavy_max_zsun`` is not ``None``, a source time must
     also have pre-star-formation birth metallicity below this threshold.
+    The historical source-redshift gate is retained for explicit comparisons
+    but is disabled by default.
     """
 
     z_topheavy_min: float = 10.0
+    source_redshift_gate_enabled: bool = False
     growth_time_threshold_myr: float = 50.0
     metallicity_topheavy_max_zsun: float | None = DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN
 
@@ -109,9 +112,13 @@ def compute_topheavy_source_flags(
             raise ValueError("birth_metallicity_zsun_grid must be finite and non-negative for active sources")
         metallicity_gate = birth_metallicity <= float(metallicity_max)
 
-    z_gate = active & np.isfinite(z) & (z >= float(transition_parameters.z_topheavy_min))
+    source_gate = active
+    if transition_parameters.source_redshift_gate_enabled:
+        source_gate = active & np.isfinite(z) & (z >= float(transition_parameters.z_topheavy_min))
+    # Historical production gate, kept here for provenance but not used by default:
+    # source_gate = active & np.isfinite(z) & (z >= float(transition_parameters.z_topheavy_min))
     if mode == IMF_MODE_Z_GATED_MILD_TOPHEAVY:
-        return z_gate & metallicity_gate
+        return source_gate & metallicity_gate
 
     threshold_gyr = float(transition_parameters.growth_time_threshold_myr) / 1.0e3
     if threshold_gyr <= 0.0:
@@ -120,4 +127,4 @@ def compute_topheavy_source_flags(
     growth_time_gyr = np.full_like(mh, np.inf, dtype=float)
     positive_growth = np.isfinite(mh) & np.isfinite(dmhdt) & (mh > 0.0) & (dmhdt > 0.0)
     growth_time_gyr[positive_growth] = mh[positive_growth] / dmhdt[positive_growth]
-    return z_gate & (growth_time_gyr <= threshold_gyr) & metallicity_gate
+    return source_gate & (growth_time_gyr <= threshold_gyr) & metallicity_gate
