@@ -523,6 +523,7 @@ def run_halo_uv_pipeline(
         "imf_mode": imf_mode,
         "imf_transition_parameters": {
             "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
+            "source_redshift_gate_enabled": bool(imf_transition_parameters.source_redshift_gate_enabled),
             "growth_time_threshold_myr": float(imf_transition_parameters.growth_time_threshold_myr),
             "metallicity_topheavy_max_zsun": None
             if imf_transition_parameters.metallicity_topheavy_max_zsun is None

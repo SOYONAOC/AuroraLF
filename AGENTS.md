@@ -117,8 +117,14 @@ default paths, or silently skipping the calculation.
   `mah_burst_mild_topheavy`.
 - Current IMF modes are `canonical`, `z10_mild_topheavy`, and
   `mah_burst_mild_topheavy`. The default transition parameters are
-  `z_topheavy_min=10.0`, `growth_time_threshold_myr=50.0`, and
-  `metallicity_topheavy_max_zsun=0.05`.
+  `source_redshift_gate_enabled=False`,
+  `growth_time_threshold_myr=50.0`, and
+  `metallicity_topheavy_max_zsun=0.05`. The old `z_topheavy_min=10.0`
+  threshold is retained only for explicit historical comparisons.
+- Do not re-enable the source-time `z>=10` top-heavy gate by default. Use
+  `source_redshift_gate_enabled=True` or
+  `--enable-source-redshift-topheavy-gate` only when reproducing old z-gated
+  runs.
 - `IMFTransitionParameters.metallicity_topheavy_max_zsun=None` disables the
   birth-metallicity gate and recovers the historical top-heavy behavior. The
   production CLI equivalent is `--disable-metallicity-topheavy-gate`.

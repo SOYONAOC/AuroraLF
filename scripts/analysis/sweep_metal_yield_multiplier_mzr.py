@@ -78,6 +78,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--metal-mass-loading-scatter-dex", type=float, default=0.3)
     parser.add_argument("--metal-birth-scatter-dex", type=float, default=0.15)
     parser.add_argument("--z-topheavy-min", type=float, default=DEFAULT_IMF_TRANSITION_PARAMETERS.z_topheavy_min)
+    parser.add_argument("--enable-source-redshift-topheavy-gate", action="store_true")
     parser.add_argument("--metallicity-topheavy-max-zsun", type=float, default=DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN)
     parser.add_argument(
         "--growth-time-threshold-myr",
@@ -211,6 +212,7 @@ def main() -> None:
     multipliers = [float(item) for item in args.multipliers]
     transition_parameters = IMFTransitionParameters(
         z_topheavy_min=float(args.z_topheavy_min),
+        source_redshift_gate_enabled=bool(args.enable_source_redshift_topheavy_gate),
         growth_time_threshold_myr=float(args.growth_time_threshold_myr),
         metallicity_topheavy_max_zsun=float(args.metallicity_topheavy_max_zsun),
     )
@@ -276,6 +278,7 @@ def main() -> None:
                         "jades_oh12": jades,
                         "delta_fire2_dex": oh12 - fire2,
                         "delta_jades_dex": oh12 - jades,
+                        "source_redshift_gate_enabled": bool(args.enable_source_redshift_topheavy_gate),
                         "metallicity_topheavy_max_zsun": float(args.metallicity_topheavy_max_zsun),
                         "topheavy_source_fraction": float(result.metadata["topheavy_source_fraction"]),
                         "topheavy_light_fraction_median": float(result.metadata["topheavy_light_fraction_median"]),
@@ -317,6 +320,7 @@ def main() -> None:
             "jades_oh12",
             "delta_fire2_dex",
             "delta_jades_dex",
+            "source_redshift_gate_enabled",
             "metallicity_topheavy_max_zsun",
             "topheavy_source_fraction",
             "topheavy_light_fraction_median",
@@ -371,6 +375,7 @@ def main() -> None:
         handle.write(f"multipliers: {' '.join(f'{item:g}' for item in multipliers)}\n")
         handle.write(f"n_tracks: {int(args.n_tracks)}\n")
         handle.write(f"n_grid: {int(args.n_grid)}\n")
+        handle.write(f"source_redshift_gate_enabled: {bool(args.enable_source_redshift_topheavy_gate)}\n")
         handle.write(f"metallicity_topheavy_max_zsun: {float(args.metallicity_topheavy_max_zsun):g}\n")
         handle.write(f"fire2_positive_tolerance_dex: {float(args.fire2_positive_tolerance_dex):g}\n")
         handle.write(f"recommended_largest_passing_multiplier: {recommended:g}\n")
