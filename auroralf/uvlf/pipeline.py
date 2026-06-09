@@ -18,7 +18,21 @@ from auroralf.chemistry import (
     compute_mzr_birth_metallicity,
     evolve_stochastic_metallicity,
 )
-from auroralf.mah import Cosmology, HaloHistoryResult, generate_halo_histories
+from auroralf.mah import (
+    MAH_BACKEND_MCBRIDE,
+    MAH_BACKEND_THESAN,
+    MAH_BACKEND_TNG,
+    THESAN_TIME_GRID_SNAPSHOT,
+    THESAN_TIME_GRID_UNIFORM_IN_T,
+    TNG_TIME_GRID_SNAPSHOT,
+    TNG_TIME_GRID_UNIFORM_IN_T,
+    Cosmology,
+    HaloHistoryResult,
+    generate_halo_histories,
+    generate_thesan_halo_histories,
+    generate_tng_halo_histories,
+    validate_mah_backend,
+)
 from auroralf.sfr import (
     DEFAULT_SFR_MODEL_PARAMETERS,
     EXTENDED_BURST_LOOKBACK_MAX_MYR,
@@ -356,6 +370,17 @@ def run_halo_uv_pipeline(
     cosmology: Cosmology | None = None,
     random_seed: int | None = 42,
     sampler: str = "mcbride",
+    mah_backend: str = MAH_BACKEND_MCBRIDE,
+    tng_mah_cache_path: str | Path | None = None,
+    tng_mass_bin_width_dex: float = 0.15,
+    tng_min_candidates: int = 5,
+    tng_smoothing_myr: float = 0.0,
+    tng_time_grid_mode: str = TNG_TIME_GRID_SNAPSHOT,
+    thesan_mah_cache_path: str | Path | None = None,
+    thesan_mass_bin_width_dex: float = 0.15,
+    thesan_min_candidates: int = 5,
+    thesan_smoothing_myr: float = 0.0,
+    thesan_time_grid_mode: str = THESAN_TIME_GRID_SNAPSHOT,
     enable_time_delay: bool = False,
     workers: int | None = None,
     burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
@@ -372,6 +397,7 @@ def run_halo_uv_pipeline(
     """Run the main mah -> sfr -> UV pipeline and return per-halo UV luminosities."""
 
     imf_mode = validate_imf_mode(imf_mode)
+    mah_backend = validate_mah_backend(mah_backend)
     cosmology = Cosmology() if cosmology is None else cosmology
     workers = default_worker_count() if workers is None else int(workers)
     if float(burst_scatter_dex) < 0.0:
@@ -396,18 +422,57 @@ def run_halo_uv_pipeline(
     dt_gyr = (t_end_gyr - t_start_gyr) / float(int(n_grid) - 1)
 
     t0 = time.perf_counter()
-    histories = generate_halo_histories(
-        n_tracks=n_tracks,
-        z_final=z_final,
-        Mh_final=Mh_final,
-        z_start_max=z_start_max,
-        cosmology=cosmology,
-        random_seed=random_seed,
-        time_grid_mode="uniform_in_t",
-        dt=dt_gyr,
-        store_inactive_history=True,
-        sampler=sampler,
-    )
+    if mah_backend == MAH_BACKEND_MCBRIDE:
+        histories = generate_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            z_start_max=z_start_max,
+            cosmology=cosmology,
+            random_seed=random_seed,
+            time_grid_mode="uniform_in_t",
+            dt=dt_gyr,
+            store_inactive_history=True,
+            sampler=sampler,
+        )
+    elif mah_backend == MAH_BACKEND_TNG:
+        if tng_mah_cache_path is None:
+            raise ValueError("tng_mah_cache_path is required when mah_backend='tng'")
+        histories = generate_tng_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            cache_path=tng_mah_cache_path,
+            z_start_max=z_start_max,
+            mass_bin_width_dex=tng_mass_bin_width_dex,
+            min_candidates=tng_min_candidates,
+            smoothing_myr=tng_smoothing_myr,
+            random_seed=random_seed,
+            time_grid_mode=tng_time_grid_mode,
+            target_n_grid=int(n_grid)
+            if str(tng_time_grid_mode).strip().lower() == TNG_TIME_GRID_UNIFORM_IN_T
+            else None,
+        )
+    elif mah_backend == MAH_BACKEND_THESAN:
+        if thesan_mah_cache_path is None:
+            raise ValueError("thesan_mah_cache_path is required when mah_backend='thesan'")
+        histories = generate_thesan_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            cache_path=thesan_mah_cache_path,
+            z_start_max=z_start_max,
+            mass_bin_width_dex=thesan_mass_bin_width_dex,
+            min_candidates=thesan_min_candidates,
+            smoothing_myr=thesan_smoothing_myr,
+            random_seed=random_seed,
+            time_grid_mode=thesan_time_grid_mode,
+            target_n_grid=int(n_grid)
+            if str(thesan_time_grid_mode).strip().lower() == THESAN_TIME_GRID_UNIFORM_IN_T
+            else None,
+        )
+    else:  # pragma: no cover - guarded by validate_mah_backend
+        raise RuntimeError(f"unsupported mah_backend after validation: {mah_backend}")
     t1 = time.perf_counter()
     redshift_grid = np.unique(np.asarray(histories.tracks["z"], dtype=float))[::-1]
 
@@ -577,6 +642,43 @@ def run_halo_uv_pipeline(
         if np.any(positive_light)
         else 0.0,
         "metallicity_source": metallicity_source,
+        "mah_backend": mah_backend,
+        "sampler": sampler,
+        "tng_mah_cache_path": histories.metadata.get("tng_mah_cache_path"),
+        "tng_source_simulation": histories.metadata.get("source_simulation") if mah_backend == MAH_BACKEND_TNG else None,
+        "tng_mass_bin_width_dex": None if mah_backend != MAH_BACKEND_TNG else float(tng_mass_bin_width_dex),
+        "tng_min_candidates": None if mah_backend != MAH_BACKEND_TNG else int(tng_min_candidates),
+        "tng_candidate_count": histories.metadata.get("candidate_count") if mah_backend == MAH_BACKEND_TNG else None,
+        "tng_smoothing_myr": None if mah_backend != MAH_BACKEND_TNG else float(tng_smoothing_myr),
+        "tng_time_grid_mode": None if mah_backend != MAH_BACKEND_TNG else histories.metadata.get("tng_time_grid_mode"),
+        "tng_negative_dmhdt_clip_count": histories.metadata.get("negative_dmhdt_clip_count")
+        if mah_backend == MAH_BACKEND_TNG
+        else None,
+        "tng_negative_dmhdt_clip_fraction": histories.metadata.get("negative_dmhdt_clip_fraction")
+        if mah_backend == MAH_BACKEND_TNG
+        else None,
+        "thesan_mah_cache_path": histories.metadata.get("thesan_mah_cache_path"),
+        "thesan_source_simulation": histories.metadata.get("source_simulation")
+        if mah_backend == MAH_BACKEND_THESAN
+        else None,
+        "thesan_source_tree": histories.metadata.get("source_tree") if mah_backend == MAH_BACKEND_THESAN else None,
+        "thesan_mass_bin_width_dex": None
+        if mah_backend != MAH_BACKEND_THESAN
+        else float(thesan_mass_bin_width_dex),
+        "thesan_min_candidates": None if mah_backend != MAH_BACKEND_THESAN else int(thesan_min_candidates),
+        "thesan_candidate_count": histories.metadata.get("candidate_count")
+        if mah_backend == MAH_BACKEND_THESAN
+        else None,
+        "thesan_smoothing_myr": None if mah_backend != MAH_BACKEND_THESAN else float(thesan_smoothing_myr),
+        "thesan_time_grid_mode": None
+        if mah_backend != MAH_BACKEND_THESAN
+        else histories.metadata.get("thesan_time_grid_mode"),
+        "thesan_negative_dmhdt_clip_count": histories.metadata.get("negative_dmhdt_clip_count")
+        if mah_backend == MAH_BACKEND_THESAN
+        else None,
+        "thesan_negative_dmhdt_clip_fraction": histories.metadata.get("negative_dmhdt_clip_fraction")
+        if mah_backend == MAH_BACKEND_THESAN
+        else None,
         "stochastic_metallicity_enabled": metallicity_result is not None,
         "mzr_metallicity_enabled": mzr_metallicity_result is not None,
         "metallicity_random_seed": metallicity_random_seed,
@@ -597,8 +699,8 @@ def run_halo_uv_pipeline(
         if birth_metallicity_zsun_grid is not None and np.any(starforming_grid)
         else None,
         "enable_time_delay": enable_time_delay,
-        "time_grid_mode": "uniform_in_t",
-        "dt_gyr": float(dt_gyr),
+        "time_grid_mode": histories.metadata.get("time_grid_mode", "uniform_in_t"),
+        "dt_gyr": float(histories.metadata.get("dt_gyr_median", dt_gyr)),
         "burst_lookback_max_myr": float(burst_lookback_max_myr),
         "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
         "burst_scatter_dex": float(burst_scatter_dex),

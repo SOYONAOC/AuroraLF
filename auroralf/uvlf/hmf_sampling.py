@@ -10,6 +10,16 @@ import numpy as np
 from hmf import MassFunction
 
 from auroralf.chemistry import MZRBirthMetallicityParameters, MetalEnrichmentParameters
+from auroralf.mah import (
+    MAH_BACKEND_MCBRIDE,
+    MAH_BACKEND_THESAN,
+    MAH_BACKEND_TNG,
+    THESAN_TIME_GRID_SNAPSHOT,
+    validate_thesan_time_grid_mode,
+    TNG_TIME_GRID_SNAPSHOT,
+    validate_mah_backend,
+    validate_tng_time_grid_mode,
+)
 from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
 from .imf import DEFAULT_IMF_TRANSITION_PARAMETERS, IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 from .pipeline import (
@@ -221,6 +231,17 @@ def _run_single_mass_sample(
         float,
         int,
         str,
+        str,
+        str | None,
+        float,
+        int,
+        float,
+        str,
+        str | None,
+        float,
+        int,
+        float,
+        str,
         bool,
         str,
         str,
@@ -248,6 +269,17 @@ def _run_single_mass_sample(
         z_start_max,
         n_grid,
         sampler,
+        mah_backend,
+        tng_mah_cache_path,
+        tng_mass_bin_width_dex,
+        tng_min_candidates,
+        tng_smoothing_myr,
+        tng_time_grid_mode,
+        thesan_mah_cache_path,
+        thesan_mass_bin_width_dex,
+        thesan_min_candidates,
+        thesan_smoothing_myr,
+        thesan_time_grid_mode,
         enable_time_delay,
         ssp_file,
         topheavy_ssp_file,
@@ -274,6 +306,17 @@ def _run_single_mass_sample(
         n_grid=n_grid,
         random_seed=random_seed,
         sampler=sampler,
+        mah_backend=mah_backend,
+        tng_mah_cache_path=tng_mah_cache_path,
+        tng_mass_bin_width_dex=tng_mass_bin_width_dex,
+        tng_min_candidates=tng_min_candidates,
+        tng_smoothing_myr=tng_smoothing_myr,
+        tng_time_grid_mode=tng_time_grid_mode,
+        thesan_mah_cache_path=thesan_mah_cache_path,
+        thesan_mass_bin_width_dex=thesan_mass_bin_width_dex,
+        thesan_min_candidates=thesan_min_candidates,
+        thesan_smoothing_myr=thesan_smoothing_myr,
+        thesan_time_grid_mode=thesan_time_grid_mode,
         enable_time_delay=enable_time_delay,
         workers=1,
         ssp_file=ssp_file,
@@ -326,6 +369,17 @@ def sample_uvlf_from_hmf(
     z_start_max: float = 50.0,
     n_grid: int = 240,
     sampler: str = "mcbride",
+    mah_backend: str = MAH_BACKEND_MCBRIDE,
+    tng_mah_cache_path: str | Path | None = None,
+    tng_mass_bin_width_dex: float = 0.15,
+    tng_min_candidates: int = 5,
+    tng_smoothing_myr: float = 0.0,
+    tng_time_grid_mode: str = TNG_TIME_GRID_SNAPSHOT,
+    thesan_mah_cache_path: str | Path | None = None,
+    thesan_mass_bin_width_dex: float = 0.15,
+    thesan_min_candidates: int = 5,
+    thesan_smoothing_myr: float = 0.0,
+    thesan_time_grid_mode: str = THESAN_TIME_GRID_SNAPSHOT,
     enable_time_delay: bool = False,
     pipeline_workers: int | None = None,
     ssp_file: str = DEFAULT_SSP_FILE,
@@ -359,6 +413,25 @@ def sample_uvlf_from_hmf(
     if float(burst_scatter_timescale_myr) <= 0.0:
         raise ValueError("burst_scatter_timescale_myr must be positive")
     imf_mode = validate_imf_mode(imf_mode)
+    mah_backend = validate_mah_backend(mah_backend)
+    tng_time_grid_mode = validate_tng_time_grid_mode(tng_time_grid_mode)
+    thesan_time_grid_mode = validate_thesan_time_grid_mode(thesan_time_grid_mode)
+    if mah_backend == MAH_BACKEND_TNG and tng_mah_cache_path is None:
+        raise ValueError("tng_mah_cache_path is required when mah_backend='tng'")
+    if mah_backend == MAH_BACKEND_THESAN and thesan_mah_cache_path is None:
+        raise ValueError("thesan_mah_cache_path is required when mah_backend='thesan'")
+    if float(tng_mass_bin_width_dex) <= 0.0:
+        raise ValueError("tng_mass_bin_width_dex must be positive")
+    if int(tng_min_candidates) <= 0:
+        raise ValueError("tng_min_candidates must be positive")
+    if float(tng_smoothing_myr) < 0.0:
+        raise ValueError("tng_smoothing_myr must be non-negative")
+    if float(thesan_mass_bin_width_dex) <= 0.0:
+        raise ValueError("thesan_mass_bin_width_dex must be positive")
+    if int(thesan_min_candidates) <= 0:
+        raise ValueError("thesan_min_candidates must be positive")
+    if float(thesan_smoothing_myr) < 0.0:
+        raise ValueError("thesan_smoothing_myr must be non-negative")
     if metal_enrichment_parameters is not None and mzr_metallicity_parameters is not None:
         raise ValueError("provide only one birth metallicity source: metal_enrichment_parameters or mzr_metallicity_parameters")
     birth_metallicity_source_enabled = metal_enrichment_parameters is not None or mzr_metallicity_parameters is not None
@@ -425,6 +498,17 @@ def sample_uvlf_from_hmf(
             float(z_start_max),
             int(n_grid),
             sampler,
+            mah_backend,
+            None if tng_mah_cache_path is None else str(tng_mah_cache_path),
+            float(tng_mass_bin_width_dex),
+            int(tng_min_candidates),
+            float(tng_smoothing_myr),
+            str(tng_time_grid_mode),
+            None if thesan_mah_cache_path is None else str(thesan_mah_cache_path),
+            float(thesan_mass_bin_width_dex),
+            int(thesan_min_candidates),
+            float(thesan_smoothing_myr),
+            str(thesan_time_grid_mode),
             bool(enable_time_delay),
             ssp_file,
             str(topheavy_ssp_file),
@@ -622,6 +706,22 @@ def sample_uvlf_from_hmf(
             "omegab_h2": MASS_FUNCTION_OMEGA_B_H2,
         },
         "pipeline_workers": max(1, pipeline_workers),
+        "mah_backend": mah_backend,
+        "sampler": sampler,
+        "tng_mah_cache_path": None if tng_mah_cache_path is None else str(Path(tng_mah_cache_path).expanduser().resolve()),
+        "tng_mass_bin_width_dex": None if mah_backend != MAH_BACKEND_TNG else float(tng_mass_bin_width_dex),
+        "tng_min_candidates": None if mah_backend != MAH_BACKEND_TNG else int(tng_min_candidates),
+        "tng_smoothing_myr": None if mah_backend != MAH_BACKEND_TNG else float(tng_smoothing_myr),
+        "tng_time_grid_mode": None if mah_backend != MAH_BACKEND_TNG else str(tng_time_grid_mode),
+        "thesan_mah_cache_path": None
+        if thesan_mah_cache_path is None
+        else str(Path(thesan_mah_cache_path).expanduser().resolve()),
+        "thesan_mass_bin_width_dex": None
+        if mah_backend != MAH_BACKEND_THESAN
+        else float(thesan_mass_bin_width_dex),
+        "thesan_min_candidates": None if mah_backend != MAH_BACKEND_THESAN else int(thesan_min_candidates),
+        "thesan_smoothing_myr": None if mah_backend != MAH_BACKEND_THESAN else float(thesan_smoothing_myr),
+        "thesan_time_grid_mode": None if mah_backend != MAH_BACKEND_THESAN else str(thesan_time_grid_mode),
         "quantity": quantity,
         "ssp_file": ssp_file,
         "topheavy_ssp_file": topheavy_ssp_file,

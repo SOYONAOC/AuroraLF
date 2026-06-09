@@ -15,6 +15,10 @@ cosm/
 jupyter.err
 kernel/jupyter.err
 
+# Data-management scripts are source code, not generated data.
+!scripts/data/
+!scripts/data/*.py
+
 # Track formal slide sources, PDFs, scripts, and compile-time assets.
 slides/**/*.aux
 slides/**/*.log
@@ -41,6 +45,8 @@ slides/**/__pycache__/
 *.out
 
 # Large raw datasets: keep outside the initial Git history.
+external_data/tng/
+external_data/thesan/
 external_data/ssp_spectra/
 external_data/empirical_models/universemachine_dr1/tarballs/
 external_data/literature_sources/**/*.tar

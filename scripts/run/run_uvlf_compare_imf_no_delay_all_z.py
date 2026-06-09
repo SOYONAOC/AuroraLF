@@ -20,6 +20,16 @@ from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
     MetalEnrichmentParameters,
 )
+from auroralf.mah import (
+    MAH_BACKEND_MCBRIDE,
+    MAH_BACKEND_THESAN,
+    MAH_BACKEND_TNG,
+    MAH_BACKENDS,
+    THESAN_TIME_GRID_MODES,
+    THESAN_TIME_GRID_SNAPSHOT,
+    TNG_TIME_GRID_MODES,
+    TNG_TIME_GRID_SNAPSHOT,
+)
 from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
 from auroralf.uvlf import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
@@ -84,6 +94,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--z-start-max", type=float, default=50.0)
     parser.add_argument("--n-grid", type=int, default=240)
     parser.add_argument("--sampler", type=str, default="mcbride")
+    parser.add_argument("--mah-backend", choices=MAH_BACKENDS, default=MAH_BACKEND_MCBRIDE)
+    parser.add_argument("--tng-mah-cache", type=str, default=None)
+    parser.add_argument("--tng-mass-bin-width-dex", type=float, default=0.15)
+    parser.add_argument("--tng-min-candidates", type=int, default=5)
+    parser.add_argument("--tng-smoothing-myr", type=float, default=0.0)
+    parser.add_argument("--tng-time-grid-mode", choices=TNG_TIME_GRID_MODES, default=TNG_TIME_GRID_SNAPSHOT)
+    parser.add_argument("--thesan-mah-cache", type=str, default=None)
+    parser.add_argument("--thesan-mass-bin-width-dex", type=float, default=0.15)
+    parser.add_argument("--thesan-min-candidates", type=int, default=5)
+    parser.add_argument("--thesan-smoothing-myr", type=float, default=0.0)
+    parser.add_argument("--thesan-time-grid-mode", choices=THESAN_TIME_GRID_MODES, default=THESAN_TIME_GRID_SNAPSHOT)
     time_delay_group = parser.add_mutually_exclusive_group()
     time_delay_group.add_argument("--enable-time-delay", dest="enable_time_delay", action="store_true")
     time_delay_group.add_argument("--disable-time-delay", dest="enable_time_delay", action="store_false")
@@ -169,6 +190,17 @@ def _run_single_imf_mode_uvlf(
     z_start_max: float,
     n_grid: int,
     sampler: str,
+    mah_backend: str,
+    tng_mah_cache_path: Path | None,
+    tng_mass_bin_width_dex: float,
+    tng_min_candidates: int,
+    tng_smoothing_myr: float,
+    tng_time_grid_mode: str,
+    thesan_mah_cache_path: Path | None,
+    thesan_mass_bin_width_dex: float,
+    thesan_min_candidates: int,
+    thesan_smoothing_myr: float,
+    thesan_time_grid_mode: str,
     workers: int,
     canonical_ssp_file: Path,
     topheavy_ssp_file: Path,
@@ -200,6 +232,17 @@ def _run_single_imf_mode_uvlf(
         z_start_max=z_start_max,
         n_grid=n_grid,
         sampler=sampler,
+        mah_backend=mah_backend,
+        tng_mah_cache_path=None if tng_mah_cache_path is None else str(tng_mah_cache_path),
+        tng_mass_bin_width_dex=tng_mass_bin_width_dex,
+        tng_min_candidates=tng_min_candidates,
+        tng_smoothing_myr=tng_smoothing_myr,
+        tng_time_grid_mode=tng_time_grid_mode,
+        thesan_mah_cache_path=None if thesan_mah_cache_path is None else str(thesan_mah_cache_path),
+        thesan_mass_bin_width_dex=thesan_mass_bin_width_dex,
+        thesan_min_candidates=thesan_min_candidates,
+        thesan_smoothing_myr=thesan_smoothing_myr,
+        thesan_time_grid_mode=thesan_time_grid_mode,
         enable_time_delay=enable_time_delay,
         pipeline_workers=workers,
         ssp_file=str(canonical_ssp_file),
@@ -300,6 +343,42 @@ def main() -> None:
         raise ValueError("logM-max must be larger than logM-min")
     if args.workers < 1:
         raise ValueError("workers must be positive")
+    if float(args.tng_mass_bin_width_dex) <= 0.0:
+        raise ValueError("tng-mass-bin-width-dex must be positive")
+    if int(args.tng_min_candidates) <= 0:
+        raise ValueError("tng-min-candidates must be positive")
+    if float(args.tng_smoothing_myr) < 0.0:
+        raise ValueError("tng-smoothing-myr must be non-negative")
+    if float(args.thesan_mass_bin_width_dex) <= 0.0:
+        raise ValueError("thesan-mass-bin-width-dex must be positive")
+    if int(args.thesan_min_candidates) <= 0:
+        raise ValueError("thesan-min-candidates must be positive")
+    if float(args.thesan_smoothing_myr) < 0.0:
+        raise ValueError("thesan-smoothing-myr must be non-negative")
+    tng_mah_cache_path = None
+    if args.tng_mah_cache is not None:
+        tng_mah_cache_path = Path(args.tng_mah_cache).expanduser()
+        if not tng_mah_cache_path.is_absolute():
+            tng_mah_cache_path = (project_root / tng_mah_cache_path).resolve()
+        else:
+            tng_mah_cache_path = tng_mah_cache_path.resolve()
+    if args.mah_backend == MAH_BACKEND_TNG:
+        if tng_mah_cache_path is None:
+            raise ValueError("--tng-mah-cache is required when --mah-backend tng")
+        if not tng_mah_cache_path.exists():
+            raise FileNotFoundError(f"TNG MAH cache path not found: {tng_mah_cache_path}")
+    thesan_mah_cache_path = None
+    if args.thesan_mah_cache is not None:
+        thesan_mah_cache_path = Path(args.thesan_mah_cache).expanduser()
+        if not thesan_mah_cache_path.is_absolute():
+            thesan_mah_cache_path = (project_root / thesan_mah_cache_path).resolve()
+        else:
+            thesan_mah_cache_path = thesan_mah_cache_path.resolve()
+    if args.mah_backend == MAH_BACKEND_THESAN:
+        if thesan_mah_cache_path is None:
+            raise ValueError("--thesan-mah-cache is required when --mah-backend thesan")
+        if not thesan_mah_cache_path.exists():
+            raise FileNotFoundError(f"THESAN MAH cache path not found: {thesan_mah_cache_path}")
     if not 0.0 <= float(args.epsilon_0) <= 1.0:
         raise ValueError("epsilon-0 must lie in [0, 1]")
     if float(args.fstar_characteristic_mass) <= 0.0:
@@ -401,6 +480,18 @@ def main() -> None:
         "random_seed": np.asarray([int(args.random_seed)], dtype=int),
         "z_start_max": np.asarray([float(args.z_start_max)], dtype=float),
         "n_grid": np.asarray([int(args.n_grid)], dtype=int),
+        "mah_backend": np.asarray([str(args.mah_backend)]),
+        "sampler": np.asarray([str(args.sampler)]),
+        "tng_mah_cache_path": np.asarray(["" if tng_mah_cache_path is None else str(tng_mah_cache_path)]),
+        "tng_mass_bin_width_dex": np.asarray([float(args.tng_mass_bin_width_dex)], dtype=float),
+        "tng_min_candidates": np.asarray([int(args.tng_min_candidates)], dtype=int),
+        "tng_smoothing_myr": np.asarray([float(args.tng_smoothing_myr)], dtype=float),
+        "tng_time_grid_mode": np.asarray([str(args.tng_time_grid_mode)]),
+        "thesan_mah_cache_path": np.asarray(["" if thesan_mah_cache_path is None else str(thesan_mah_cache_path)]),
+        "thesan_mass_bin_width_dex": np.asarray([float(args.thesan_mass_bin_width_dex)], dtype=float),
+        "thesan_min_candidates": np.asarray([int(args.thesan_min_candidates)], dtype=int),
+        "thesan_smoothing_myr": np.asarray([float(args.thesan_smoothing_myr)], dtype=float),
+        "thesan_time_grid_mode": np.asarray([str(args.thesan_time_grid_mode)]),
         "bins_count": np.asarray([int(args.bins)], dtype=int),
         "muv_min": np.asarray([float(args.muv_min)], dtype=float),
         "muv_max": np.asarray([float(args.muv_max)], dtype=float),
@@ -485,6 +576,18 @@ def main() -> None:
         f"workers: {args.workers}",
         f"N_mass: {args.N_mass}",
         f"n_tracks: {args.n_tracks}",
+        f"mah_backend: {args.mah_backend}",
+        f"sampler: {args.sampler}",
+        f"tng_mah_cache_path: {tng_mah_cache_path}",
+        f"tng_mass_bin_width_dex: {float(args.tng_mass_bin_width_dex)}",
+        f"tng_min_candidates: {int(args.tng_min_candidates)}",
+        f"tng_smoothing_myr: {float(args.tng_smoothing_myr)}",
+        f"tng_time_grid_mode: {str(args.tng_time_grid_mode)}",
+        f"thesan_mah_cache_path: {thesan_mah_cache_path}",
+        f"thesan_mass_bin_width_dex: {float(args.thesan_mass_bin_width_dex)}",
+        f"thesan_min_candidates: {int(args.thesan_min_candidates)}",
+        f"thesan_smoothing_myr: {float(args.thesan_smoothing_myr)}",
+        f"thesan_time_grid_mode: {str(args.thesan_time_grid_mode)}",
         f"bins: {args.bins}",
         f"muv_range: [{args.muv_min}, {args.muv_max}]",
         f"logM_range: [{args.logM_min}, {args.logM_max}]",
@@ -555,6 +658,17 @@ def main() -> None:
                 z_start_max=float(args.z_start_max),
                 n_grid=int(args.n_grid),
                 sampler=str(args.sampler),
+                mah_backend=str(args.mah_backend),
+                tng_mah_cache_path=tng_mah_cache_path,
+                tng_mass_bin_width_dex=float(args.tng_mass_bin_width_dex),
+                tng_min_candidates=int(args.tng_min_candidates),
+                tng_smoothing_myr=float(args.tng_smoothing_myr),
+                tng_time_grid_mode=str(args.tng_time_grid_mode),
+                thesan_mah_cache_path=thesan_mah_cache_path,
+                thesan_mass_bin_width_dex=float(args.thesan_mass_bin_width_dex),
+                thesan_min_candidates=int(args.thesan_min_candidates),
+                thesan_smoothing_myr=float(args.thesan_smoothing_myr),
+                thesan_time_grid_mode=str(args.thesan_time_grid_mode),
                 workers=int(args.workers),
                 canonical_ssp_file=canonical_ssp_file,
                 topheavy_ssp_file=topheavy_ssp_file,

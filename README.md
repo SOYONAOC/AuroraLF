@@ -453,6 +453,17 @@ from auroralf.uvlf import run_halo_uv_pipeline
   随机种子
 - `sampler`
   `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
+- `mah_backend`
+  MAH 来源，默认 `"mcbride"`。可选 `"tng"` 或 `"thesan"` 时只替代 halo assembly
+  history；SFR、IMF gate、SSP、UV 卷积和 UVLF normalization 仍使用 AuroraLF 当前流程
+- `tng_mah_cache_path`
+  `mah_backend="tng"` 时必填，指向 TNG compact MAH cache 文件或目录
+- `tng_mass_bin_width_dex` / `tng_min_candidates` / `tng_smoothing_myr`
+  TNG cache 中按 `log10(Mh_final)` 近邻抽取 MAH shape 的 bin 半宽、最少候选数和平滑时间尺度
+- `thesan_mah_cache_path`
+  `mah_backend="thesan"` 时必填，指向 THESAN-dark-1 compact MAH cache 文件或目录
+- `thesan_mass_bin_width_dex` / `thesan_min_candidates` / `thesan_smoothing_myr`
+  THESAN cache 中按 `log10(Mh_final)` 近邻抽取 MAH shape 的 bin 半宽、最少候选数和平滑时间尺度
 - `enable_time_delay`
   是否在 `auroralf.sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
 - `workers`
@@ -579,6 +590,13 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   内层 `auroralf/mah` 和 `auroralf/sfr` 使用的 redshift grid 点数，默认 `240`
 - `sampler`
   `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
+- `mah_backend`
+  MAH 来源，默认 `"mcbride"`；`"tng"` 和 `"thesan"` 分别从对应 compact MAH cache
+  有放回抽样条件分布 `P(MAH | Mh, z)`，不改变外层 Reed07 HMF 权重
+- `tng_mah_cache_path` / `tng_mass_bin_width_dex` / `tng_min_candidates` / `tng_smoothing_myr`
+  透传给 `run_halo_uv_pipeline()` 的 TNG MAH backend 参数
+- `thesan_mah_cache_path` / `thesan_mass_bin_width_dex` / `thesan_min_candidates` / `thesan_smoothing_myr`
+  透传给 `run_halo_uv_pipeline()` 的 THESAN MAH backend 参数
 - `enable_time_delay`
   是否在 `auroralf.sfr` 中启用时间延迟，默认 `False`
 - `pipeline_workers`
