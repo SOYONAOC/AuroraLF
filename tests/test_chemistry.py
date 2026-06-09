@@ -10,6 +10,8 @@ import pytest
 from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
     MetalEnrichmentParameters,
+    RegulatorMetallicityParameters,
+    compute_regulator_metallicity,
     compute_mzr_birth_metallicity,
     evolve_stochastic_metallicity,
     fire2_highz_mzr_oh12,
@@ -209,6 +211,59 @@ def test_mzr_birth_metallicity_uses_cumulative_stellar_mass() -> None:
     np.testing.assert_array_equal(result.active_grid, history["active_grid"])
 
 
+def test_regulator_metallicity_uses_cumulative_stellar_and_halo_gas_mass() -> None:
+    history = {
+        "t_grid_gyr": np.array([[0.0, 0.1]], dtype=float),
+        "z_grid": np.array([[12.0, 12.0]], dtype=float),
+        "mh_grid": np.array([[1.0e9, 1.0e9]], dtype=float),
+        "sfr_grid": np.array([[0.0, 1.0]], dtype=float),
+        "active_grid": np.array([[False, True]], dtype=bool),
+    }
+    params = RegulatorMetallicityParameters(
+        gas_fraction_norm=0.2,
+        returned_fraction=0.4,
+        metal_yield=0.02,
+        inflow_metallicity_zsun=0.0,
+        metal_loading_norm=3.0,
+        metal_loading_mass_slope=0.0,
+        metallicity_scatter_dex=0.0,
+    )
+
+    result = compute_regulator_metallicity(
+        **history,
+        baryon_fraction=0.1,
+        parameters=params,
+        random_seed=1,
+    )
+
+    expected_stellar_mass = (1.0 - 0.4) * 1.0 * 0.1 * 1.0e9
+    expected_gas_mass = 0.2 * 0.1 * 1.0e9
+    denominator = 1.0 + expected_gas_mass / expected_stellar_mass + 3.0 / (1.0 - 0.4)
+    expected_zsun = (0.02 / denominator) / 0.0142
+
+    np.testing.assert_allclose(result.stellar_mass_msun_grid[0, 1], expected_stellar_mass)
+    np.testing.assert_allclose(result.gas_mass_grid[0, 1], expected_gas_mass)
+    np.testing.assert_allclose(result.gas_metallicity_zsun_grid[0, 1], expected_zsun)
+    np.testing.assert_allclose(result.birth_metallicity_zsun_grid[0, 1], expected_zsun)
+    np.testing.assert_allclose(result.metal_loading_grid[0, 1], 3.0)
+
+
+def test_regulator_metallicity_rejects_unphysical_gas_fraction() -> None:
+    history = _toy_history()
+
+    with pytest.raises(ValueError, match="gas fraction"):
+        compute_regulator_metallicity(
+            t_grid_gyr=history["t_grid_gyr"],
+            z_grid=history["z_grid"],
+            mh_grid=history["mh_grid"],
+            sfr_grid=history["sfr_grid"],
+            active_grid=history["active_grid"],
+            baryon_fraction=0.157,
+            parameters=RegulatorMetallicityParameters(gas_fraction_norm=1.2),
+            random_seed=1,
+        )
+
+
 def test_pipeline_records_stochastic_metallicity_when_enabled() -> None:
     result = run_halo_uv_pipeline(
         n_tracks=2,
@@ -327,6 +382,38 @@ def test_pipeline_applies_mzr_birth_metallicity_gate_without_one_zone() -> None:
     assert np.all(result.birth_metallicity_zsun_grid[result.imf_topheavy_source_grid] <= 0.05)
 
 
+def test_pipeline_applies_regulator_birth_metallicity_gate() -> None:
+    result = run_halo_uv_pipeline(
+        n_tracks=2,
+        z_final=6.0,
+        Mh_final=1.0e10,
+        z_start_max=12.0,
+        n_grid=8,
+        random_seed=101,
+        workers=1,
+        imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
+        imf_transition_parameters=IMFTransitionParameters(
+            z_topheavy_min=10.0,
+            metallicity_topheavy_max_zsun=0.2,
+        ),
+        regulator_metallicity_parameters=RegulatorMetallicityParameters(
+            gas_fraction_norm=0.2,
+            metal_loading_norm=3.0,
+            metal_loading_mass_slope=0.0,
+            metallicity_scatter_dex=0.0,
+        ),
+        metallicity_random_seed=202,
+    )
+
+    assert result.birth_metallicity_zsun_grid is not None
+    assert result.gas_metallicity_zsun_grid is not None
+    assert result.metadata["metallicity_source"] == "regulator"
+    assert result.metadata["regulator_metallicity_enabled"] is True
+    assert result.metadata["regulator_metallicity_parameters"]["gas_fraction_norm"] == 0.2
+    assert np.any(result.imf_topheavy_source_grid)
+    assert np.all(result.birth_metallicity_zsun_grid[result.imf_topheavy_source_grid] <= 0.2)
+
+
 def test_hmf_sampling_records_stochastic_metallicity_metadata_when_enabled() -> None:
     result = sample_uvlf_from_hmf(
         z_obs=6.0,
@@ -351,6 +438,32 @@ def test_hmf_sampling_records_stochastic_metallicity_metadata_when_enabled() -> 
     assert result.metadata["stochastic_metallicity_enabled"] is True
     assert result.metadata["metallicity_random_seed"] == 404
     assert result.metadata["final_gas_metallicity_zsun_median_by_mass"].shape == (1,)
+    assert np.isfinite(result.metadata["final_gas_metallicity_zsun_median"])
+
+
+def test_hmf_sampling_records_regulator_metallicity_metadata_when_enabled() -> None:
+    result = sample_uvlf_from_hmf(
+        z_obs=6.0,
+        N_mass=1,
+        n_tracks=2,
+        random_seed=303,
+        bins=np.array([-25.0, -15.0]),
+        logM_min=9.0,
+        logM_max=9.2,
+        z_start_max=10.0,
+        n_grid=8,
+        pipeline_workers=1,
+        regulator_metallicity_parameters=RegulatorMetallicityParameters(
+            gas_fraction_norm=0.2,
+            metal_loading_norm=3.0,
+            metal_loading_mass_slope=0.0,
+        ),
+        metallicity_random_seed=404,
+    )
+
+    assert result.metadata["regulator_metallicity_enabled"] is True
+    assert result.metadata["metallicity_source"] == "regulator"
+    assert result.metadata["regulator_metallicity_parameters"]["metal_loading_norm"] == 3.0
     assert np.isfinite(result.metadata["final_gas_metallicity_zsun_median"])
 
 
@@ -387,5 +500,7 @@ def test_run_script_help_exposes_topheavy_yield_multiplier() -> None:
 
     assert "--metallicity-source" in completed.stdout
     assert "--mzr-relation" in completed.stdout
+    assert "--regulator-gas-fraction-norm" in completed.stdout
+    assert "--regulator-metal-loading-norm" in completed.stdout
     assert "--metal-topheavy-yield-multiplier" in completed.stdout
     assert "--metallicity-topheavy-max-zsun" in completed.stdout

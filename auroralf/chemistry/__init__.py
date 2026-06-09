@@ -1,4 +1,4 @@
-"""Stochastic one-zone metal enrichment utilities."""
+"""Metal enrichment and birth-metallicity utilities."""
 
 from .evolution import (
     CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER,
@@ -20,18 +20,26 @@ from .mzr import (
     jades_lowmass_mzr_oh12,
     max_positive_mzr_offset_dex,
 )
+from .regulator import (
+    RegulatorMetallicityParameters,
+    RegulatorMetallicityResult,
+    compute_regulator_metallicity,
+)
 
 __all__ = [
     "MetalEnrichmentParameters",
     "MetallicityEvolutionResult",
     "MZRBirthMetallicityParameters",
     "MZRBirthMetallicityResult",
+    "RegulatorMetallicityParameters",
+    "RegulatorMetallicityResult",
     "CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER",
     "MZR_RELATION_FIRE2_HIGHZ",
     "MZR_RELATION_JADES_LOWMASS",
     "MZR_RELATIONS",
     "SOLAR_OXYGEN_ABUNDANCE",
     "compute_mzr_birth_metallicity",
+    "compute_regulator_metallicity",
     "equivalent_oxygen_abundance_from_zsun",
     "evolve_stochastic_metallicity",
     "fire2_highz_mzr_oh12",

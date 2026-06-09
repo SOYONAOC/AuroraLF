@@ -19,6 +19,7 @@ from auroralf.chemistry import (
     MZR_RELATIONS,
     MZRBirthMetallicityParameters,
     MetalEnrichmentParameters,
+    RegulatorMetallicityParameters,
 )
 from auroralf.mah import (
     MAH_BACKEND_MCBRIDE,
@@ -117,7 +118,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--burst-scatter-timescale-myr", type=float, default=DEFAULT_BURST_SCATTER_TIMESCALE_MYR)
     parser.add_argument("--burst-scatter-random-seed", type=int, default=None)
     parser.add_argument("--disable-burst-scatter-mean-preservation", action="store_true")
-    parser.add_argument("--metallicity-source", choices=("mzr", "one_zone", "none"), default=None)
+    parser.add_argument("--metallicity-source", choices=("regulator", "mzr", "one_zone", "none"), default=None)
     parser.add_argument(
         "--enable-stochastic-metallicity",
         action="store_true",
@@ -128,6 +129,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mzr-stellar-mass-floor", type=float, default=1.0e6)
     parser.add_argument("--mzr-scatter-dex", type=float, default=0.0)
     parser.add_argument("--mzr-returned-fraction", type=float, default=0.4)
+    parser.add_argument("--regulator-gas-fraction-norm", type=float, default=0.02)
+    parser.add_argument("--regulator-gas-fraction-mass-slope", type=float, default=0.0)
+    parser.add_argument("--regulator-gas-fraction-redshift-slope", type=float, default=0.0)
+    parser.add_argument("--regulator-yield", type=float, default=0.01)
+    parser.add_argument("--regulator-returned-fraction", type=float, default=0.4)
+    parser.add_argument("--regulator-inflow-metallicity-zsun", type=float, default=0.0)
+    parser.add_argument("--regulator-metal-loading-norm", type=float, default=20.0)
+    parser.add_argument("--regulator-metal-loading-mass-slope", type=float, default=-0.5)
+    parser.add_argument("--regulator-metal-loading-redshift-slope", type=float, default=0.0)
+    parser.add_argument("--regulator-metallicity-scatter-dex", type=float, default=0.0)
     parser.add_argument("--metal-gas-fraction-of-baryons", type=float, default=0.5)
     parser.add_argument("--metal-yield", type=float, default=0.02)
     parser.add_argument("--metal-topheavy-yield-multiplier", type=float, default=CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER)
@@ -213,6 +224,7 @@ def _run_single_imf_mode_uvlf(
     mass_function_model: str,
     metal_enrichment_parameters: MetalEnrichmentParameters | None,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None,
+    regulator_metallicity_parameters: RegulatorMetallicityParameters | None,
     metallicity_random_seed: int | None,
     enable_time_delay: bool,
     burst_scatter_dex: float,
@@ -256,6 +268,7 @@ def _run_single_imf_mode_uvlf(
         mass_function_model=mass_function_model,
         metal_enrichment_parameters=metal_enrichment_parameters,
         mzr_metallicity_parameters=mzr_metallicity_parameters,
+        regulator_metallicity_parameters=regulator_metallicity_parameters,
         metallicity_random_seed=metallicity_random_seed,
         burst_scatter_dex=burst_scatter_dex,
         burst_scatter_timescale_myr=burst_scatter_timescale_myr,
@@ -415,7 +428,7 @@ def main() -> None:
     if args.enable_stochastic_metallicity and args.metallicity_source not in (None, "one_zone"):
         raise ValueError("enable-stochastic-metallicity is only compatible with --metallicity-source one_zone")
     if args.metallicity_source is None:
-        metallicity_source = "one_zone" if args.enable_stochastic_metallicity else "mzr"
+        metallicity_source = "one_zone" if args.enable_stochastic_metallicity else "regulator"
         if not variant_modes or metallicity_topheavy_max_zsun is None:
             metallicity_source = "none" if not args.enable_stochastic_metallicity else "one_zone"
     else:
@@ -430,6 +443,18 @@ def main() -> None:
         raise ValueError("mzr-scatter-dex must be non-negative")
     if not 0.0 <= float(args.mzr_returned_fraction) < 1.0:
         raise ValueError("mzr-returned-fraction must lie in [0, 1)")
+    if float(args.regulator_gas_fraction_norm) <= 0.0 or float(args.regulator_gas_fraction_norm) > 1.0:
+        raise ValueError("regulator-gas-fraction-norm must lie in (0, 1]")
+    if float(args.regulator_yield) < 0.0:
+        raise ValueError("regulator-yield must be non-negative")
+    if not 0.0 <= float(args.regulator_returned_fraction) < 1.0:
+        raise ValueError("regulator-returned-fraction must lie in [0, 1)")
+    if float(args.regulator_inflow_metallicity_zsun) < 0.0:
+        raise ValueError("regulator-inflow-metallicity-zsun must be non-negative")
+    if float(args.regulator_metal_loading_norm) < 0.0:
+        raise ValueError("regulator-metal-loading-norm must be non-negative")
+    if float(args.regulator_metallicity_scatter_dex) < 0.0:
+        raise ValueError("regulator-metallicity-scatter-dex must be non-negative")
 
     imf_transition_parameters = IMFTransitionParameters(
         z_topheavy_min=float(args.z_topheavy_min),
@@ -465,6 +490,22 @@ def main() -> None:
             stellar_mass_floor_msun=float(args.mzr_stellar_mass_floor),
         )
         if metallicity_source == "mzr"
+        else None
+    )
+    regulator_metallicity_parameters = (
+        RegulatorMetallicityParameters(
+            gas_fraction_norm=float(args.regulator_gas_fraction_norm),
+            gas_fraction_mass_slope=float(args.regulator_gas_fraction_mass_slope),
+            gas_fraction_redshift_slope=float(args.regulator_gas_fraction_redshift_slope),
+            returned_fraction=float(args.regulator_returned_fraction),
+            metal_yield=float(args.regulator_yield),
+            inflow_metallicity_zsun=float(args.regulator_inflow_metallicity_zsun),
+            metal_loading_norm=float(args.regulator_metal_loading_norm),
+            metal_loading_mass_slope=float(args.regulator_metal_loading_mass_slope),
+            metal_loading_redshift_slope=float(args.regulator_metal_loading_redshift_slope),
+            metallicity_scatter_dex=float(args.regulator_metallicity_scatter_dex),
+        )
+        if metallicity_source == "regulator"
         else None
     )
 
@@ -521,6 +562,7 @@ def main() -> None:
         "metallicity_source": np.asarray([metallicity_source]),
         "stochastic_metallicity_enabled": np.asarray([metallicity_source == "one_zone"]),
         "mzr_metallicity_enabled": np.asarray([metallicity_source == "mzr"]),
+        "regulator_metallicity_enabled": np.asarray([metallicity_source == "regulator"]),
         "metallicity_random_seed": np.asarray(
             [-1 if args.metallicity_random_seed is None else int(args.metallicity_random_seed)],
             dtype=int,
@@ -529,6 +571,34 @@ def main() -> None:
         "mzr_stellar_mass_floor": np.asarray([float(args.mzr_stellar_mass_floor)], dtype=float),
         "mzr_scatter_dex": np.asarray([float(args.mzr_scatter_dex)], dtype=float),
         "mzr_returned_fraction": np.asarray([float(args.mzr_returned_fraction)], dtype=float),
+        "regulator_gas_fraction_norm": np.asarray([float(args.regulator_gas_fraction_norm)], dtype=float),
+        "regulator_gas_fraction_mass_slope": np.asarray(
+            [float(args.regulator_gas_fraction_mass_slope)],
+            dtype=float,
+        ),
+        "regulator_gas_fraction_redshift_slope": np.asarray(
+            [float(args.regulator_gas_fraction_redshift_slope)],
+            dtype=float,
+        ),
+        "regulator_yield": np.asarray([float(args.regulator_yield)], dtype=float),
+        "regulator_returned_fraction": np.asarray([float(args.regulator_returned_fraction)], dtype=float),
+        "regulator_inflow_metallicity_zsun": np.asarray(
+            [float(args.regulator_inflow_metallicity_zsun)],
+            dtype=float,
+        ),
+        "regulator_metal_loading_norm": np.asarray([float(args.regulator_metal_loading_norm)], dtype=float),
+        "regulator_metal_loading_mass_slope": np.asarray(
+            [float(args.regulator_metal_loading_mass_slope)],
+            dtype=float,
+        ),
+        "regulator_metal_loading_redshift_slope": np.asarray(
+            [float(args.regulator_metal_loading_redshift_slope)],
+            dtype=float,
+        ),
+        "regulator_metallicity_scatter_dex": np.asarray(
+            [float(args.regulator_metallicity_scatter_dex)],
+            dtype=float,
+        ),
         "metal_gas_fraction_of_baryons": np.asarray([float(args.metal_gas_fraction_of_baryons)], dtype=float),
         "metal_yield": np.asarray([float(args.metal_yield)], dtype=float),
         "metal_topheavy_yield_multiplier": np.asarray(
@@ -573,6 +643,17 @@ def main() -> None:
         f"source_redshift_gate_enabled: {bool(imf_transition_parameters.source_redshift_gate_enabled)}",
         f"growth_time_threshold_myr: {imf_transition_parameters.growth_time_threshold_myr:g}",
         f"metallicity_topheavy_max_zsun: {metallicity_topheavy_max_zsun}",
+        f"metallicity_source: {metallicity_source}",
+        f"regulator_gas_fraction_norm: {float(args.regulator_gas_fraction_norm):g}",
+        f"regulator_gas_fraction_mass_slope: {float(args.regulator_gas_fraction_mass_slope):g}",
+        f"regulator_gas_fraction_redshift_slope: {float(args.regulator_gas_fraction_redshift_slope):g}",
+        f"regulator_yield: {float(args.regulator_yield):g}",
+        f"regulator_returned_fraction: {float(args.regulator_returned_fraction):g}",
+        f"regulator_inflow_metallicity_zsun: {float(args.regulator_inflow_metallicity_zsun):g}",
+        f"regulator_metal_loading_norm: {float(args.regulator_metal_loading_norm):g}",
+        f"regulator_metal_loading_mass_slope: {float(args.regulator_metal_loading_mass_slope):g}",
+        f"regulator_metal_loading_redshift_slope: {float(args.regulator_metal_loading_redshift_slope):g}",
+        f"regulator_metallicity_scatter_dex: {float(args.regulator_metallicity_scatter_dex):g}",
         f"workers: {args.workers}",
         f"N_mass: {args.N_mass}",
         f"n_tracks: {args.n_tracks}",
@@ -607,11 +688,22 @@ def main() -> None:
         f"metallicity_source: {metallicity_source}",
         f"stochastic_metallicity_enabled: {metallicity_source == 'one_zone'}",
         f"mzr_metallicity_enabled: {metallicity_source == 'mzr'}",
+        f"regulator_metallicity_enabled: {metallicity_source == 'regulator'}",
         f"metallicity_random_seed: {args.metallicity_random_seed}",
         f"mzr_relation: {str(args.mzr_relation)}",
         f"mzr_stellar_mass_floor: {float(args.mzr_stellar_mass_floor)}",
         f"mzr_scatter_dex: {float(args.mzr_scatter_dex)}",
         f"mzr_returned_fraction: {float(args.mzr_returned_fraction)}",
+        f"regulator_gas_fraction_norm: {float(args.regulator_gas_fraction_norm)}",
+        f"regulator_gas_fraction_mass_slope: {float(args.regulator_gas_fraction_mass_slope)}",
+        f"regulator_gas_fraction_redshift_slope: {float(args.regulator_gas_fraction_redshift_slope)}",
+        f"regulator_yield: {float(args.regulator_yield)}",
+        f"regulator_returned_fraction: {float(args.regulator_returned_fraction)}",
+        f"regulator_inflow_metallicity_zsun: {float(args.regulator_inflow_metallicity_zsun)}",
+        f"regulator_metal_loading_norm: {float(args.regulator_metal_loading_norm)}",
+        f"regulator_metal_loading_mass_slope: {float(args.regulator_metal_loading_mass_slope)}",
+        f"regulator_metal_loading_redshift_slope: {float(args.regulator_metal_loading_redshift_slope)}",
+        f"regulator_metallicity_scatter_dex: {float(args.regulator_metallicity_scatter_dex)}",
         f"metal_gas_fraction_of_baryons: {float(args.metal_gas_fraction_of_baryons)}",
         f"metal_yield: {float(args.metal_yield)}",
         f"metal_topheavy_yield_multiplier: {float(args.metal_topheavy_yield_multiplier)}",
@@ -681,6 +773,7 @@ def main() -> None:
                 mass_function_model=mass_function_model,
                 metal_enrichment_parameters=metal_enrichment_parameters,
                 mzr_metallicity_parameters=mzr_metallicity_parameters,
+                regulator_metallicity_parameters=regulator_metallicity_parameters,
                 metallicity_random_seed=mode_metallicity_seed,
                 enable_time_delay=bool(args.enable_time_delay),
                 burst_scatter_dex=float(args.burst_scatter_dex),
