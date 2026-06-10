@@ -51,3 +51,19 @@ external_data/ssp_spectra/
 external_data/empirical_models/universemachine_dr1/tarballs/
 external_data/literature_sources/**/*.tar
 external_data/literature_sources/**/*.tar.gz
+
+# Literature-intake notes and generated review artifacts are local research
+# context, not production source files.
+.agents/skills/literature-intake/
+docs/codex_literature_intake_task.md
+docs/literature/
+external_data/literature_sources/index.json
+external_data/literature_sources/modules/
+external_data/literature_sources/papers/
+external_data/literature_sources/references.bib
+literature/
+
+# Local slide drafts generated for advisor review.
+slides/one_zone_metallicity_explainer/
+slides/project_status_advisor_draft/
+slides/uvlf_status_deck/assets/miniagn_smoothocc_selected_uvlf.pdf

@@ -22,16 +22,19 @@ code-level detail.
 
 ## Project Map
 
-- `auroralf/mah/`: Monte Carlo halo assembly history generation.
+- `auroralf/mah/`: halo assembly history generation, including McBride-style
+  Monte Carlo histories and TNG/THESAN cache-backed MAH backends.
 - `auroralf/sfr/`: star-formation model utilities.
-- `auroralf/chemistry/`: stochastic one-zone metal enrichment diagnostics
-  along fixed MAH/SFR histories.
+- `auroralf/chemistry/`: stochastic one-zone metal enrichment diagnostics and
+  MZR birth-metallicity utilities along fixed MAH/SFR histories.
 - `auroralf/ssp/`: SSP loading and UV convolution utilities.
 - `auroralf/uvlf/`: UV luminosity function sampling, HMF weighting, dust
   correction, and Pop II IMF mode logic.
 - `tests/`: focused regression tests.
 - `scripts/run/`: production or batch workflow entry points.
 - `scripts/submit/`: SLURM submission wrappers.
+- `scripts/data/`: external simulation data selection, download, and compact
+  cache construction utilities for TNG/THESAN MAH workflows.
 - `scripts/plot/`: plotting and visual comparison scripts.
 - `scripts/analysis/`: post-processing and result comparison scripts.
 - `scripts/experiments/`: one-off diagnostics and exploratory scripts; do not
@@ -70,11 +73,11 @@ packages and versions you installed.
 ## Data And Outputs
 
 - `external_data/`: external source data, observational constraints, SSP
-  spectra, empirical model releases, and literature source packages. Preserve
-  source-data provenance and avoid editing these files unless the task is
-  explicitly about data ingestion or correction.
+  spectra, empirical model releases, raw TNG/THESAN downloads, and literature
+  source packages. Preserve source-data provenance and avoid editing these files
+  unless the task is explicitly about data ingestion or correction.
 - `data_save/`: reusable intermediate products, long-running `.npz` outputs,
-  and summary tables.
+  compact TNG/THESAN MAH caches, TNG merger-event caches, and summary tables.
 - `outputs/`: logs, progress files, quick-look plots, and one-off diagnostics.
 - `temp_data/`: scratch caches and temporary `.npz` products.
 - `slides/`: Beamer sources, slide PDFs, and slide-dependent assets.
@@ -86,10 +89,11 @@ For slide figures, prefer vector `.pdf` assets under `slides/assets/`; keep
 preview rasters and draft figures in `outputs/` unless the user requests a
 tracked raster asset.
 
-Large external libraries and raw source packages may be ignored by git,
-including `external_data/ssp_spectra/`,
-`external_data/empirical_models/universemachine_dr1/tarballs/`, and literature
-source tarballs. A fresh clone may not contain these files. If required data are
+Large external libraries, raw source packages, and simulation downloads may be
+ignored by git, including `external_data/ssp_spectra/`,
+`external_data/empirical_models/universemachine_dr1/tarballs/`,
+`external_data/tng/`, `external_data/thesan/`, and literature source tarballs. A
+fresh clone may not contain these files. If required data or compact caches are
 missing, report the exact missing path instead of creating fake data, changing
 default paths, or silently skipping the calculation.
 
@@ -101,6 +105,9 @@ default paths, or silently skipping the calculation.
 - `main` is the unified production branch. Do not maintain a separate old
   `topheavyIMF` path in parallel; use switches in the unified model for
   historical comparisons.
+- The default MAH backend is `mcbride`. Use `mah_backend="tng"` or
+  `mah_backend="thesan"` only with explicit real compact cache paths; do not
+  fabricate cache files or resample around a missing simulation input.
 - Preserve units and conversions:
   - halo mass: `Msun`
   - SFR: `Msun/yr`
@@ -128,16 +135,21 @@ default paths, or silently skipping the calculation.
 - `IMFTransitionParameters.metallicity_topheavy_max_zsun=None` disables the
   birth-metallicity gate and recovers the historical top-heavy behavior. The
   production CLI equivalent is `--disable-metallicity-topheavy-gate`.
-- Non-canonical IMF modes with a non-`None` metallicity gate require
-  `MetalEnrichmentParameters` / `--enable-stochastic-metallicity`; keep this as
-  an explicit error rather than silently dropping the gate.
+- Non-canonical IMF modes with a non-`None` metallicity gate require an explicit
+  birth-metallicity backend: either one-zone `MetalEnrichmentParameters` or
+  MZR `MZRBirthMetallicityParameters`. The production CLI uses
+  `--metallicity-source mzr|one_zone|none`; `--enable-stochastic-metallicity` is
+  only a backward-compatible alias for `--metallicity-source one_zone`. Keep
+  missing backend configuration as an explicit error rather than silently
+  dropping the gate.
 - `topheavy_ssp_metallicity` selects the HDF5 SSP template metallicity. It is
   not the gas birth-metallicity gate, even though the default value is also
   `0.05 Zsun`.
-- Stochastic metallicity evolution is diagnostic along fixed MAH/SFR tracks and
-  must not feed back into the SFR model. `birth_metallicity_zsun_grid` is the
-  pre-star-formation metallicity used for IMF gating; `gas_metallicity_zsun_grid`
-  is the post-step gas metallicity.
+- One-zone stochastic metallicity evolution is diagnostic along fixed MAH/SFR
+  tracks and must not feed back into the SFR model. MZR metallicity is an
+  empirical birth-metallicity backend, not a gas-enrichment history.
+  `birth_metallicity_zsun_grid` is the pre-star-formation metallicity used for
+  IMF gating; `gas_metallicity_zsun_grid` is the post-step gas metallicity.
 - The calibrated top-heavy metal yield multiplier is
   `CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER = 1.28`. Use larger values only for an
   explicit parameter sweep or historical comparison.
@@ -177,11 +189,18 @@ burst-scatter UVLF runs. It requires a SLURM allocation and defaults to
 `scripts/run/run_uvlf_mass_function_compare_full.py` entry point is intentionally
 disabled and points users to the Reed07 HMF workflow.
 
-When running non-canonical IMF modes with the default metallicity gate, include
-the stochastic-metallicity switch, for example:
+When running non-canonical IMF modes with the default metallicity gate, choose a
+birth-metallicity backend explicitly. The current production default is the MZR
+backend, for example:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --enable-stochastic-metallicity --metallicity-random-seed 123
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source mzr --mzr-relation fire2_highz --metallicity-random-seed 123
+```
+
+For the one-zone diagnostic backend, use:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source one_zone --metallicity-random-seed 123 --metal-topheavy-yield-multiplier 1.28
 ```
 
 Use `scripts/analysis/run_metallicity_history_grid.py` for representative halo
@@ -189,6 +208,12 @@ metallicity histories and `scripts/analysis/sweep_metal_yield_multiplier_mzr.py`
 for MZR yield-multiplier checks. Plotting scripts under `scripts/plot/` and
 `scripts/analysis/` expect real observational/source files under
 `external_data/`; do not synthesize missing observations.
+
+Use `scripts/data/` for TNG/THESAN source selection, API/download planning, and
+compact MAH cache construction. TNG API workflows require a real `TNG_API_KEY`;
+THESAN workflows require the real source files under `external_data/thesan/`.
+Generated compact caches intended for reuse belong under `data_save/`, while
+diagnostic summaries and quick-look plots belong under `outputs/`.
 
 ## Verification
 
@@ -207,6 +232,13 @@ For narrower edits, use the relevant tests:
 - HMF validation and Reed07 unit handling: `tests/test_hmf_sampling.py`
 - metallicity history summaries: `tests/test_metallicity_history_summary.py`
 - MZR calibration helpers: `tests/test_mzr_constraints.py`
+- TNG MAH backend and run-script CLI exposure: `tests/test_tng_mah_backend.py`
+- THESAN MAH backend and run-script CLI exposure:
+  `tests/test_thesan_mah_backend.py`
+- TNG selection and merger-event cache builders:
+  `tests/test_tng_selection_script.py` and
+  `tests/test_tng_merger_event_cache.py`
+- THESAN download planning: `tests/test_thesan_download_plan.py`
 
 ## Editing Rules
 
@@ -215,8 +247,9 @@ For narrower edits, use the relevant tests:
   unrelated user changes.
 - Keep changes narrowly scoped to the requested behavior.
 - Do not add temporary Python scripts at the repository root. Root-level `*.py`
-  files are ignored here; place scripts under `scripts/run/`, `scripts/plot/`,
-  `scripts/analysis/`, or `scripts/experiments/` according to their purpose.
+  files are ignored here; place scripts under `scripts/run/`, `scripts/data/`,
+  `scripts/plot/`, `scripts/analysis/`, or `scripts/experiments/` according to
+  their purpose.
 - Update README/API documentation when changing public functions, returned
   fields, accepted modes, units, or output paths.
 - Prefer structured data loading and explicit validation over ad hoc parsing.
