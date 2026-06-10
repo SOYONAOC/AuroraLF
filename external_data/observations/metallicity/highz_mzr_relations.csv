@@ -1,0 +1,5 @@
+label,source,redshift,redshift_min,redshift_max,pivot_logmstar,slope,intercept_oh12,intercept_low,intercept_high,valid_logmstar_min,valid_logmstar_max,color,linestyle,source_url,notes
+EXCELS MZR z=3.2,Stanton et al. 2026 EXCELS,3.2,2.0,4.0,9.0,0.29,8.14,8.13,8.15,8.1,10.3,#de8f05,-,https://academic.oup.com/mnras/article/547/4/stag449/8507236,"Equation 5, Z9 intercept at Mstar=1e9 Msun for 2<z<4."
+EXCELS MZR z=5.5,Stanton et al. 2026 EXCELS,5.5,4.0,8.0,9.0,0.30,8.00,7.97,8.03,8.1,10.3,#de8f05,-,https://academic.oup.com/mnras/article/547/4/stag449/8507236,"Equation 6, Z9 intercept at Mstar=1e9 Msun for 4<z<8."
+JADES low-mass MZR z=3-6,Curti et al. 2024 JADES,4.5,3.0,6.0,8.0,0.18,7.75,7.72,7.78,7.2,9.3,#9467bd,--,https://arxiv.org/abs/2304.08516,"z=3-6 fit normalization at Mstar=1e8 Msun; strong-line metallicities anchored to Te scale."
+JADES low-mass MZR z=6-10,Curti et al. 2024 JADES,8.0,6.0,10.0,8.0,0.11,7.65,7.61,7.69,7.2,9.3,#9467bd,--,https://arxiv.org/abs/2304.08516,"z=6-10 fit normalization at Mstar=1e8 Msun; strong-line metallicities anchored to Te scale."

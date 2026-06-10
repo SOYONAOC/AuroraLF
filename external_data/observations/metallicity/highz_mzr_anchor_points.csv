@@ -1,0 +1,2 @@
+label,source,comparison_type,redshift,logmstar,logmstar_low,logmstar_high,oh12,oh12_low,oh12_high,marker,color,source_url,notes
+GHZ2/GLASS-z12 direct Te individual,Calabro et al. 2024,individual_direct_te,12.34,8.8,8.6,9.0,7.44,7.20,7.70,*,#cc78bc,https://arxiv.org/abs/2403.12683,"Direct-Te estimate from combined NIRSpec+MIRI analysis; individual galaxy, not an MZR mean."
