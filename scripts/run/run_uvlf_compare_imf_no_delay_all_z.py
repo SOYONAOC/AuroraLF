@@ -129,9 +129,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mzr-stellar-mass-floor", type=float, default=1.0e6)
     parser.add_argument("--mzr-scatter-dex", type=float, default=0.0)
     parser.add_argument("--mzr-returned-fraction", type=float, default=0.4)
-    parser.add_argument("--regulator-gas-fraction-norm", type=float, default=0.02)
-    parser.add_argument("--regulator-gas-fraction-mass-slope", type=float, default=0.0)
-    parser.add_argument("--regulator-gas-fraction-redshift-slope", type=float, default=0.0)
+    parser.add_argument(
+        "--regulator-gas-fraction-norm",
+        type=float,
+        default=0.02,
+        help="Regulator f_res = Mgas / (fb Mh), not galaxy Mgas / (Mgas + Mstar).",
+    )
+    parser.add_argument(
+        "--regulator-gas-fraction-mass-slope",
+        type=float,
+        default=0.0,
+        help="Mass slope for regulator f_res = Mgas / (fb Mh).",
+    )
+    parser.add_argument(
+        "--regulator-gas-fraction-redshift-slope",
+        type=float,
+        default=0.0,
+        help="Redshift slope for regulator f_res = Mgas / (fb Mh).",
+    )
     parser.add_argument("--regulator-yield", type=float, default=0.01)
     parser.add_argument("--regulator-returned-fraction", type=float, default=0.4)
     parser.add_argument("--regulator-inflow-metallicity-zsun", type=float, default=0.0)

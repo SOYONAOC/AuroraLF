@@ -12,6 +12,8 @@ class RegulatorMetallicityParameters:
     """Parameters for the algebraic gas-regulator metallicity closure."""
 
     solar_metallicity_mass_fraction: float = SOLAR_METALLICITY_MASS_FRACTION
+    # Historical API name; physically this is f_res = Mgas / (fb Mh),
+    # not the galaxy gas fraction Mgas / (Mgas + Mstar).
     gas_fraction_norm: float = 0.02
     gas_fraction_mass_scale_msun: float = 1.0e10
     gas_fraction_mass_slope: float = 0.0

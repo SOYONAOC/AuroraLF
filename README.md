@@ -256,13 +256,14 @@ from auroralf.chemistry import RegulatorMetallicityParameters, compute_regulator
 核心量：
 
 - `Mstar(t) = (1 - R) integral SFR(t') dt'`
-- `Mgas(Mh,z) = fgas(Mh,z) fb Mh`
+- `Mgas(Mh,z) = fres(Mh,z) fb Mh`
 - `Zgas = Z0 + y / [1 + Mgas/Mstar + lambda_Z/(1 - R)]`
 
 `RegulatorMetallicityParameters` 常用字段：
 
 - `gas_fraction_norm`、`gas_fraction_mass_slope`、`gas_fraction_redshift_slope`
-  控制 `fgas(Mh,z)`；`fgas` 是 halo baryons 中进入星系冷气体库并参与稀释的比例，不是宇宙重子比例
+  控制 `fres(Mh,z) = Mgas / (fb Mh)`；这是 halo baryons 中进入可稀释金属的冷气体库比例，不是星系内部 gas fraction
+  `Mgas / (Mgas + Mstar)`。字段名保留 `gas_fraction_*` 是为了兼容当前 API/CLI
 - `metal_yield`
   每形成单位 stellar mass 的 metal yield
 - `returned_fraction`
@@ -284,6 +285,9 @@ from auroralf.chemistry import RegulatorMetallicityParameters, compute_regulator
 
 - 这是诊断性金属闭合，不包含显式 metal production/mixing 时间延迟，也不把 `lambda_Z` 反馈到 SFR
 - 当前实现把本步 regulator `Zgas` 作为 source-time `Zbirth` 提供给 IMF gate
+- 若要和观测常用的星系气体分数比较，应使用
+  `fgas_gal = fres / (fres + Mstar / (fb Mh))`，不要把 `fres=0.02`
+  误读成 2% galaxy gas fraction
 - 参数扫描脚本见 `scripts/analysis/sweep_regulator_metallicity.py`
 - 红移演化诊断脚本见 `scripts/analysis/plot_regulator_metallicity_redshift_evolution.py`
 
@@ -794,7 +798,8 @@ PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-ru
 - `--mzr-stellar-mass-floor`、`--mzr-scatter-dex`、`--mzr-returned-fraction`
   MZR backend 的低质量下限、lognormal scatter 和 surviving stellar mass 返回比例
 - `--regulator-gas-fraction-norm`、`--regulator-gas-fraction-mass-slope`、`--regulator-gas-fraction-redshift-slope`
-  regulator backend 的冷气体库比例 `fgas(Mh,z)` 参数；扫描推荐默认 `fgas=0.02`
+  regulator backend 的 reservoir fraction `fres(Mh,z)=Mgas/(fb Mh)` 参数；扫描推荐默认 `fres=0.02`。
+  这不是 `Mgas/(Mgas+Mstar)` 形式的 galaxy gas fraction
 - `--regulator-yield`、`--regulator-returned-fraction`、`--regulator-inflow-metallicity-zsun`
   regulator backend 的 metal yield、即时返回比例和 inflow metallicity
 - `--regulator-metal-loading-norm`、`--regulator-metal-loading-mass-slope`、`--regulator-metal-loading-redshift-slope`

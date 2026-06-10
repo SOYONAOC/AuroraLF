@@ -52,9 +52,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=42)
     parser.add_argument("--metallicity-random-seed", type=int, default=123)
     parser.add_argument("--enable-time-delay", action="store_true")
-    parser.add_argument("--gas-fraction-norm", type=float, default=0.02)
-    parser.add_argument("--gas-fraction-mass-slope", type=float, default=0.0)
-    parser.add_argument("--gas-fraction-redshift-slope", type=float, default=0.0)
+    parser.add_argument(
+        "--gas-fraction-norm",
+        type=float,
+        default=0.02,
+        help="f_res = Mgas / (fb Mh), not Mgas / (Mgas + Mstar).",
+    )
+    parser.add_argument("--gas-fraction-mass-slope", type=float, default=0.0, help="Mass slope for f_res.")
+    parser.add_argument("--gas-fraction-redshift-slope", type=float, default=0.0, help="Redshift slope for f_res.")
     parser.add_argument("--metal-loading-norm", type=float, default=20.0)
     parser.add_argument("--metal-loading-mass-slope", type=float, default=-0.5)
     parser.add_argument("--metal-loading-redshift-slope", type=float, default=0.0)

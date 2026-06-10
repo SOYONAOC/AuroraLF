@@ -75,8 +75,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=42)
     parser.add_argument("--metallicity-random-seed", type=int, default=123)
     parser.add_argument("--enable-time-delay", action="store_true")
-    parser.add_argument("--gas-fraction-norm-grid", type=_parse_float_grid, default=_parse_float_grid("0.02 0.05 0.10 0.20 0.35"))
-    parser.add_argument("--gas-fraction-mass-slope-grid", type=_parse_float_grid, default=_parse_float_grid("0.00 0.10 0.20"))
+    parser.add_argument(
+        "--gas-fraction-norm-grid",
+        type=_parse_float_grid,
+        default=_parse_float_grid("0.02 0.05 0.10 0.20 0.35"),
+        help="Grid for f_res = Mgas / (fb Mh), not Mgas / (Mgas + Mstar).",
+    )
+    parser.add_argument(
+        "--gas-fraction-mass-slope-grid",
+        type=_parse_float_grid,
+        default=_parse_float_grid("0.00 0.10 0.20"),
+        help="Mass slope for f_res = Mgas / (fb Mh).",
+    )
     parser.add_argument("--metal-loading-norm-grid", type=_parse_float_grid, default=_parse_float_grid("0 1 3 5 8 12 20"))
     parser.add_argument("--metal-loading-mass-slope-grid", type=_parse_float_grid, default=_parse_float_grid("-0.50 -0.30 0.00"))
     parser.add_argument("--metal-yield-grid", type=_parse_float_grid, default=_parse_float_grid("0.010 0.015 0.020"))
@@ -430,7 +440,7 @@ def _plot_score_landscape(
     ax.set_xticklabels([f"{item:g}" for item in fgas_values])
     ax.set_yticks(np.arange(len(loading_values)))
     ax.set_yticklabels([f"{item:g}" for item in loading_values])
-    ax.set_xlabel(r"$f_{\rm gas}$ normalization")
+    ax.set_xlabel(r"$f_{\rm res}=M_{\rm gas}/(f_bM_h)$ normalization")
     ax.set_ylabel(r"$\lambda_Z$ normalization")
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label("best score in slope/yield subgrid")
