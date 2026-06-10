@@ -285,6 +285,7 @@ from auroralf.chemistry import RegulatorMetallicityParameters, compute_regulator
 - 这是诊断性金属闭合，不包含显式 metal production/mixing 时间延迟，也不把 `lambda_Z` 反馈到 SFR
 - 当前实现把本步 regulator `Zgas` 作为 source-time `Zbirth` 提供给 IMF gate
 - 参数扫描脚本见 `scripts/analysis/sweep_regulator_metallicity.py`
+- 红移演化诊断脚本见 `scripts/analysis/plot_regulator_metallicity_redshift_evolution.py`
 
 ## `auroralf.ssp.load_uv1600_table()`
 
