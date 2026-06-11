@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from .evolution import SOLAR_METALLICITY_MASS_FRACTION
+
+SOLAR_METALLICITY_MASS_FRACTION = 0.0142
 
 
 @dataclass(frozen=True)

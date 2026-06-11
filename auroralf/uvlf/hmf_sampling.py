@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 from hmf import MassFunction
 
-from auroralf.chemistry import MZRBirthMetallicityParameters, MetalEnrichmentParameters, RegulatorMetallicityParameters
+from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
 from auroralf.mah import (
     MAH_BACKEND_MCBRIDE,
     MAH_BACKEND_THESAN,
@@ -250,7 +250,6 @@ def _run_single_mass_sample(
         IMFTransitionParameters,
         int | None,
         SFRModelParameters,
-        MetalEnrichmentParameters | None,
         MZRBirthMetallicityParameters | None,
         RegulatorMetallicityParameters | None,
         int | None,
@@ -289,7 +288,6 @@ def _run_single_mass_sample(
         imf_transition_parameters,
         random_seed,
         sfr_model_parameters,
-        metal_enrichment_parameters,
         mzr_metallicity_parameters,
         regulator_metallicity_parameters,
         metallicity_random_seed,
@@ -327,7 +325,6 @@ def _run_single_mass_sample(
         imf_mode=imf_mode,
         imf_transition_parameters=imf_transition_parameters,
         sfr_model_parameters=sfr_model_parameters,
-        metal_enrichment_parameters=metal_enrichment_parameters,
         mzr_metallicity_parameters=mzr_metallicity_parameters,
         regulator_metallicity_parameters=regulator_metallicity_parameters,
         metallicity_random_seed=metallicity_random_seed,
@@ -395,7 +392,6 @@ def sample_uvlf_from_hmf(
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
     mass_function_model: str = DEFAULT_MASS_FUNCTION_MODEL,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
-    metal_enrichment_parameters: MetalEnrichmentParameters | None = None,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
     regulator_metallicity_parameters: RegulatorMetallicityParameters | None = None,
     metallicity_random_seed: int | None = None,
@@ -439,15 +435,14 @@ def sample_uvlf_from_hmf(
     source_count = sum(
         source is not None
         for source in (
-            metal_enrichment_parameters,
             mzr_metallicity_parameters,
             regulator_metallicity_parameters,
         )
     )
     if source_count > 1:
         raise ValueError(
-            "provide only one birth metallicity source: metal_enrichment_parameters, "
-            "mzr_metallicity_parameters, or regulator_metallicity_parameters"
+            "provide only one birth metallicity source: "
+            "mzr_metallicity_parameters or regulator_metallicity_parameters"
         )
     birth_metallicity_source_enabled = source_count == 1
     if (
@@ -532,7 +527,6 @@ def sample_uvlf_from_hmf(
             imf_transition_parameters,
             None if random_seed is None else int(random_seed + mass_index),
             sfr_model_parameters,
-            metal_enrichment_parameters,
             mzr_metallicity_parameters,
             regulator_metallicity_parameters,
             None if metallicity_random_seed is None else int(metallicity_random_seed + mass_index),
@@ -776,20 +770,14 @@ def sample_uvlf_from_hmf(
         )
         if np.any(np.isfinite(sample_topheavy_light_fraction))
         else 0.0,
-        "stochastic_metallicity_enabled": metal_enrichment_parameters is not None,
         "mzr_metallicity_enabled": mzr_metallicity_parameters is not None,
         "regulator_metallicity_enabled": regulator_metallicity_parameters is not None,
-        "metallicity_source": "one_zone"
-        if metal_enrichment_parameters is not None
-        else "mzr"
+        "metallicity_source": "mzr"
         if mzr_metallicity_parameters is not None
         else "regulator"
         if regulator_metallicity_parameters is not None
         else "none",
         "metallicity_random_seed": metallicity_random_seed,
-        "metal_enrichment_parameters": metal_enrichment_parameters.as_metadata()
-        if metal_enrichment_parameters is not None
-        else None,
         "mzr_metallicity_parameters": mzr_metallicity_parameters.as_metadata()
         if mzr_metallicity_parameters is not None
         else None,
@@ -799,7 +787,7 @@ def sample_uvlf_from_hmf(
         "final_gas_metallicity_zsun_median_by_mass": final_gas_metallicity_zsun_median_by_mass,
         "birth_metallicity_zsun_starforming_median_by_mass": birth_metallicity_zsun_starforming_median_by_mass,
         "final_gas_metallicity_zsun_median": _finite_median_or_none(final_gas_metallicity_zsun_median_by_mass)
-        if metal_enrichment_parameters is not None or regulator_metallicity_parameters is not None
+        if regulator_metallicity_parameters is not None
         else None,
         "birth_metallicity_zsun_starforming_median": _finite_median_or_none(
             birth_metallicity_zsun_starforming_median_by_mass

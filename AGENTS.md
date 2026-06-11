@@ -25,8 +25,8 @@ code-level detail.
 - `auroralf/mah/`: halo assembly history generation, including McBride-style
   Monte Carlo histories and TNG/THESAN cache-backed MAH backends.
 - `auroralf/sfr/`: star-formation model utilities.
-- `auroralf/chemistry/`: stochastic one-zone metal enrichment diagnostics and
-  MZR birth-metallicity utilities along fixed MAH/SFR histories.
+- `auroralf/chemistry/`: MZR prior and gas-regulator metallicity diagnostics
+  along fixed MAH/SFR histories.
 - `auroralf/ssp/`: SSP loading and UV convolution utilities.
 - `auroralf/uvlf/`: UV luminosity function sampling, HMF weighting, dust
   correction, and Pop II IMF mode logic.
@@ -135,24 +135,16 @@ default paths, or silently skipping the calculation.
 - `IMFTransitionParameters.metallicity_topheavy_max_zsun=None` disables the
   birth-metallicity gate and recovers the historical top-heavy behavior. The
   production CLI equivalent is `--disable-metallicity-topheavy-gate`.
-- Non-canonical IMF modes with a non-`None` metallicity gate require an explicit
-  birth-metallicity backend: either one-zone `MetalEnrichmentParameters` or
-  MZR `MZRBirthMetallicityParameters`. The production CLI uses
-  `--metallicity-source mzr|one_zone|none`; `--enable-stochastic-metallicity` is
-  only a backward-compatible alias for `--metallicity-source one_zone`. Keep
-  missing backend configuration as an explicit error rather than silently
-  dropping the gate.
+- Non-canonical IMF modes with a non-`None` metallicity gate require
+  an explicit regulator or MZR birth-metallicity source; keep this as an
+  explicit error rather than silently dropping the gate.
 - `topheavy_ssp_metallicity` selects the HDF5 SSP template metallicity. It is
   not the gas birth-metallicity gate, even though the default value is also
   `0.05 Zsun`.
-- One-zone stochastic metallicity evolution is diagnostic along fixed MAH/SFR
-  tracks and must not feed back into the SFR model. MZR metallicity is an
-  empirical birth-metallicity backend, not a gas-enrichment history.
-  `birth_metallicity_zsun_grid` is the pre-star-formation metallicity used for
-  IMF gating; `gas_metallicity_zsun_grid` is the post-step gas metallicity.
-- The calibrated top-heavy metal yield multiplier is
-  `CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER = 1.28`. Use larger values only for an
-  explicit parameter sweep or historical comparison.
+- Regulator metallicity evolution is diagnostic along fixed MAH/SFR tracks and
+  must not feed back into the SFR model. `birth_metallicity_zsun_grid` is the
+  source-time metallicity used for IMF gating; `gas_metallicity_zsun_grid` is
+  the regulator gas metallicity.
 - The SFR delay model is controlled by `enable_time_delay`. Low-level Python
   APIs keep `False` as their backward-compatible default; the production UVLF
   script defaults to delay enabled and uses `--disable-time-delay` only for
@@ -189,23 +181,17 @@ burst-scatter UVLF runs. It requires a SLURM allocation and defaults to
 `scripts/run/run_uvlf_mass_function_compare_full.py` entry point is intentionally
 disabled and points users to the Reed07 HMF workflow.
 
-When running non-canonical IMF modes with the default metallicity gate, choose a
-birth-metallicity backend explicitly. The current production default is the MZR
-backend, for example:
+When running non-canonical IMF modes with the default metallicity gate, use the
+regulator backend, for example:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source mzr --mzr-relation fire2_highz --metallicity-random-seed 123
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source regulator --metallicity-random-seed 123
 ```
 
-For the one-zone diagnostic backend, use:
-
-```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source one_zone --metallicity-random-seed 123 --metal-topheavy-yield-multiplier 1.28
-```
-
-Use `scripts/analysis/run_metallicity_history_grid.py` for representative halo
-metallicity histories and `scripts/analysis/sweep_metal_yield_multiplier_mzr.py`
-for MZR yield-multiplier checks. Plotting scripts under `scripts/plot/` and
+Use `scripts/analysis/sweep_regulator_metallicity.py` for regulator parameter
+scans and `scripts/analysis/plot_regulator_mzr_validation.py` /
+`scripts/analysis/plot_regulator_metallicity_redshift_evolution.py` for MZR and
+redshift-evolution checks. Plotting scripts under `scripts/plot/` and
 `scripts/analysis/` expect real observational/source files under
 `external_data/`; do not synthesize missing observations.
 
@@ -226,7 +212,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests
 For narrower edits, use the relevant tests:
 
 - IMF and source-time gate behavior: `tests/test_imf_modes.py`
-- stochastic metallicity and pipeline metadata: `tests/test_chemistry.py`
+- regulator/MZR metallicity and pipeline metadata: `tests/test_chemistry.py`
 - mass-conserving SFR burst scatter and production CLI defaults:
   `tests/test_burst_scatter.py`
 - HMF validation and Reed07 unit handling: `tests/test_hmf_sampling.py`

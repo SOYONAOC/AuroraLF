@@ -13,13 +13,10 @@ from astropy.cosmology import FlatLambdaCDM
 from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
     MZRBirthMetallicityResult,
-    MetalEnrichmentParameters,
-    MetallicityEvolutionResult,
     RegulatorMetallicityParameters,
     RegulatorMetallicityResult,
     compute_mzr_birth_metallicity,
     compute_regulator_metallicity,
-    evolve_stochastic_metallicity,
 )
 from auroralf.mah import (
     MAH_BACKEND_MCBRIDE,
@@ -389,7 +386,6 @@ def run_halo_uv_pipeline(
     burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
     ssp_lookback_max_myr: float = SSP_UV_LOOKBACK_MAX_MYR,
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
-    metal_enrichment_parameters: MetalEnrichmentParameters | None = None,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
     regulator_metallicity_parameters: RegulatorMetallicityParameters | None = None,
     metallicity_random_seed: int | None = None,
@@ -414,15 +410,14 @@ def run_halo_uv_pipeline(
     source_count = sum(
         source is not None
         for source in (
-            metal_enrichment_parameters,
             mzr_metallicity_parameters,
             regulator_metallicity_parameters,
         )
     )
     if source_count > 1:
         raise ValueError(
-            "provide only one birth metallicity source: metal_enrichment_parameters, "
-            "mzr_metallicity_parameters, or regulator_metallicity_parameters"
+            "provide only one birth metallicity source: "
+            "mzr_metallicity_parameters or regulator_metallicity_parameters"
         )
     birth_metallicity_source_enabled = source_count == 1
     if imf_mode != IMF_MODE_CANONICAL and metallicity_topheavy_max_zsun is not None and not birth_metallicity_source_enabled:
@@ -549,7 +544,6 @@ def run_halo_uv_pipeline(
     )
     topheavy_source_grid = candidate_topheavy_source_grid
 
-    metallicity_result: MetallicityEvolutionResult | None = None
     mzr_metallicity_result: MZRBirthMetallicityResult | None = None
     regulator_metallicity_result: RegulatorMetallicityResult | None = None
     birth_metallicity_zsun_grid: np.ndarray | None = None
@@ -557,27 +551,7 @@ def run_halo_uv_pipeline(
     metal_mass_grid: np.ndarray | None = None
     gas_mass_grid: np.ndarray | None = None
     metallicity_source = "none"
-    if metal_enrichment_parameters is not None:
-        metallicity_result = evolve_stochastic_metallicity(
-            t_grid_gyr=t_grid,
-            z_grid=z_grid,
-            mh_grid=mh_grid,
-            dmhdt_grid=dmhdt_grid,
-            sfr_grid=sfr_grid,
-            active_grid=starforming_grid,
-            baryon_fraction=cosmology.omega_b / cosmology.omega_m,
-            parameters=metal_enrichment_parameters,
-            random_seed=metallicity_random_seed,
-            topheavy_source_grid=candidate_topheavy_source_grid,
-            topheavy_birth_metallicity_max_zsun=metallicity_topheavy_max_zsun,
-        )
-        topheavy_source_grid = np.asarray(metallicity_result.topheavy_source_grid, dtype=bool)
-        birth_metallicity_zsun_grid = np.asarray(metallicity_result.birth_metallicity_zsun_grid, dtype=float)
-        gas_metallicity_zsun_grid = np.asarray(metallicity_result.gas_metallicity_zsun_grid, dtype=float)
-        metal_mass_grid = np.asarray(metallicity_result.metal_mass_grid, dtype=float)
-        gas_mass_grid = np.asarray(metallicity_result.gas_mass_grid, dtype=float)
-        metallicity_source = "one_zone"
-    elif mzr_metallicity_parameters is not None:
+    if mzr_metallicity_parameters is not None:
         mzr_metallicity_result = compute_mzr_birth_metallicity(
             t_grid_gyr=t_grid,
             z_grid=z_grid,
@@ -726,13 +700,9 @@ def run_halo_uv_pipeline(
         "thesan_negative_dmhdt_clip_fraction": histories.metadata.get("negative_dmhdt_clip_fraction")
         if mah_backend == MAH_BACKEND_THESAN
         else None,
-        "stochastic_metallicity_enabled": metallicity_result is not None,
         "mzr_metallicity_enabled": mzr_metallicity_result is not None,
         "regulator_metallicity_enabled": regulator_metallicity_result is not None,
         "metallicity_random_seed": metallicity_random_seed,
-        "metal_enrichment_parameters": metal_enrichment_parameters.as_metadata()
-        if metal_enrichment_parameters is not None
-        else None,
         "mzr_metallicity_parameters": mzr_metallicity_parameters.as_metadata()
         if mzr_metallicity_parameters is not None
         else None,

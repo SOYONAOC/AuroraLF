@@ -347,7 +347,7 @@ def _plot_best_mzr(
         mec="white",
         mew=0.6,
         capsize=2.5,
-        label="AuroraLF regulator best scan",
+        label=r"AuroraLF matched by $M_\star$",
         zorder=6,
     )
     for bundle, x_value, y_value, z_value in zip(bundles, logmstar, oh12, zgas, strict=True):

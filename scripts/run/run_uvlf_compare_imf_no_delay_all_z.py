@@ -15,10 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from auroralf.chemistry import (
-    CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER,
     MZR_RELATIONS,
     MZRBirthMetallicityParameters,
-    MetalEnrichmentParameters,
     RegulatorMetallicityParameters,
 )
 from auroralf.mah import (
@@ -118,12 +116,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--burst-scatter-timescale-myr", type=float, default=DEFAULT_BURST_SCATTER_TIMESCALE_MYR)
     parser.add_argument("--burst-scatter-random-seed", type=int, default=None)
     parser.add_argument("--disable-burst-scatter-mean-preservation", action="store_true")
-    parser.add_argument("--metallicity-source", choices=("regulator", "mzr", "one_zone", "none"), default=None)
-    parser.add_argument(
-        "--enable-stochastic-metallicity",
-        action="store_true",
-        help="Deprecated alias for --metallicity-source one_zone.",
-    )
+    parser.add_argument("--metallicity-source", choices=("regulator", "mzr", "none"), default=None)
     parser.add_argument("--metallicity-random-seed", type=int, default=None)
     parser.add_argument("--mzr-relation", choices=MZR_RELATIONS, default="fire2_highz")
     parser.add_argument("--mzr-stellar-mass-floor", type=float, default=1.0e6)
@@ -154,14 +147,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--regulator-metal-loading-mass-slope", type=float, default=-0.5)
     parser.add_argument("--regulator-metal-loading-redshift-slope", type=float, default=0.0)
     parser.add_argument("--regulator-metallicity-scatter-dex", type=float, default=0.0)
-    parser.add_argument("--metal-gas-fraction-of-baryons", type=float, default=0.5)
-    parser.add_argument("--metal-yield", type=float, default=0.02)
-    parser.add_argument("--metal-topheavy-yield-multiplier", type=float, default=CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER)
-    parser.add_argument("--metal-returned-fraction", type=float, default=0.4)
-    parser.add_argument("--metal-mass-loading-norm", type=float, default=5.0)
-    parser.add_argument("--metal-yield-scatter-dex", type=float, default=0.2)
-    parser.add_argument("--metal-mass-loading-scatter-dex", type=float, default=0.3)
-    parser.add_argument("--metal-birth-scatter-dex", type=float, default=0.15)
     parser.add_argument("--canonical-ssp-file", type=str, default=DEFAULT_CANONICAL_SSP_FILE)
     parser.add_argument("--topheavy-ssp-file", type=str, default=DEFAULT_MILD_TOPHEAVY_SSP_FILE)
     parser.add_argument("--topheavy-ssp-metallicity", type=float, default=DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY)
@@ -237,7 +222,6 @@ def _run_single_imf_mode_uvlf(
     print_progress: bool,
     sfr_model_parameters: SFRModelParameters,
     mass_function_model: str,
-    metal_enrichment_parameters: MetalEnrichmentParameters | None,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None,
     regulator_metallicity_parameters: RegulatorMetallicityParameters | None,
     metallicity_random_seed: int | None,
@@ -281,7 +265,6 @@ def _run_single_imf_mode_uvlf(
         print_progress=print_progress,
         sfr_model_parameters=sfr_model_parameters,
         mass_function_model=mass_function_model,
-        metal_enrichment_parameters=metal_enrichment_parameters,
         mzr_metallicity_parameters=mzr_metallicity_parameters,
         regulator_metallicity_parameters=regulator_metallicity_parameters,
         metallicity_random_seed=metallicity_random_seed,
@@ -419,33 +402,13 @@ def main() -> None:
         raise ValueError("burst-scatter-dex must be non-negative")
     if float(args.burst_scatter_timescale_myr) <= 0.0:
         raise ValueError("burst-scatter-timescale-myr must be positive")
-    if float(args.metal_gas_fraction_of_baryons) <= 0.0:
-        raise ValueError("metal-gas-fraction-of-baryons must be positive")
-    if float(args.metal_yield) < 0.0:
-        raise ValueError("metal-yield must be non-negative")
-    if float(args.metal_topheavy_yield_multiplier) <= 0.0:
-        raise ValueError("metal-topheavy-yield-multiplier must be positive")
-    if not 0.0 <= float(args.metal_returned_fraction) < 1.0:
-        raise ValueError("metal-returned-fraction must lie in [0, 1)")
-    if float(args.metal_mass_loading_norm) < 0.0:
-        raise ValueError("metal-mass-loading-norm must be non-negative")
-    if float(args.metal_yield_scatter_dex) < 0.0:
-        raise ValueError("metal-yield-scatter-dex must be non-negative")
-    if float(args.metal_mass_loading_scatter_dex) < 0.0:
-        raise ValueError("metal-mass-loading-scatter-dex must be non-negative")
-    if float(args.metal_birth_scatter_dex) < 0.0:
-        raise ValueError("metal-birth-scatter-dex must be non-negative")
     metallicity_topheavy_max_zsun = (
         None if args.disable_metallicity_topheavy_gate else float(args.metallicity_topheavy_max_zsun)
     )
     if metallicity_topheavy_max_zsun is not None and metallicity_topheavy_max_zsun <= 0.0:
         raise ValueError("metallicity-topheavy-max-zsun must be positive")
-    if args.enable_stochastic_metallicity and args.metallicity_source not in (None, "one_zone"):
-        raise ValueError("enable-stochastic-metallicity is only compatible with --metallicity-source one_zone")
     if args.metallicity_source is None:
-        metallicity_source = "one_zone" if args.enable_stochastic_metallicity else "regulator"
-        if not variant_modes or metallicity_topheavy_max_zsun is None:
-            metallicity_source = "none" if not args.enable_stochastic_metallicity else "one_zone"
+        metallicity_source = "regulator" if variant_modes and metallicity_topheavy_max_zsun is not None else "none"
     else:
         metallicity_source = str(args.metallicity_source)
     if variant_modes and metallicity_topheavy_max_zsun is not None and metallicity_source == "none":
@@ -482,20 +445,6 @@ def main() -> None:
         characteristic_mass=float(args.fstar_characteristic_mass),
         beta_star=float(args.fstar_beta),
         gamma_star=float(args.fstar_gamma),
-    )
-    metal_enrichment_parameters = (
-        MetalEnrichmentParameters(
-            gas_fraction_of_baryons=float(args.metal_gas_fraction_of_baryons),
-            metal_yield=float(args.metal_yield),
-            topheavy_yield_multiplier=float(args.metal_topheavy_yield_multiplier),
-            returned_fraction=float(args.metal_returned_fraction),
-            mass_loading_norm=float(args.metal_mass_loading_norm),
-            yield_scatter_dex=float(args.metal_yield_scatter_dex),
-            mass_loading_scatter_dex=float(args.metal_mass_loading_scatter_dex),
-            birth_metallicity_scatter_dex=float(args.metal_birth_scatter_dex),
-        )
-        if metallicity_source == "one_zone"
-        else None
     )
     mzr_metallicity_parameters = (
         MZRBirthMetallicityParameters(
@@ -575,7 +524,6 @@ def main() -> None:
             dtype=bool,
         ),
         "metallicity_source": np.asarray([metallicity_source]),
-        "stochastic_metallicity_enabled": np.asarray([metallicity_source == "one_zone"]),
         "mzr_metallicity_enabled": np.asarray([metallicity_source == "mzr"]),
         "regulator_metallicity_enabled": np.asarray([metallicity_source == "regulator"]),
         "metallicity_random_seed": np.asarray(
@@ -614,17 +562,6 @@ def main() -> None:
             [float(args.regulator_metallicity_scatter_dex)],
             dtype=float,
         ),
-        "metal_gas_fraction_of_baryons": np.asarray([float(args.metal_gas_fraction_of_baryons)], dtype=float),
-        "metal_yield": np.asarray([float(args.metal_yield)], dtype=float),
-        "metal_topheavy_yield_multiplier": np.asarray(
-            [float(args.metal_topheavy_yield_multiplier)],
-            dtype=float,
-        ),
-        "metal_returned_fraction": np.asarray([float(args.metal_returned_fraction)], dtype=float),
-        "metal_mass_loading_norm": np.asarray([float(args.metal_mass_loading_norm)], dtype=float),
-        "metal_yield_scatter_dex": np.asarray([float(args.metal_yield_scatter_dex)], dtype=float),
-        "metal_mass_loading_scatter_dex": np.asarray([float(args.metal_mass_loading_scatter_dex)], dtype=float),
-        "metal_birth_scatter_dex": np.asarray([float(args.metal_birth_scatter_dex)], dtype=float),
         "metallicity_topheavy_max_zsun": np.asarray(
             [np.nan if metallicity_topheavy_max_zsun is None else float(metallicity_topheavy_max_zsun)],
             dtype=float,
@@ -701,7 +638,6 @@ def main() -> None:
         f"burst_scatter_preserve_mean: {not bool(args.disable_burst_scatter_mean_preservation)}",
         f"burst_scatter_mass_conserving: {not bool(args.disable_burst_scatter_mean_preservation)}",
         f"metallicity_source: {metallicity_source}",
-        f"stochastic_metallicity_enabled: {metallicity_source == 'one_zone'}",
         f"mzr_metallicity_enabled: {metallicity_source == 'mzr'}",
         f"regulator_metallicity_enabled: {metallicity_source == 'regulator'}",
         f"metallicity_random_seed: {args.metallicity_random_seed}",
@@ -719,14 +655,6 @@ def main() -> None:
         f"regulator_metal_loading_mass_slope: {float(args.regulator_metal_loading_mass_slope)}",
         f"regulator_metal_loading_redshift_slope: {float(args.regulator_metal_loading_redshift_slope)}",
         f"regulator_metallicity_scatter_dex: {float(args.regulator_metallicity_scatter_dex)}",
-        f"metal_gas_fraction_of_baryons: {float(args.metal_gas_fraction_of_baryons)}",
-        f"metal_yield: {float(args.metal_yield)}",
-        f"metal_topheavy_yield_multiplier: {float(args.metal_topheavy_yield_multiplier)}",
-        f"metal_returned_fraction: {float(args.metal_returned_fraction)}",
-        f"metal_mass_loading_norm: {float(args.metal_mass_loading_norm)}",
-        f"metal_yield_scatter_dex: {float(args.metal_yield_scatter_dex)}",
-        f"metal_mass_loading_scatter_dex: {float(args.metal_mass_loading_scatter_dex)}",
-        f"metal_birth_scatter_dex: {float(args.metal_birth_scatter_dex)}",
         "",
     ]
 
@@ -786,7 +714,6 @@ def main() -> None:
                 print_progress=bool(args.print_progress),
                 sfr_model_parameters=sfr_model_parameters,
                 mass_function_model=mass_function_model,
-                metal_enrichment_parameters=metal_enrichment_parameters,
                 mzr_metallicity_parameters=mzr_metallicity_parameters,
                 regulator_metallicity_parameters=regulator_metallicity_parameters,
                 metallicity_random_seed=mode_metallicity_seed,

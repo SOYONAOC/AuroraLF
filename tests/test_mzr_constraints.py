@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 
 from auroralf.chemistry import (
-    CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER,
     equivalent_oxygen_abundance_from_zsun,
     fire2_highz_mzr_oh12,
     jades_lowmass_mzr_oh12,
@@ -27,7 +26,3 @@ def test_max_positive_mzr_offset_ignores_under_enrichment() -> None:
     reference = np.array([7.2, 7.3, 7.6])
 
     np.testing.assert_allclose(max_positive_mzr_offset_dex(model, reference), 0.6)
-
-
-def test_calibrated_topheavy_yield_multiplier_is_mzr_constrained_value() -> None:
-    np.testing.assert_allclose(CALIBRATED_TOPHEAVY_YIELD_MULTIPLIER, 1.28)

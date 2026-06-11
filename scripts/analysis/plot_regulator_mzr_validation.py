@@ -132,7 +132,10 @@ def _parse_float_grid(text: str) -> list[float]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate regulator gas metallicities against high-z observed mass-metallicity relations."
+        description=(
+            "Validate regulator gas metallicities against high-z observed mass-metallicity "
+            "relations using observation-matched stellar-mass and redshift coordinates."
+        )
     )
     parser.add_argument("--redshifts", type=_parse_float_grid, default=_parse_float_grid("3.2 5.5 8.0 12.34"))
     parser.add_argument("--z-start-max", type=float, default=50.0)
@@ -541,7 +544,7 @@ def _plot_validation(
             color=model_color,
             mec="white",
             mew=0.6,
-            label="AuroraLF regulator",
+            label=r"AuroraLF at matched $M_\star,z$",
             zorder=5,
         )
         for point in selected:
@@ -617,7 +620,7 @@ def _plot_validation(
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
     fig.suptitle(
-        rf"Regulator $Z_{{gas}}(M_\star,z)$ vs observed MZR; "
+        rf"Observation-matched regulator $Z_{{gas}}(M_\star,z)$ vs MZR; "
         rf"${args.logM_min:g}<\log M_h<{args.logM_max:g}$",
         fontsize=10.0,
     )
