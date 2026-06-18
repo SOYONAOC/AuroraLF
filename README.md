@@ -597,6 +597,10 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   可选进度文件路径；若提供，会把外层 `N_mass` 循环进度持续写入该 txt 文件
 - `mass_function_model`
   外层 halo mass function 权重模型；当前生产接口只支持 `"hmf_reed07"`，使用 `hmf` 包中的 Reed07 fitting function。旧的 `"massfunc_st"` 和 Watson13 分支已禁用。
+- `lw_background_j21`
+  Pop III minihalo 分流使用的均匀 LW background，单位为
+  `1e-21 erg s^-1 cm^-2 Hz^-1 sr^-1`；默认 `0.0`，即无 LW feedback 的
+  H2 cooling floor
 - `mzr_metallicity_parameters`
   可选 `auroralf.chemistry.MZRBirthMetallicityParameters`；会透传给每个质量点的 `run_halo_uv_pipeline()`
 - `regulator_metallicity_parameters`
@@ -629,6 +633,12 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   - `track_index`
   - `luminosity`
   - `topheavy_light_fraction`
+  - `stellar_channel`
+    基于 Pop III H2/LW 下限和 atomic-cooling 上限的通道标记：
+    低于 Pop III 下限为 `below_popiii_min`，介于 Pop III 下限和 atomic-cooling
+    threshold 之间为 `popiii`，等于或高于 atomic-cooling threshold 为 `popii`
+  - `atomic_cooling_mass_msun`
+  - `popiii_minimum_mass_msun`
   - `Muv`
   - `sample_weight`
 - `auroralf.uvlf`
@@ -650,6 +660,16 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 说明：
 
 - 外层在 `log10 Mh in [9, 13]` 上均匀抽样
+- HMF 采样层会记录 Pop III minihalo 分流下限和 atomic-cooling 上限：
+  `popiii_minimum_mass_msun = 2.5e5 * (26/(1+z_obs)) *
+  (1 + 22.87 * lw_background_j21**0.47)`。
+  默认 `lw_background_j21=0.0` 时，该式退化到无 LW feedback 的 H2 cooling floor。
+  `atomic_cooling_mass_msun = massfunc.SFRD().M_vir(0.61, 1e4, z_obs)`。
+  `samples["stellar_channel"]` 和 `metadata["stellar_channel_by_mass"]`
+  把 `Mh < M_PopIII,min` 标记为 `below_popiii_min`，
+  `M_PopIII,min <= Mh < M_atomic` 标记为 `popiii`，
+  `Mh >= M_atomic` 标记为 `popii`；
+  当前主干仍只实现 Pop II UV luminosity pipeline，后续 Pop III 物理通道应接这个 mask
 - 外层权重默认使用 `hmf` 包的 Reed07 halo mass function：
   - `dn/dlogM = M ln(10) dn/dM`
 - `hmf` 的质量单位从 `Msun/h` 转成项目内部使用的 `Msun`，`dn/dM` 从 `h^4 Mpc^-3 Msun^-1` 转成 `Mpc^-3 Msun^-1`
