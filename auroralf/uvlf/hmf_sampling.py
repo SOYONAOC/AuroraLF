@@ -20,10 +20,32 @@ from auroralf.mah import (
     validate_mah_backend,
     validate_tng_time_grid_mode,
 )
-from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
+from auroralf.sfr import (
+    DEFAULT_POPIII_SFR_PARAMETERS,
+    DEFAULT_SFR_MODEL_PARAMETERS,
+    PopIIISFRParameters,
+    SFRModelParameters,
+)
+from auroralf.cooling import (
+    ATOMIC_COOLING_MU,
+    ATOMIC_COOLING_TEMPERATURE_K,
+    DEFAULT_LW_BACKGROUND_J21,
+    POPIII_LW_FEEDBACK_COEFFICIENT,
+    POPIII_LW_FEEDBACK_EXPONENT,
+    POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN,
+    POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT,
+    STELLAR_CHANNEL_BELOW_POPIII_MIN,
+    STELLAR_CHANNEL_POPII,
+    STELLAR_CHANNEL_POPIII,
+    STELLAR_CHANNELS,
+    classify_halo_stellar_channels,
+    compute_atomic_cooling_mass_msun,
+    compute_popiii_lw_minimum_mass_msun,
+)
 from .imf import DEFAULT_IMF_TRANSITION_PARAMETERS, IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 from .pipeline import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    DEFAULT_POPIII_SSP_FILE,
     DEFAULT_SSP_FILE,
     DEFAULT_TOPHEAVY_SSP_FILE,
     DEFAULT_TOPHEAVY_SSP_METALLICITY,
@@ -35,21 +57,6 @@ from .pipeline import (
 LOGM_MIN = 9.0
 LOGM_MAX = 13.0
 AB_ZEROPOINT_LNU = 51.60
-ATOMIC_COOLING_TEMPERATURE_K = 1.0e4
-ATOMIC_COOLING_MU = 0.61
-POPIII_H2_COOLING_MASS_NORMALIZATION_MSUN = 2.5e5
-POPIII_H2_COOLING_REDSHIFT_FACTOR = 26.0
-POPIII_LW_FEEDBACK_COEFFICIENT = 22.87
-POPIII_LW_FEEDBACK_EXPONENT = 0.47
-DEFAULT_LW_BACKGROUND_J21 = 0.0
-STELLAR_CHANNEL_BELOW_POPIII_MIN = "below_popiii_min"
-STELLAR_CHANNEL_POPIII = "popiii"
-STELLAR_CHANNEL_POPII = "popii"
-STELLAR_CHANNELS = (
-    STELLAR_CHANNEL_BELOW_POPIII_MIN,
-    STELLAR_CHANNEL_POPIII,
-    STELLAR_CHANNEL_POPII,
-)
 MASS_FUNCTION_MODEL_HMF_REED07 = "hmf_reed07"
 MASS_FUNCTION_MODELS = (MASS_FUNCTION_MODEL_HMF_REED07,)
 DEFAULT_MASS_FUNCTION_MODEL = MASS_FUNCTION_MODEL_HMF_REED07
@@ -91,137 +98,6 @@ def validate_mass_function_model(model: str) -> str:
         choices = ", ".join(MASS_FUNCTION_MODELS)
         raise ValueError(f"mass_function_model must be one of: {choices}")
     return normalized
-
-
-def compute_atomic_cooling_mass_msun(
-    z_obs: np.ndarray | float,
-    *,
-    virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
-    mu: float = ATOMIC_COOLING_MU,
-) -> np.ndarray | float:
-    """Return the halo mass corresponding to a virial temperature threshold."""
-
-    if float(virial_temperature_k) <= 0.0:
-        raise ValueError("virial_temperature_k must be positive")
-    if float(mu) <= 0.0:
-        raise ValueError("mu must be positive")
-
-    redshift = np.asarray(z_obs, dtype=float)
-    if not np.all(np.isfinite(redshift)):
-        raise ValueError("z_obs must be finite")
-    if np.any(redshift < 0.0):
-        raise ValueError("z_obs must be non-negative")
-
-    try:
-        import massfunc as mf
-    except ImportError as exc:
-        raise ImportError("atomic cooling mass requires the optional dependency massfunc") from exc
-
-    threshold = np.asarray(
-        mf.SFRD().M_vir(float(mu), float(virial_temperature_k), redshift),
-        dtype=float,
-    )
-    if threshold.shape != redshift.shape:
-        threshold = np.broadcast_to(threshold, redshift.shape).copy()
-    if not np.all(np.isfinite(threshold)):
-        raise RuntimeError("massfunc.SFRD().M_vir returned non-finite atomic cooling masses")
-    if np.any(threshold <= 0.0):
-        raise RuntimeError("massfunc.SFRD().M_vir returned non-positive atomic cooling masses")
-    if np.ndim(z_obs) == 0:
-        return float(threshold)
-    return threshold
-
-
-def compute_popiii_lw_minimum_mass_msun(
-    z_obs: np.ndarray | float,
-    *,
-    lw_background_j21: np.ndarray | float = DEFAULT_LW_BACKGROUND_J21,
-) -> np.ndarray | float:
-    """Return the Pop III minihalo cooling mass including LW feedback.
-
-    ``lw_background_j21`` is the LW intensity in units of
-    ``1e-21 erg s^-1 cm^-2 Hz^-1 sr^-1``.  The default zero background reduces
-    to the H2 molecular-cooling floor used by the Pop III literature library.
-    """
-
-    redshift = np.asarray(z_obs, dtype=float)
-    if not np.all(np.isfinite(redshift)):
-        raise ValueError("z_obs must be finite")
-    if np.any(redshift < 0.0):
-        raise ValueError("z_obs must be non-negative")
-
-    lw_background = np.asarray(lw_background_j21, dtype=float)
-    if not np.all(np.isfinite(lw_background)):
-        raise ValueError("lw_background_j21 must be finite")
-    if np.any(lw_background < 0.0):
-        raise ValueError("lw_background_j21 must be non-negative")
-
-    try:
-        redshift, lw_background = np.broadcast_arrays(redshift, lw_background)
-    except ValueError as exc:
-        raise ValueError("lw_background_j21 must be scalar or broadcast with z_obs") from exc
-
-    h2_floor = POPIII_H2_COOLING_MASS_NORMALIZATION_MSUN * (
-        POPIII_H2_COOLING_REDSHIFT_FACTOR / (1.0 + redshift)
-    )
-    threshold = h2_floor * (
-        1.0 + POPIII_LW_FEEDBACK_COEFFICIENT * lw_background**POPIII_LW_FEEDBACK_EXPONENT
-    )
-    if not np.all(np.isfinite(threshold)):
-        raise RuntimeError("Pop III LW minimum mass calculation returned non-finite masses")
-    if np.any(threshold <= 0.0):
-        raise RuntimeError("Pop III LW minimum mass calculation returned non-positive masses")
-    if np.ndim(z_obs) == 0 and np.ndim(lw_background_j21) == 0:
-        return float(threshold)
-    return np.asarray(threshold, dtype=float)
-
-
-def classify_halo_stellar_channels(
-    halo_mass_msun: np.ndarray | float,
-    *,
-    z_obs: np.ndarray | float,
-    lw_background_j21: np.ndarray | float = DEFAULT_LW_BACKGROUND_J21,
-    virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
-    mu: float = ATOMIC_COOLING_MU,
-) -> np.ndarray | str:
-    """Classify halos into below-PopIII, Pop III minihalo, or Pop II channels."""
-
-    mass = np.asarray(halo_mass_msun, dtype=float)
-    if not np.all(np.isfinite(mass)):
-        raise ValueError("halo masses must be finite")
-    if np.any(mass <= 0.0):
-        raise ValueError("halo masses must be positive")
-
-    threshold = np.asarray(
-        compute_atomic_cooling_mass_msun(
-            z_obs,
-            virial_temperature_k=virial_temperature_k,
-            mu=mu,
-        ),
-        dtype=float,
-    )
-    popiii_minimum = np.asarray(
-        compute_popiii_lw_minimum_mass_msun(
-            z_obs,
-            lw_background_j21=lw_background_j21,
-        ),
-        dtype=float,
-    )
-    try:
-        mass, popiii_minimum, threshold = np.broadcast_arrays(mass, popiii_minimum, threshold)
-    except ValueError as exc:
-        raise ValueError("z_obs and lw_background_j21 must be scalar or broadcast with halo_mass_msun") from exc
-
-    channels = np.full(
-        mass.shape,
-        STELLAR_CHANNEL_BELOW_POPIII_MIN,
-        dtype=f"<U{max(len(c) for c in STELLAR_CHANNELS)}",
-    )
-    channels[mass >= popiii_minimum] = STELLAR_CHANNEL_POPIII
-    channels[mass >= threshold] = STELLAR_CHANNEL_POPII
-    if np.ndim(halo_mass_msun) == 0 and np.ndim(z_obs) == 0 and np.ndim(lw_background_j21) == 0:
-        return str(channels.item())
-    return np.asarray(channels, dtype=f"<U{max(len(channel) for channel in STELLAR_CHANNELS)}")
 
 
 def _hmf_reed07_dndm(
@@ -366,45 +242,7 @@ def _finite_median_or_none(values: np.ndarray) -> float | None:
     return float(np.median(finite))
 
 
-def _run_single_mass_sample(
-    args: tuple[
-        int,
-        float,
-        float,
-        float,
-        float,
-        int,
-        float,
-        int,
-        str,
-        str,
-        str | None,
-        float,
-        int,
-        float,
-        str,
-        str | None,
-        float,
-        int,
-        float,
-        str,
-        bool,
-        str,
-        str,
-        float | None,
-        str,
-        IMFTransitionParameters,
-        int | None,
-        SFRModelParameters,
-        MZRBirthMetallicityParameters | None,
-        RegulatorMetallicityParameters | None,
-        int | None,
-        float,
-        float,
-        int | None,
-        bool,
-    ],
-) -> tuple[int, float, np.ndarray, np.ndarray, float, int, int, float, float]:
+def _run_single_mass_sample(args: tuple[Any, ...]) -> tuple[Any, ...]:
     (
         mass_index,
         log_mass,
@@ -441,6 +279,9 @@ def _run_single_mass_sample(
         burst_scatter_timescale_myr,
         burst_scatter_random_seed,
         burst_scatter_preserve_mean,
+        enable_popiii,
+        popiii_sfr_parameters,
+        popiii_ssp_file,
     ) = args
 
     t0 = time.perf_counter()
@@ -478,21 +319,31 @@ def _run_single_mass_sample(
         burst_scatter_timescale_myr=burst_scatter_timescale_myr,
         burst_scatter_random_seed=burst_scatter_random_seed,
         burst_scatter_preserve_mean=burst_scatter_preserve_mean,
+        enable_popiii=enable_popiii,
+        popiii_sfr_parameters=popiii_sfr_parameters,
+        popiii_ssp_file=popiii_ssp_file,
     )
     duration = time.perf_counter() - t0
     luminosity = np.asarray(pipeline_result.uv_luminosities, dtype=float)
     topheavy_luminosity = np.asarray(pipeline_result.uv_luminosities_topheavy, dtype=float)
+    popiii_luminosity = np.asarray(pipeline_result.uv_luminosities_popiii, dtype=float)
     topheavy_light_fraction = np.zeros_like(luminosity, dtype=float)
+    popiii_light_fraction = np.zeros_like(luminosity, dtype=float)
     positive_light = luminosity > 0.0
     topheavy_light_fraction[positive_light] = topheavy_luminosity[positive_light] / luminosity[positive_light]
+    popiii_light_fraction[positive_light] = popiii_luminosity[positive_light] / luminosity[positive_light]
     return (
         mass_index,
         log_mass,
         luminosity,
         topheavy_light_fraction,
+        popiii_luminosity,
+        popiii_light_fraction,
         duration,
         int(pipeline_result.metadata["topheavy_source_count"]),
         int(pipeline_result.metadata["starforming_source_count"]),
+        int(pipeline_result.metadata["popiii_source_count"]),
+        int(pipeline_result.metadata["active_source_count"]),
         float(pipeline_result.metadata["final_gas_metallicity_zsun_median"])
         if pipeline_result.metadata["final_gas_metallicity_zsun_median"] is not None
         else np.nan,
@@ -531,6 +382,9 @@ def sample_uvlf_from_hmf(
     ssp_file: str = DEFAULT_SSP_FILE,
     topheavy_ssp_file: str | None = None,
     topheavy_ssp_metallicity: float | None = DEFAULT_TOPHEAVY_SSP_METALLICITY,
+    enable_popiii: bool = False,
+    popiii_sfr_parameters: PopIIISFRParameters = DEFAULT_POPIII_SFR_PARAMETERS,
+    popiii_ssp_file: str = DEFAULT_POPIII_SSP_FILE,
     imf_mode: str = "canonical",
     imf_transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
     progress_path: str | Path | None = None,
@@ -645,6 +499,8 @@ def sample_uvlf_from_hmf(
     sample_track_index = np.empty(total_samples, dtype=int)
     sample_luminosity = np.empty(total_samples, dtype=float)
     sample_topheavy_light_fraction = np.empty(total_samples, dtype=float)
+    sample_popiii_luminosity = np.empty(total_samples, dtype=float)
+    sample_popiii_light_fraction = np.empty(total_samples, dtype=float)
     sample_stellar_channel = np.empty(total_samples, dtype=stellar_channel_by_mass.dtype)
     sample_atomic_cooling_mass_msun = np.empty(total_samples, dtype=float)
     sample_popiii_minimum_mass_msun = np.empty(total_samples, dtype=float)
@@ -653,6 +509,8 @@ def sample_uvlf_from_hmf(
     per_mass_pipeline_seconds = np.empty(N_mass, dtype=float)
     topheavy_source_count_by_mass = np.empty(N_mass, dtype=np.int64)
     starforming_source_count_by_mass = np.empty(N_mass, dtype=np.int64)
+    popiii_source_count_by_mass = np.empty(N_mass, dtype=np.int64)
+    active_source_count_by_mass = np.empty(N_mass, dtype=np.int64)
     final_gas_metallicity_zsun_median_by_mass = np.full(N_mass, np.nan, dtype=float)
     birth_metallicity_zsun_starforming_median_by_mass = np.full(N_mass, np.nan, dtype=float)
 
@@ -694,6 +552,9 @@ def sample_uvlf_from_hmf(
             float(burst_scatter_timescale_myr),
             None if burst_scatter_random_seed is None else int(burst_scatter_random_seed + mass_index),
             bool(burst_scatter_preserve_mean),
+            bool(enable_popiii),
+            popiii_sfr_parameters,
+            str(popiii_ssp_file),
         )
         for mass_index, (log_mass, mass, weight) in enumerate(zip(logMh, Mh, mass_weight, strict=True))
     ]
@@ -706,9 +567,13 @@ def sample_uvlf_from_hmf(
             log_mass,
             luminosity,
             topheavy_light_fraction,
+            popiii_luminosity,
+            popiii_light_fraction,
             duration,
             topheavy_source_count,
             starforming_source_count,
+            popiii_source_count,
+            active_source_count,
             final_gas_metallicity_zsun_median,
             birth_metallicity_zsun_starforming_median,
         ) in results_iter:
@@ -716,6 +581,10 @@ def sample_uvlf_from_hmf(
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of luminosity samples")
             if topheavy_light_fraction.size != n_tracks:
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of top-heavy fractions")
+            if popiii_luminosity.size != n_tracks:
+                raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III luminosity samples")
+            if popiii_light_fraction.size != n_tracks:
+                raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III fractions")
 
             start = mass_index * n_tracks
             stop = start + n_tracks
@@ -725,6 +594,8 @@ def sample_uvlf_from_hmf(
             sample_track_index[start:stop] = np.arange(n_tracks, dtype=int)
             sample_luminosity[start:stop] = luminosity
             sample_topheavy_light_fraction[start:stop] = topheavy_light_fraction
+            sample_popiii_luminosity[start:stop] = popiii_luminosity
+            sample_popiii_light_fraction[start:stop] = popiii_light_fraction
             sample_stellar_channel[start:stop] = stellar_channel_by_mass[mass_index]
             sample_atomic_cooling_mass_msun[start:stop] = atomic_cooling_mass_msun
             sample_popiii_minimum_mass_msun[start:stop] = popiii_minimum_mass_msun
@@ -733,6 +604,8 @@ def sample_uvlf_from_hmf(
             per_mass_pipeline_seconds[mass_index] = duration
             topheavy_source_count_by_mass[mass_index] = topheavy_source_count
             starforming_source_count_by_mass[mass_index] = starforming_source_count
+            popiii_source_count_by_mass[mass_index] = popiii_source_count
+            active_source_count_by_mass[mass_index] = active_source_count
             final_gas_metallicity_zsun_median_by_mass[mass_index] = final_gas_metallicity_zsun_median
             birth_metallicity_zsun_starforming_median_by_mass[mass_index] = (
                 birth_metallicity_zsun_starforming_median
@@ -758,9 +631,13 @@ def sample_uvlf_from_hmf(
                     log_mass,
                     luminosity,
                     topheavy_light_fraction,
+                    popiii_luminosity,
+                    popiii_light_fraction,
                     duration,
                     topheavy_source_count,
                     starforming_source_count,
+                    popiii_source_count,
+                    active_source_count,
                     final_gas_metallicity_zsun_median,
                     birth_metallicity_zsun_starforming_median,
                 ) = future.result()
@@ -768,6 +645,12 @@ def sample_uvlf_from_hmf(
                     raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of luminosity samples")
                 if topheavy_light_fraction.size != n_tracks:
                     raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of top-heavy fractions")
+                if popiii_luminosity.size != n_tracks:
+                    raise RuntimeError(
+                        "run_halo_uv_pipeline returned an unexpected number of Pop III luminosity samples"
+                    )
+                if popiii_light_fraction.size != n_tracks:
+                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III fractions")
 
                 start = mass_index * n_tracks
                 stop = start + n_tracks
@@ -777,6 +660,8 @@ def sample_uvlf_from_hmf(
                 sample_track_index[start:stop] = np.arange(n_tracks, dtype=int)
                 sample_luminosity[start:stop] = luminosity
                 sample_topheavy_light_fraction[start:stop] = topheavy_light_fraction
+                sample_popiii_luminosity[start:stop] = popiii_luminosity
+                sample_popiii_light_fraction[start:stop] = popiii_light_fraction
                 sample_stellar_channel[start:stop] = stellar_channel_by_mass[mass_index]
                 sample_atomic_cooling_mass_msun[start:stop] = atomic_cooling_mass_msun
                 sample_popiii_minimum_mass_msun[start:stop] = popiii_minimum_mass_msun
@@ -785,6 +670,8 @@ def sample_uvlf_from_hmf(
                 per_mass_pipeline_seconds[mass_index] = duration
                 topheavy_source_count_by_mass[mass_index] = topheavy_source_count
                 starforming_source_count_by_mass[mass_index] = starforming_source_count
+                popiii_source_count_by_mass[mass_index] = popiii_source_count
+                active_source_count_by_mass[mass_index] = active_source_count
                 final_gas_metallicity_zsun_median_by_mass[mass_index] = final_gas_metallicity_zsun_median
                 birth_metallicity_zsun_starforming_median_by_mass[mass_index] = (
                     birth_metallicity_zsun_starforming_median
@@ -849,6 +736,8 @@ def sample_uvlf_from_hmf(
         "track_index": sample_track_index,
         "luminosity": sample_luminosity,
         "topheavy_light_fraction": sample_topheavy_light_fraction,
+        "popiii_luminosity": sample_popiii_luminosity,
+        "popiii_light_fraction": sample_popiii_light_fraction,
         "stellar_channel": sample_stellar_channel,
         "atomic_cooling_mass_msun": sample_atomic_cooling_mass_msun,
         "popiii_minimum_mass_msun": sample_popiii_minimum_mass_msun,
@@ -881,8 +770,8 @@ def sample_uvlf_from_hmf(
         "atomic_cooling_temperature_k": ATOMIC_COOLING_TEMPERATURE_K,
         "atomic_cooling_mu": ATOMIC_COOLING_MU,
         "atomic_cooling_mass_msun": atomic_cooling_mass_msun,
-        "popiii_h2_cooling_mass_normalization_msun": POPIII_H2_COOLING_MASS_NORMALIZATION_MSUN,
-        "popiii_h2_cooling_redshift_factor": POPIII_H2_COOLING_REDSHIFT_FACTOR,
+        "popiii_molecular_cooling_m0_normalization_msun": POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN,
+        "popiii_molecular_cooling_redshift_exponent": POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT,
         "popiii_lw_feedback_coefficient": POPIII_LW_FEEDBACK_COEFFICIENT,
         "popiii_lw_feedback_exponent": POPIII_LW_FEEDBACK_EXPONENT,
         "lw_background_j21": float(lw_background_j21),
@@ -922,6 +811,9 @@ def sample_uvlf_from_hmf(
         "ssp_file": ssp_file,
         "topheavy_ssp_file": topheavy_ssp_file,
         "topheavy_ssp_metallicity": topheavy_ssp_metallicity,
+        "popiii_enabled": bool(enable_popiii),
+        "popiii_ssp_file": str(popiii_ssp_file),
+        "popiii_sfr_parameters": popiii_sfr_parameters.as_metadata(),
         "imf_mode": imf_mode,
         "imf_transition_parameters": {
             "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
@@ -948,6 +840,8 @@ def sample_uvlf_from_hmf(
         "per_mass_pipeline_seconds": per_mass_pipeline_seconds,
         "topheavy_source_count_by_mass": topheavy_source_count_by_mass,
         "starforming_source_count_by_mass": starforming_source_count_by_mass,
+        "popiii_source_count_by_mass": popiii_source_count_by_mass,
+        "active_source_count_by_mass": active_source_count_by_mass,
         "topheavy_source_fraction": float(np.sum(topheavy_source_count_by_mass) / np.sum(starforming_source_count_by_mass))
         if np.sum(starforming_source_count_by_mass) > 0
         else 0.0,
@@ -955,6 +849,14 @@ def sample_uvlf_from_hmf(
             np.median(sample_topheavy_light_fraction[np.isfinite(sample_topheavy_light_fraction)])
         )
         if np.any(np.isfinite(sample_topheavy_light_fraction))
+        else 0.0,
+        "popiii_source_fraction": float(np.sum(popiii_source_count_by_mass) / np.sum(active_source_count_by_mass))
+        if np.sum(active_source_count_by_mass) > 0
+        else 0.0,
+        "popiii_light_fraction_median": float(
+            np.median(sample_popiii_light_fraction[np.isfinite(sample_popiii_light_fraction)])
+        )
+        if np.any(np.isfinite(sample_popiii_light_fraction))
         else 0.0,
         "mzr_metallicity_enabled": mzr_metallicity_parameters is not None,
         "regulator_metallicity_enabled": regulator_metallicity_parameters is not None,

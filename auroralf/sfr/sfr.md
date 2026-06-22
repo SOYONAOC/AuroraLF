@@ -349,4 +349,68 @@ compute_sfr(t, z, Mh, cosmology)
 * 代码包含注释
 * 若合适，可调用 `massfunc` 中已有宇宙学与阈值相关函数以减少重复实现
 
+---
+
+## 13. PopIII 独立 SFR 分支
+
+PopIII 不复用 PopII calibrated `SFRModelParameters`。PopII 的
+`epsilon_0, characteristic_mass, beta_star, gamma_star` 保持只描述 PopII。
+
+PopIII 采用 Venditti/Cruz 风格的独立分支：
+
+[
+{\rm SFR}_{\rm III}(t)=
+f_b\,f_{*,{\rm III}}(M_h)\,f_{{\rm duty},{\rm III}}(M_h,z,J_{\rm LW})\,
+\dot M_h / 10^9
+]
+
+其中 `dMh_dt` 的单位仍是 `Msun/Gyr`，因此除以 `10^9` 后得到
+`Msun/yr`。
+
+默认 PopIII SFE 为 Cruz fiducial：
+
+[
+f_{*,{\rm III}}(M_h)=
+\frac{2\epsilon_{*,{\rm III}}}
+{(M_h/M_p)^{\alpha_*}+(M_h/M_p)^{\beta_*}},
+\qquad
+\epsilon_{*,{\rm III}}=10^{-3},\quad
+M_p=10^7 M_\odot,\quad
+\alpha_*=\beta_*=0
+]
+
+因此默认情况下 `f_star_III` 是常数 `1e-3`。
+
+PopIII duty cycle 为：
+
+[
+f_{{\rm duty},{\rm III}}=
+\exp(-M_{\rm mol}/M_h)\,\exp(-M_h/M_{\rm up})
+]
+
+其中 `M_mol` 使用 Cruz/Venditti/Zeus21 的分子冷却阈值：
+
+[
+M_{\rm mol}(z,J_{21}) =
+3.3\times10^7(1+z)^{-3/2}
+\left(1+2.0\,J_{21}^{0.6}\right)\,M_\odot
+]
+
+默认 `J21=0`，即不加入 LW 抑制；v1 也不加入 streaming-velocity
+因子。`M_up` 默认使用 `Tvir=1e4 K` 的 atomic cooling mass；也可以通过
+fixed upper mass 复现 Venditti 的 Bursty/Heavy 试验。
+
+公开接口：
+
+```python
+PopIIISFRParameters(...)
+compute_popiii_star_formation_efficiency(...)
+compute_popiii_duty_cycle(...)
+compute_popiii_sfr_from_grids(...)
+```
+
+`compute_popiii_sfr_from_grids` 返回 `SFR_popiii`、`fstar_popiii`、
+`popiii_duty_cycle`、PopIII lower/upper mass grids 和 source mask。当前
+pipeline 不让 PopIII SFR 进入 PopII metallicity regulator 或 PopII IMF gate。
+
 ```

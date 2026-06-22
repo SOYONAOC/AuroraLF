@@ -13,6 +13,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only when h5py is ab
 
 
 DEFAULT_WAVELENGTH_A = 1600.0
+DEFAULT_POPIII_UV_WAVELENGTH_A = 1500.0
+DEFAULT_POPIII_UV_COLUMN = "L_1500"
+DEFAULT_POPIII_UV_SSP_FILE = (
+    "external_data/ssp_spectra/schaerer2010_pop3/"
+    "pop3_ge0_sal_500_001_is5.25"
+)
 MODEL_NORMALIZATION_MSUN = 1.0e6
 
 
@@ -66,6 +72,92 @@ def _load_uv1600_table_from_npz(file_path: str) -> tuple[np.ndarray, np.ndarray]
     return ages_myr, luminosity_per_msun
 
 
+def _parse_popiii_uv_table_header(file_path: str, uv_column: str) -> tuple[list[str], bool]:
+    labels: list[str] | None = None
+    instantaneous = False
+    with Path(file_path).open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            if not raw_line.startswith("#"):
+                continue
+            text = raw_line[1:].strip()
+            if "Star-formation:" in text and "instantaneous burst" in text:
+                instantaneous = True
+            if "log(age)" in text and uv_column in text:
+                labels = text.split()
+
+    if not instantaneous:
+        raise ValueError("Pop III UV SSP tables must be instantaneous burst models")
+    if labels is None:
+        raise ValueError(f"Pop III UV SSP table is missing required column {uv_column!r}")
+    return labels, instantaneous
+
+
+def _load_popiii_uv_luminosity_table_from_schaerer(
+    file_path: str,
+    uv_column: str,
+    wavelength_a: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    labels, _ = _parse_popiii_uv_table_header(file_path=file_path, uv_column=uv_column)
+    age_index = labels.index("log(age)")
+    luminosity_index = labels.index(uv_column)
+    data = np.loadtxt(file_path)
+    data = np.atleast_2d(np.asarray(data, dtype=float))
+    if data.shape[1] <= max(age_index, luminosity_index):
+        raise ValueError(f"Pop III UV SSP table does not contain column {uv_column!r}")
+
+    log_age_yr = data[:, age_index]
+    log_l_lambda = data[:, luminosity_index]
+    if not np.all(np.isfinite(log_age_yr)):
+        raise ValueError("Pop III UV SSP ages must be finite")
+    if not np.all(np.isfinite(log_l_lambda)):
+        raise ValueError("Pop III UV SSP luminosities must be finite")
+
+    ages_myr = np.power(10.0, log_age_yr - 6.0)
+    l_lambda = np.power(10.0, log_l_lambda) * (u.erg / u.s / u.AA)
+    lum_nu = l_lambda.to(
+        u.erg / u.s / u.Hz,
+        equivalencies=u.spectral_density(float(wavelength_a) * u.AA),
+    )
+    luminosity_per_msun = np.asarray(lum_nu.value, dtype=float)
+
+    if np.any(np.diff(ages_myr) <= 0.0):
+        ages_myr = _reconstruct_popiii_schaerer_age_grid_from_sfh_code(file_path, data.shape[0])
+    else:
+        order = np.argsort(ages_myr, kind="stable")
+        ages_myr = np.asarray(ages_myr[order], dtype=float)
+        luminosity_per_msun = luminosity_per_msun[order]
+    if np.any(ages_myr <= 0.0):
+        raise ValueError("Pop III UV SSP ages must be positive")
+    if np.any(np.diff(ages_myr) <= 0.0):
+        raise ValueError("Pop III UV SSP ages must be strictly increasing")
+    if np.any(luminosity_per_msun < 0.0):
+        raise ValueError("Pop III UV SSP luminosities must be non-negative")
+    return ages_myr, luminosity_per_msun
+
+
+def _reconstruct_popiii_schaerer_age_grid_from_sfh_code(file_path: str, n_rows: int) -> np.ndarray:
+    stem = Path(file_path).stem
+    if stem.endswith("_is5"):
+        step_myr = 1.0
+    elif stem.endswith("_is4"):
+        step_myr = 0.1
+    else:
+        raise ValueError(
+            "Pop III UV SSP ages are not strictly increasing and the table name does not end with "
+            "'_is4' or '_is5', so the documented Schaerer age grid cannot be reconstructed"
+        )
+    if int(n_rows) < 1:
+        raise ValueError("Pop III UV SSP table must contain at least one row")
+    if int(n_rows) == 1:
+        return np.array([1.0e-2], dtype=float)
+    return np.concatenate(
+        (
+            np.array([1.0e-2], dtype=float),
+            np.arange(1, int(n_rows), dtype=float) * step_myr,
+        )
+    )
+
+
 def _load_uv1600_table_from_hdf5(
     file_path: str,
     wavelength_a: float,
@@ -108,6 +200,19 @@ def _load_uv1600_table_cached(
     return _load_uv1600_table_from_dat(file_path=file_path, wavelength_a=wavelength_a)
 
 
+@lru_cache(maxsize=None)
+def _load_popiii_uv_luminosity_table_cached(
+    file_path: str,
+    uv_column: str,
+    wavelength_a: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    return _load_popiii_uv_luminosity_table_from_schaerer(
+        file_path=file_path,
+        uv_column=uv_column,
+        wavelength_a=wavelength_a,
+    )
+
+
 def load_uv1600_table(
     file_path: str | Path,
     wavelength_a: float = DEFAULT_WAVELENGTH_A,
@@ -124,6 +229,29 @@ def load_uv1600_table(
         resolved,
         float(wavelength_a),
         None if metallicity is None else float(metallicity),
+    )
+    return ages_myr.copy(), luminosity_per_msun.copy()
+
+
+def load_popiii_uv_luminosity_table(
+    file_path: str | Path = DEFAULT_POPIII_UV_SSP_FILE,
+    *,
+    uv_column: str = DEFAULT_POPIII_UV_COLUMN,
+    wavelength_a: float = DEFAULT_POPIII_UV_WAVELENGTH_A,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load a Schaerer/Raiter Pop III instantaneous-burst UV table.
+
+    The Pop III tables store ``log[erg s^-1 A^-1]`` continuum luminosities
+    normalized to a one-solar-mass burst. This loader converts the selected UV
+    continuum column to ``erg s^-1 Hz^-1 Msun^-1`` for use by the existing SSP
+    convolution code.
+    """
+
+    resolved = str(Path(file_path).expanduser().resolve())
+    ages_myr, luminosity_per_msun = _load_popiii_uv_luminosity_table_cached(
+        resolved,
+        str(uv_column),
+        float(wavelength_a),
     )
     return ages_myr.copy(), luminosity_per_msun.copy()
 

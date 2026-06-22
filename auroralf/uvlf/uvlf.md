@@ -227,3 +227,59 @@ sample_uvlf_from_hmf(
 * 最后通过加权统计得到总体 UVLF
 
 它不需要把 halo mass 划分成很多 bins，并且可以自然保留 (M_{\rm h}\to L) 映射中的非高斯散布。
+
+---
+
+## PopIII 可选 UV 分量
+
+`run_halo_uv_pipeline(..., enable_popiii=True, ...)` 会在现有 PopII SFR
+之外计算独立的 PopIII SFR 网格。PopII calibrated `f_star` 不变，仍然只
+用于 PopII SFR、metallicity regulator 和 PopII IMF gate。
+
+PopIII SFR 使用：
+
+[
+{\rm SFR}_{\rm III}=f_b f_{*,{\rm III}} f_{{\rm duty},{\rm III}}\dot M_h/10^9
+]
+
+默认参数为 `epsilon_star=1e-3`、`pivot_mass_msun=1e7`、
+`alpha_star=beta_star=0`、`lw_background_j21=0`、
+`upper_mass_mode="atomic"`。`upper_mass_mode="fixed"` 和
+`upper_mass_msun` 可用于测试 Venditti Heavy/Bursty 式上限。
+
+PopIII duty cycle 的低质量端使用 Cruz/Venditti 的 molecular-cooling
+阈值：
+
+[
+M_{\rm mol}(z,J_{21}) =
+3.3\times10^7(1+z)^{-3/2}
+\left(1+2.0\,J_{21}^{0.6}\right)\,M_\odot
+]
+
+当前实现只接受外部/常数 `J21`，默认 `0`；不递归求解 Zeus21 的
+自洽 LW 背景，也不加入 streaming-velocity 因子。
+
+PopIII UV 不使用 `kappa_UV` 简化转换，而是读取 Schaerer/Raiter PopIII
+instantaneous-burst 表的 `L_1500`，转换为 `erg/s/Hz/Msun` 后与
+`SFR_popiii` 卷积。默认文件为：
+
+```text
+external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_sal_500_001_is5.25
+```
+
+启用 PopIII 后，pipeline 返回：
+
+* `uv_luminosities_popiii`
+* `popiii_source_grid`
+* `sfr_tracks["SFR_popiii"]`
+* `metadata["popiii_source_count"]`
+* `metadata["popiii_light_fraction_median"]`
+
+`sample_uvlf_from_hmf(..., enable_popiii=True, ...)` 会把总 luminosity 用于
+UVLF histogram，并在 `samples` 中额外记录：
+
+* `popiii_luminosity`
+* `popiii_light_fraction`
+
+生产脚本显式开关为 `--enable-popiii`。默认不启用 PopIII，以保证历史
+PopII UVLF 结果不变。

@@ -2,19 +2,19 @@
 
 Date: 2026-06-18
 
-Branch: `codex/popiii-new-idea`
+Branch: `codex/popiii-venditti-cruz`
 
 ## Scope
 
 Added the Pop III minihalo lower mass boundary used by the HMF sampling-layer
 stellar-channel routing:
 
-- no-LW H2 floor:
-  `M_min,H2 = 2.5e5 * (26 / (1 + z)) Msun`
+- no-LW Cruz/Venditti molecular-cooling floor:
+  `M_mol,0 = 3.3e7 * (1 + z)**(-1.5) Msun`
 - homogeneous LW correction:
-  `M_min,PopIII = M_min,H2 * (1 + 22.87 * J_LW21**0.47)`
-- default `lw_background_j21=0.0`, so the default threshold is the no-LW H2
-  cooling floor
+  `M_min,PopIII = M_mol,0 * (1 + 2.0 * J_LW21**0.6)`
+- default `lw_background_j21=0.0`, so the default threshold is the no-LW
+  molecular-cooling floor
 
 The stellar-channel routing is now:
 
@@ -22,12 +22,22 @@ The stellar-channel routing is now:
 - `M_min,PopIII <= Mh < M_atomic`: `popiii`
 - `Mh >= M_atomic`: `popii`
 
-This still only adds routing metadata. It does not add Pop III luminosity,
-feedback, or enrichment physics.
+This lower boundary is used by the Pop III channel routing and by the optional
+Pop III SFR duty cycle. Pop III feedback and enrichment are still not fed back
+into the Pop II metallicity regulator or IMF gate.
 
 ## Literature And Package Checks
 
-The H2 floor and LW correction follow the local Pop III literature library:
+The current molecular-cooling floor and LW correction follow the
+Venditti/Cruz/Zeus21 Pop III duty-cycle model:
+
+- Venditti source:
+  `external_data/literature_sources/popiii_uvlf_library/papers/Venditti2025BurstyOrHeavyThe/source/main.tex`
+- Cruz source:
+  arXiv `2407.18294`, Eq. `M_mol`
+
+The older helper used a Machacek/Fialkov-style comparison from the local Pop III
+literature library:
 
 - Ventura et al. source: `external_data/literature_sources/popiii_uvlf_library/papers/Ventura2024SemiAnalyticModellingOf/source/meraxes.tex`
 - Liu et al. source: `external_data/literature_sources/popiii_uvlf_library/papers/Liu2020WhenDidPopulationIII/source/main.tex`
@@ -46,7 +56,7 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/test_hmf_sampling.py
 
 Expected failure before implementation:
 
-- collection failed because `POPIII_H2_COOLING_MASS_NORMALIZATION_MSUN` and
+- collection failed because `POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN` and
   related Pop III LW lower-bound helpers were not yet defined in
   `auroralf.uvlf.hmf_sampling`
 
@@ -83,9 +93,9 @@ Outputs:
 
 Default `J_LW21=0` comparison summary:
 
-- `z=10`: `M_min,PopIII / M_Jeans = 8.73064975e+01`
-- `z=20`: `M_min,PopIII / M_Jeans = 1.73372432e+01`
-- `z=30`: `M_min,PopIII / M_Jeans = 6.54823179e+00`
+- `z=10`: `M_min,PopIII / M_Jeans = 1.33644413e+02`
+- `z=20`: `M_min,PopIII / M_Jeans = 1.92075060e+01`
+- `z=30`: `M_min,PopIII / M_Jeans = 5.97095475e+00`
 
 ## Scientific Assumptions
 
@@ -100,4 +110,5 @@ Default `J_LW21=0` comparison summary:
 ## Remaining Unverified Items
 
 - No self-consistent LW background integration from SFRD has been implemented.
-- No Pop III UV luminosity model has been connected to the `popiii` channel yet.
+- Pop III UV luminosity is now connected behind `enable_popiii=True`, but it does
+  not alter Pop II SFR, metallicity, or IMF-gate calculations.

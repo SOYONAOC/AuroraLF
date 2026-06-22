@@ -29,13 +29,21 @@ from auroralf.mah import (
     TNG_TIME_GRID_MODES,
     TNG_TIME_GRID_SNAPSHOT,
 )
-from auroralf.sfr import DEFAULT_SFR_MODEL_PARAMETERS, SFRModelParameters
+from auroralf.sfr import (
+    DEFAULT_POPIII_SFR_PARAMETERS,
+    DEFAULT_SFR_MODEL_PARAMETERS,
+    POPIII_UPPER_MASS_MODES,
+    PopIIISFRParameters,
+    SFRModelParameters,
+)
 from auroralf.uvlf import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    DEFAULT_LW_BACKGROUND_J21,
     DEFAULT_MASS_FUNCTION_MODEL,
     compute_dust_attenuated_uvlf,
     sample_uvlf_from_hmf,
 )
+from auroralf.uvlf.pipeline import DEFAULT_POPIII_SSP_FILE
 from auroralf.uvlf.imf import (
     DEFAULT_CANONICAL_SSP_FILE,
     DEFAULT_IMF_TRANSITION_PARAMETERS,
@@ -150,6 +158,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--canonical-ssp-file", type=str, default=DEFAULT_CANONICAL_SSP_FILE)
     parser.add_argument("--topheavy-ssp-file", type=str, default=DEFAULT_MILD_TOPHEAVY_SSP_FILE)
     parser.add_argument("--topheavy-ssp-metallicity", type=float, default=DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY)
+    parser.add_argument("--enable-popiii", action="store_true")
+    parser.add_argument("--popiii-epsilon-star", type=float, default=DEFAULT_POPIII_SFR_PARAMETERS.epsilon_star)
+    parser.add_argument("--popiii-mp", type=float, default=DEFAULT_POPIII_SFR_PARAMETERS.pivot_mass_msun)
+    parser.add_argument("--popiii-alpha-star", type=float, default=DEFAULT_POPIII_SFR_PARAMETERS.alpha_star)
+    parser.add_argument("--popiii-beta-star", type=float, default=DEFAULT_POPIII_SFR_PARAMETERS.beta_star)
+    parser.add_argument(
+        "--popiii-upper-mass-mode",
+        choices=POPIII_UPPER_MASS_MODES,
+        default=DEFAULT_POPIII_SFR_PARAMETERS.upper_mass_mode,
+    )
+    parser.add_argument("--popiii-upper-mass-msun", type=float, default=DEFAULT_POPIII_SFR_PARAMETERS.upper_mass_msun)
+    parser.add_argument("--popiii-ssp-file", type=str, default=DEFAULT_POPIII_SSP_FILE)
+    parser.add_argument("--lw-background-j21", type=float, default=DEFAULT_LW_BACKGROUND_J21)
     parser.add_argument("--z-topheavy-min", type=float, default=DEFAULT_IMF_TRANSITION_PARAMETERS.z_topheavy_min)
     parser.add_argument(
         "--enable-source-redshift-topheavy-gate",
@@ -216,6 +237,10 @@ def _run_single_imf_mode_uvlf(
     canonical_ssp_file: Path,
     topheavy_ssp_file: Path,
     topheavy_ssp_metallicity: float | None,
+    enable_popiii: bool,
+    popiii_sfr_parameters: PopIIISFRParameters,
+    popiii_ssp_file: Path,
+    lw_background_j21: float,
     imf_mode: str,
     imf_transition_parameters: IMFTransitionParameters,
     progress_path: Path,
@@ -259,6 +284,10 @@ def _run_single_imf_mode_uvlf(
         ssp_file=str(canonical_ssp_file),
         topheavy_ssp_file=str(topheavy_ssp_file),
         topheavy_ssp_metallicity=topheavy_ssp_metallicity,
+        enable_popiii=enable_popiii,
+        popiii_sfr_parameters=popiii_sfr_parameters,
+        popiii_ssp_file=str(popiii_ssp_file),
+        lw_background_j21=lw_background_j21,
         imf_mode=imf_mode,
         imf_transition_parameters=imf_transition_parameters,
         progress_path=progress_path,
@@ -338,10 +367,17 @@ def main() -> None:
 
     canonical_ssp_file = (project_root / args.canonical_ssp_file).resolve()
     topheavy_ssp_file = (project_root / args.topheavy_ssp_file).resolve()
+    popiii_ssp_file = Path(args.popiii_ssp_file).expanduser()
+    if not popiii_ssp_file.is_absolute():
+        popiii_ssp_file = (project_root / popiii_ssp_file).resolve()
+    else:
+        popiii_ssp_file = popiii_ssp_file.resolve()
     if not canonical_ssp_file.exists():
         raise FileNotFoundError(f"Canonical SSP file not found: {canonical_ssp_file}")
     if not topheavy_ssp_file.exists():
         raise FileNotFoundError(f"Mild top-heavy SSP file not found: {topheavy_ssp_file}")
+    if args.enable_popiii and not popiii_ssp_file.exists():
+        raise FileNotFoundError(f"Pop III SSP file not found: {popiii_ssp_file}")
 
     z_values = [float(z) for z in args.z_values]
     if len(z_values) == 0:
@@ -398,6 +434,21 @@ def main() -> None:
         raise ValueError("fstar-beta must be non-negative")
     if float(args.fstar_gamma) < 0.0:
         raise ValueError("fstar-gamma must be non-negative")
+    if not 0.0 <= float(args.popiii_epsilon_star) <= 1.0:
+        raise ValueError("popiii-epsilon-star must lie in [0, 1]")
+    if float(args.popiii_mp) <= 0.0:
+        raise ValueError("popiii-mp must be positive")
+    if not np.isfinite(float(args.popiii_alpha_star)):
+        raise ValueError("popiii-alpha-star must be finite")
+    if not np.isfinite(float(args.popiii_beta_star)):
+        raise ValueError("popiii-beta-star must be finite")
+    if float(args.lw_background_j21) < 0.0:
+        raise ValueError("lw-background-j21 must be non-negative")
+    if args.popiii_upper_mass_mode == "fixed":
+        if args.popiii_upper_mass_msun is None:
+            raise ValueError("popiii-upper-mass-msun is required when popiii-upper-mass-mode=fixed")
+        if float(args.popiii_upper_mass_msun) <= 0.0:
+            raise ValueError("popiii-upper-mass-msun must be positive")
     if float(args.burst_scatter_dex) < 0.0:
         raise ValueError("burst-scatter-dex must be non-negative")
     if float(args.burst_scatter_timescale_myr) <= 0.0:
@@ -445,6 +496,15 @@ def main() -> None:
         characteristic_mass=float(args.fstar_characteristic_mass),
         beta_star=float(args.fstar_beta),
         gamma_star=float(args.fstar_gamma),
+    )
+    popiii_sfr_parameters = PopIIISFRParameters(
+        epsilon_star=float(args.popiii_epsilon_star),
+        pivot_mass_msun=float(args.popiii_mp),
+        alpha_star=float(args.popiii_alpha_star),
+        beta_star=float(args.popiii_beta_star),
+        lw_background_j21=float(args.lw_background_j21),
+        upper_mass_mode=str(args.popiii_upper_mass_mode),
+        upper_mass_msun=None if args.popiii_upper_mass_msun is None else float(args.popiii_upper_mass_msun),
     )
     mzr_metallicity_parameters = (
         MZRBirthMetallicityParameters(
@@ -572,6 +632,18 @@ def main() -> None:
             [np.nan if args.topheavy_ssp_metallicity is None else float(args.topheavy_ssp_metallicity)],
             dtype=float,
         ),
+        "enable_popiii": np.asarray([bool(args.enable_popiii)], dtype=bool),
+        "popiii_ssp_file": np.asarray([str(popiii_ssp_file)]),
+        "popiii_epsilon_star": np.asarray([float(args.popiii_epsilon_star)], dtype=float),
+        "popiii_mp": np.asarray([float(args.popiii_mp)], dtype=float),
+        "popiii_alpha_star": np.asarray([float(args.popiii_alpha_star)], dtype=float),
+        "popiii_beta_star": np.asarray([float(args.popiii_beta_star)], dtype=float),
+        "popiii_upper_mass_mode": np.asarray([str(args.popiii_upper_mass_mode)]),
+        "popiii_upper_mass_msun": np.asarray(
+            [np.nan if args.popiii_upper_mass_msun is None else float(args.popiii_upper_mass_msun)],
+            dtype=float,
+        ),
+        "lw_background_j21": np.asarray([float(args.lw_background_j21)], dtype=float),
         "z_topheavy_min": np.asarray([float(imf_transition_parameters.z_topheavy_min)], dtype=float),
         "source_redshift_gate_enabled": np.asarray(
             [bool(imf_transition_parameters.source_redshift_gate_enabled)],
@@ -590,6 +662,15 @@ def main() -> None:
         f"canonical_ssp_file: {canonical_ssp_file}",
         f"topheavy_ssp_file: {topheavy_ssp_file}",
         f"topheavy_ssp_metallicity: {args.topheavy_ssp_metallicity}",
+        f"enable_popiii: {bool(args.enable_popiii)}",
+        f"popiii_ssp_file: {popiii_ssp_file}",
+        f"popiii_epsilon_star: {float(args.popiii_epsilon_star):g}",
+        f"popiii_mp: {float(args.popiii_mp):g}",
+        f"popiii_alpha_star: {float(args.popiii_alpha_star):g}",
+        f"popiii_beta_star: {float(args.popiii_beta_star):g}",
+        f"popiii_upper_mass_mode: {str(args.popiii_upper_mass_mode)}",
+        f"popiii_upper_mass_msun: {args.popiii_upper_mass_msun}",
+        f"lw_background_j21: {float(args.lw_background_j21):g}",
         f"imf_modes: {' '.join(imf_modes)}",
         f"z_topheavy_min: {imf_transition_parameters.z_topheavy_min:g}",
         f"source_redshift_gate_enabled: {bool(imf_transition_parameters.source_redshift_gate_enabled)}",
@@ -708,6 +789,10 @@ def main() -> None:
                 canonical_ssp_file=canonical_ssp_file,
                 topheavy_ssp_file=topheavy_ssp_file,
                 topheavy_ssp_metallicity=args.topheavy_ssp_metallicity,
+                enable_popiii=bool(args.enable_popiii),
+                popiii_sfr_parameters=popiii_sfr_parameters,
+                popiii_ssp_file=popiii_ssp_file,
+                lw_background_j21=float(args.lw_background_j21),
                 imf_mode=imf_mode,
                 imf_transition_parameters=imf_transition_parameters,
                 progress_path=progress,
@@ -771,6 +856,14 @@ def main() -> None:
             [float(canonical["metadata"].get("topheavy_light_fraction_median", 0.0))],
             dtype=float,
         )
+        payload[f"{z_tag}_{IMF_MODE_CANONICAL}_popiii_source_fraction"] = np.asarray(
+            [float(canonical["metadata"].get("popiii_source_fraction", 0.0))],
+            dtype=float,
+        )
+        payload[f"{z_tag}_{IMF_MODE_CANONICAL}_popiii_light_fraction_median"] = np.asarray(
+            [float(canonical["metadata"].get("popiii_light_fraction_median", 0.0))],
+            dtype=float,
+        )
         payload[f"{z_tag}_{IMF_MODE_CANONICAL}_final_gas_metallicity_zsun_median_by_mass"] = np.asarray(
             canonical["metadata"].get("final_gas_metallicity_zsun_median_by_mass", np.full(args.N_mass, np.nan)),
             dtype=float,
@@ -797,6 +890,16 @@ def main() -> None:
             "  "
             f"{IMF_MODE_CANONICAL}_topheavy_light_fraction_median="
             f"{float(canonical['metadata'].get('topheavy_light_fraction_median', 0.0)):.6f}"
+        )
+        summary_lines.append(
+            "  "
+            f"{IMF_MODE_CANONICAL}_popiii_source_fraction="
+            f"{float(canonical['metadata'].get('popiii_source_fraction', 0.0)):.6f}"
+        )
+        summary_lines.append(
+            "  "
+            f"{IMF_MODE_CANONICAL}_popiii_light_fraction_median="
+            f"{float(canonical['metadata'].get('popiii_light_fraction_median', 0.0)):.6f}"
         )
         summary_lines.append(
             f"  {IMF_MODE_CANONICAL}_phi_median={float(np.nanmedian(canonical_phi_final[np.isfinite(canonical_phi_final)])):.6e}"
@@ -863,6 +966,14 @@ def main() -> None:
                 [float(result["metadata"].get("topheavy_light_fraction_median", 0.0))],
                 dtype=float,
             )
+            payload[f"{z_tag}_{imf_mode}_popiii_source_fraction"] = np.asarray(
+                [float(result["metadata"].get("popiii_source_fraction", 0.0))],
+                dtype=float,
+            )
+            payload[f"{z_tag}_{imf_mode}_popiii_light_fraction_median"] = np.asarray(
+                [float(result["metadata"].get("popiii_light_fraction_median", 0.0))],
+                dtype=float,
+            )
             payload[f"{z_tag}_{imf_mode}_final_gas_metallicity_zsun_median_by_mass"] = np.asarray(
                 result["metadata"].get("final_gas_metallicity_zsun_median_by_mass", np.full(args.N_mass, np.nan)),
                 dtype=float,
@@ -886,6 +997,16 @@ def main() -> None:
                 "  "
                 f"{imf_mode}_topheavy_light_fraction_median="
                 f"{float(result['metadata'].get('topheavy_light_fraction_median', 0.0)):.6f}"
+            )
+            summary_lines.append(
+                "  "
+                f"{imf_mode}_popiii_source_fraction="
+                f"{float(result['metadata'].get('popiii_source_fraction', 0.0)):.6f}"
+            )
+            summary_lines.append(
+                "  "
+                f"{imf_mode}_popiii_light_fraction_median="
+                f"{float(result['metadata'].get('popiii_light_fraction_median', 0.0)):.6f}"
             )
             summary_lines.append(
                 "  "

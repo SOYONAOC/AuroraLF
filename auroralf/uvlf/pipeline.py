@@ -18,6 +18,7 @@ from auroralf.chemistry import (
     compute_mzr_birth_metallicity,
     compute_regulator_metallicity,
 )
+from auroralf.cooling import compute_popiii_lw_minimum_mass_msun
 from auroralf.mah import (
     MAH_BACKEND_MCBRIDE,
     MAH_BACKEND_THESAN,
@@ -34,12 +35,22 @@ from auroralf.mah import (
     validate_mah_backend,
 )
 from auroralf.sfr import (
+    DEFAULT_POPIII_SFR_PARAMETERS,
     DEFAULT_SFR_MODEL_PARAMETERS,
     EXTENDED_BURST_LOOKBACK_MAX_MYR,
+    PopIIISFRParameters,
     SFRModelParameters,
+    compute_popiii_sfr_from_grids,
     compute_sfr_from_tracks,
 )
-from auroralf.ssp import SSP_UV_LOOKBACK_MAX_MYR, compute_halo_uv_luminosity, interpolate_ssp_luminosity, load_uv1600_table
+from auroralf.ssp import (
+    DEFAULT_POPIII_UV_SSP_FILE,
+    SSP_UV_LOOKBACK_MAX_MYR,
+    compute_halo_uv_luminosity,
+    interpolate_ssp_luminosity,
+    load_popiii_uv_luminosity_table,
+    load_uv1600_table,
+)
 from .imf import (
     DEFAULT_CANONICAL_SSP_FILE,
     DEFAULT_IMF_TRANSITION_PARAMETERS,
@@ -57,6 +68,7 @@ from .imf import (
 DEFAULT_SSP_FILE = DEFAULT_CANONICAL_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_FILE = DEFAULT_MILD_TOPHEAVY_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_METALLICITY = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
+DEFAULT_POPIII_SSP_FILE = DEFAULT_POPIII_UV_SSP_FILE
 YEARS_PER_GYR = 1.0e9
 DEFAULT_BURST_SCATTER_TIMESCALE_MYR = 20.0
 
@@ -68,10 +80,12 @@ class HaloUVPipelineResult:
     uv_luminosities: np.ndarray
     uv_luminosities_canonical: np.ndarray
     uv_luminosities_topheavy: np.ndarray
+    uv_luminosities_popiii: np.ndarray
     redshift_grid: np.ndarray
     floor_mass: np.ndarray
     active_grid: np.ndarray
     imf_topheavy_source_grid: np.ndarray
+    popiii_source_grid: np.ndarray
     metadata: dict[str, Any]
     gas_metallicity_zsun_grid: np.ndarray | None = None
     birth_metallicity_zsun_grid: np.ndarray | None = None
@@ -365,6 +379,9 @@ def run_halo_uv_pipeline(
     ssp_file: str | Path = DEFAULT_SSP_FILE,
     topheavy_ssp_file: str | Path = DEFAULT_TOPHEAVY_SSP_FILE,
     topheavy_ssp_metallicity: float | None = DEFAULT_TOPHEAVY_SSP_METALLICITY,
+    enable_popiii: bool = False,
+    popiii_sfr_parameters: PopIIISFRParameters = DEFAULT_POPIII_SFR_PARAMETERS,
+    popiii_ssp_file: str | Path = DEFAULT_POPIII_SSP_FILE,
     imf_mode: str = "canonical",
     imf_transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
     cosmology: Cosmology | None = None,
@@ -433,11 +450,18 @@ def run_halo_uv_pipeline(
 
     t0 = time.perf_counter()
     if mah_backend == MAH_BACKEND_MCBRIDE:
+        mah_mass_floor = None
+        if enable_popiii:
+            mah_mass_floor = lambda redshift: compute_popiii_lw_minimum_mass_msun(
+                redshift,
+                lw_background_j21=float(popiii_sfr_parameters.lw_background_j21),
+            )
         histories = generate_halo_histories(
             n_tracks=n_tracks,
             z_final=z_final,
             Mh_final=Mh_final,
             z_start_max=z_start_max,
+            M_min=mah_mass_floor,
             cosmology=cosmology,
             random_seed=random_seed,
             time_grid_mode="uniform_in_t",
@@ -496,6 +520,7 @@ def run_halo_uv_pipeline(
 
     canonical_ssp_path = resolve_ssp_path(ssp_file)
     topheavy_ssp_path = resolve_ssp_path(topheavy_ssp_file)
+    popiii_ssp_path = resolve_ssp_path(popiii_ssp_file)
     ages_myr, luv_per_msun = load_uv1600_table(canonical_ssp_path)
     ssp_age_grid_gyr = ages_myr / 1.0e3
     if requires_topheavy_ssp(imf_mode):
@@ -507,6 +532,12 @@ def run_halo_uv_pipeline(
     else:
         topheavy_luv_per_msun = None
         topheavy_ssp_age_grid_gyr = None
+    if enable_popiii:
+        popiii_ages_myr, popiii_luv_per_msun = load_popiii_uv_luminosity_table(popiii_ssp_path)
+        popiii_ssp_age_grid_gyr = popiii_ages_myr / 1.0e3
+    else:
+        popiii_luv_per_msun = None
+        popiii_ssp_age_grid_gyr = None
 
     halo_ids = np.asarray(sfr_tracks["halo_id"], dtype=int)
     n_halos = np.unique(halo_ids).size
@@ -532,6 +563,33 @@ def run_halo_uv_pipeline(
         preserve_mean=bool(burst_scatter_preserve_mean),
     )
     sfr_tracks["SFR"] = sfr_grid.reshape(-1)
+    if enable_popiii:
+        popiii_sfr_result = compute_popiii_sfr_from_grids(
+            mh_grid=mh_grid,
+            dmhdt_grid=dmhdt_grid,
+            z_grid=z_grid,
+            active_grid=active_grid,
+            baryon_fraction=cosmology.omega_b / cosmology.omega_m,
+            parameters=popiii_sfr_parameters,
+        )
+        sfr_popiii_grid = np.asarray(popiii_sfr_result.sfr_grid, dtype=float)
+        popiii_source_grid = np.asarray(popiii_sfr_result.starforming_grid, dtype=bool)
+        popiii_fstar_grid = np.asarray(popiii_sfr_result.fstar_grid, dtype=float)
+        popiii_duty_cycle_grid = np.asarray(popiii_sfr_result.duty_cycle_grid, dtype=float)
+        popiii_lower_mass_grid = np.asarray(popiii_sfr_result.lower_mass_msun_grid, dtype=float)
+        popiii_upper_mass_grid = np.asarray(popiii_sfr_result.upper_mass_msun_grid, dtype=float)
+    else:
+        sfr_popiii_grid = np.zeros_like(sfr_grid, dtype=float)
+        popiii_source_grid = np.zeros_like(active_grid, dtype=bool)
+        popiii_fstar_grid = np.zeros_like(sfr_grid, dtype=float)
+        popiii_duty_cycle_grid = np.zeros_like(sfr_grid, dtype=float)
+        popiii_lower_mass_grid = np.full_like(sfr_grid, np.nan, dtype=float)
+        popiii_upper_mass_grid = np.full_like(sfr_grid, np.nan, dtype=float)
+    sfr_tracks["SFR_popiii"] = sfr_popiii_grid.reshape(-1)
+    sfr_tracks["fstar_popiii"] = popiii_fstar_grid.reshape(-1)
+    sfr_tracks["popiii_duty_cycle"] = popiii_duty_cycle_grid.reshape(-1)
+    sfr_tracks["popiii_lower_mass_msun"] = popiii_lower_mass_grid.reshape(-1)
+    sfr_tracks["popiii_upper_mass_msun"] = popiii_upper_mass_grid.reshape(-1)
     starforming_grid = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
     candidate_transition_parameters = replace(imf_transition_parameters, metallicity_topheavy_max_zsun=None)
     candidate_topheavy_source_grid = compute_topheavy_source_flags(
@@ -624,13 +682,31 @@ def run_halo_uv_pipeline(
         topheavy_ssp_luv_grid=topheavy_luv_per_msun,
         ssp_lookback_max_myr=ssp_lookback_max_myr,
     )
-    uv_luminosities = uv_luminosities_canonical + uv_luminosities_topheavy
-    uv_convolution_method = "vectorized_final_time_variable_imf"
+    if enable_popiii:
+        if popiii_ssp_age_grid_gyr is None or popiii_luv_per_msun is None:
+            raise RuntimeError("Pop III SSP grid was not loaded despite enable_popiii=True")
+        uv_luminosities_popiii, _ = _compute_final_uv_luminosity_components_vectorized(
+            t_grid=t_grid,
+            sfr_grid=sfr_popiii_grid,
+            active_grid=popiii_source_grid,
+            topheavy_source_flag_grid=np.zeros_like(popiii_source_grid, dtype=bool),
+            ssp_age_grid=popiii_ssp_age_grid_gyr,
+            ssp_luv_grid=popiii_luv_per_msun,
+            topheavy_ssp_age_grid=None,
+            topheavy_ssp_luv_grid=None,
+            ssp_lookback_max_myr=ssp_lookback_max_myr,
+        )
+    else:
+        uv_luminosities_popiii = np.zeros_like(uv_luminosities_canonical, dtype=float)
+    uv_luminosities = uv_luminosities_canonical + uv_luminosities_topheavy + uv_luminosities_popiii
+    uv_convolution_method = "vectorized_final_time_variable_imf_with_optional_popiii"
     t3 = time.perf_counter()
     total_light = np.asarray(uv_luminosities, dtype=float)
     positive_light = total_light > 0.0
     topheavy_light_fraction = np.zeros_like(total_light, dtype=float)
     topheavy_light_fraction[positive_light] = uv_luminosities_topheavy[positive_light] / total_light[positive_light]
+    popiii_light_fraction = np.zeros_like(total_light, dtype=float)
+    popiii_light_fraction[positive_light] = uv_luminosities_popiii[positive_light] / total_light[positive_light]
 
     metadata = {
         "n_tracks": n_halos,
@@ -640,6 +716,9 @@ def run_halo_uv_pipeline(
         "canonical_ssp_file": str(canonical_ssp_path),
         "topheavy_ssp_file": str(topheavy_ssp_path),
         "topheavy_ssp_metallicity": topheavy_ssp_metallicity,
+        "popiii_enabled": bool(enable_popiii),
+        "popiii_ssp_file": str(popiii_ssp_path),
+        "popiii_sfr_parameters": popiii_sfr_parameters.as_metadata(),
         "imf_mode": imf_mode,
         "imf_transition_parameters": {
             "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
@@ -661,6 +740,17 @@ def run_halo_uv_pipeline(
         "starforming_source_count": int(np.count_nonzero(starforming_grid)),
         "topheavy_light_fraction_median": float(np.median(topheavy_light_fraction[positive_light]))
         if np.any(positive_light)
+        else 0.0,
+        "popiii_source_fraction": float(np.mean(popiii_source_grid[active_grid]))
+        if np.any(active_grid)
+        else 0.0,
+        "popiii_source_count": int(np.count_nonzero(popiii_source_grid)),
+        "active_source_count": int(np.count_nonzero(active_grid)),
+        "popiii_light_fraction_median": float(np.median(popiii_light_fraction[positive_light]))
+        if np.any(positive_light)
+        else 0.0,
+        "popiii_luminosity_median": float(np.median(uv_luminosities_popiii[np.isfinite(uv_luminosities_popiii)]))
+        if np.any(np.isfinite(uv_luminosities_popiii))
         else 0.0,
         "metallicity_source": metallicity_source,
         "mah_backend": mah_backend,
@@ -762,10 +852,12 @@ def run_halo_uv_pipeline(
         uv_luminosities=np.asarray(uv_luminosities, dtype=float),
         uv_luminosities_canonical=np.asarray(uv_luminosities_canonical, dtype=float),
         uv_luminosities_topheavy=np.asarray(uv_luminosities_topheavy, dtype=float),
+        uv_luminosities_popiii=np.asarray(uv_luminosities_popiii, dtype=float),
         redshift_grid=redshift_grid,
         floor_mass=floor_mass,
         active_grid=active_grid,
         imf_topheavy_source_grid=topheavy_source_grid,
+        popiii_source_grid=popiii_source_grid,
         metadata=metadata,
         gas_metallicity_zsun_grid=gas_metallicity_zsun_grid,
         birth_metallicity_zsun_grid=None if birth_metallicity_zsun_grid is None else birth_metallicity_zsun_grid,
