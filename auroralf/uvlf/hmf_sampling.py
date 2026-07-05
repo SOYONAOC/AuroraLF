@@ -332,13 +332,28 @@ def _run_single_mass_sample(args: tuple[Any, ...]) -> tuple[Any, ...]:
     positive_light = luminosity > 0.0
     topheavy_light_fraction[positive_light] = topheavy_luminosity[positive_light] / luminosity[positive_light]
     popiii_light_fraction[positive_light] = popiii_luminosity[positive_light] / luminosity[positive_light]
+    active_shape = np.asarray(pipeline_result.active_grid, dtype=bool).shape
+    sfr_grid = np.asarray(pipeline_result.sfr_tracks["SFR"], dtype=float)
+    if sfr_grid.size != int(np.prod(active_shape)):
+        raise RuntimeError("run_halo_uv_pipeline returned an unexpected SFR grid size")
+    sfr = sfr_grid.reshape(active_shape)[:, -1]
+    if sfr.size != n_tracks:
+        raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of SFR samples")
+    popiii_sfr_grid = np.asarray(pipeline_result.sfr_tracks["SFR_popiii"], dtype=float)
+    if popiii_sfr_grid.size != int(np.prod(active_shape)):
+        raise RuntimeError("run_halo_uv_pipeline returned an unexpected Pop III SFR grid size")
+    popiii_sfr = popiii_sfr_grid.reshape(active_shape)[:, -1]
+    if popiii_sfr.size != n_tracks:
+        raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III SFR samples")
     return (
         mass_index,
         log_mass,
         luminosity,
+        sfr,
         topheavy_light_fraction,
         popiii_luminosity,
         popiii_light_fraction,
+        popiii_sfr,
         duration,
         int(pipeline_result.metadata["topheavy_source_count"]),
         int(pipeline_result.metadata["starforming_source_count"]),
@@ -498,9 +513,11 @@ def sample_uvlf_from_hmf(
     sample_mass_weight = np.empty(total_samples, dtype=float)
     sample_track_index = np.empty(total_samples, dtype=int)
     sample_luminosity = np.empty(total_samples, dtype=float)
+    sample_sfr = np.empty(total_samples, dtype=float)
     sample_topheavy_light_fraction = np.empty(total_samples, dtype=float)
     sample_popiii_luminosity = np.empty(total_samples, dtype=float)
     sample_popiii_light_fraction = np.empty(total_samples, dtype=float)
+    sample_popiii_sfr = np.empty(total_samples, dtype=float)
     sample_stellar_channel = np.empty(total_samples, dtype=stellar_channel_by_mass.dtype)
     sample_atomic_cooling_mass_msun = np.empty(total_samples, dtype=float)
     sample_popiii_minimum_mass_msun = np.empty(total_samples, dtype=float)
@@ -566,9 +583,11 @@ def sample_uvlf_from_hmf(
             mass_index,
             log_mass,
             luminosity,
+            sfr,
             topheavy_light_fraction,
             popiii_luminosity,
             popiii_light_fraction,
+            popiii_sfr,
             duration,
             topheavy_source_count,
             starforming_source_count,
@@ -579,12 +598,16 @@ def sample_uvlf_from_hmf(
         ) in results_iter:
             if luminosity.size != n_tracks:
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of luminosity samples")
+            if sfr.size != n_tracks:
+                raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of SFR samples")
             if topheavy_light_fraction.size != n_tracks:
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of top-heavy fractions")
             if popiii_luminosity.size != n_tracks:
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III luminosity samples")
             if popiii_light_fraction.size != n_tracks:
                 raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III fractions")
+            if popiii_sfr.size != n_tracks:
+                raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III SFR samples")
 
             start = mass_index * n_tracks
             stop = start + n_tracks
@@ -593,9 +616,11 @@ def sample_uvlf_from_hmf(
             sample_mass_weight[start:stop] = mass_weight[mass_index]
             sample_track_index[start:stop] = np.arange(n_tracks, dtype=int)
             sample_luminosity[start:stop] = luminosity
+            sample_sfr[start:stop] = sfr
             sample_topheavy_light_fraction[start:stop] = topheavy_light_fraction
             sample_popiii_luminosity[start:stop] = popiii_luminosity
             sample_popiii_light_fraction[start:stop] = popiii_light_fraction
+            sample_popiii_sfr[start:stop] = popiii_sfr
             sample_stellar_channel[start:stop] = stellar_channel_by_mass[mass_index]
             sample_atomic_cooling_mass_msun[start:stop] = atomic_cooling_mass_msun
             sample_popiii_minimum_mass_msun[start:stop] = popiii_minimum_mass_msun
@@ -630,9 +655,11 @@ def sample_uvlf_from_hmf(
                     mass_index,
                     log_mass,
                     luminosity,
+                    sfr,
                     topheavy_light_fraction,
                     popiii_luminosity,
                     popiii_light_fraction,
+                    popiii_sfr,
                     duration,
                     topheavy_source_count,
                     starforming_source_count,
@@ -643,6 +670,8 @@ def sample_uvlf_from_hmf(
                 ) = future.result()
                 if luminosity.size != n_tracks:
                     raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of luminosity samples")
+                if sfr.size != n_tracks:
+                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of SFR samples")
                 if topheavy_light_fraction.size != n_tracks:
                     raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of top-heavy fractions")
                 if popiii_luminosity.size != n_tracks:
@@ -651,6 +680,8 @@ def sample_uvlf_from_hmf(
                     )
                 if popiii_light_fraction.size != n_tracks:
                     raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III fractions")
+                if popiii_sfr.size != n_tracks:
+                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III SFR samples")
 
                 start = mass_index * n_tracks
                 stop = start + n_tracks
@@ -659,9 +690,11 @@ def sample_uvlf_from_hmf(
                 sample_mass_weight[start:stop] = mass_weight[mass_index]
                 sample_track_index[start:stop] = np.arange(n_tracks, dtype=int)
                 sample_luminosity[start:stop] = luminosity
+                sample_sfr[start:stop] = sfr
                 sample_topheavy_light_fraction[start:stop] = topheavy_light_fraction
                 sample_popiii_luminosity[start:stop] = popiii_luminosity
                 sample_popiii_light_fraction[start:stop] = popiii_light_fraction
+                sample_popiii_sfr[start:stop] = popiii_sfr
                 sample_stellar_channel[start:stop] = stellar_channel_by_mass[mass_index]
                 sample_atomic_cooling_mass_msun[start:stop] = atomic_cooling_mass_msun
                 sample_popiii_minimum_mass_msun[start:stop] = popiii_minimum_mass_msun
@@ -735,9 +768,11 @@ def sample_uvlf_from_hmf(
         "mass_weight": sample_mass_weight,
         "track_index": sample_track_index,
         "luminosity": sample_luminosity,
+        "sfr": sample_sfr,
         "topheavy_light_fraction": sample_topheavy_light_fraction,
         "popiii_luminosity": sample_popiii_luminosity,
         "popiii_light_fraction": sample_popiii_light_fraction,
+        "popiii_sfr": sample_popiii_sfr,
         "stellar_channel": sample_stellar_channel,
         "atomic_cooling_mass_msun": sample_atomic_cooling_mass_msun,
         "popiii_minimum_mass_msun": sample_popiii_minimum_mass_msun,
@@ -858,6 +893,8 @@ def sample_uvlf_from_hmf(
         )
         if np.any(np.isfinite(sample_popiii_light_fraction))
         else 0.0,
+        "sfrd_msun_yr_mpc3": float(np.sum(sample_sfr * sample_sample_weight)),
+        "popiii_sfrd_msun_yr_mpc3": float(np.sum(sample_popiii_sfr * sample_sample_weight)),
         "mzr_metallicity_enabled": mzr_metallicity_parameters is not None,
         "regulator_metallicity_enabled": regulator_metallicity_parameters is not None,
         "metallicity_source": "mzr"

@@ -278,8 +278,19 @@ external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_sal_500_001_is5.25
 `sample_uvlf_from_hmf(..., enable_popiii=True, ...)` 会把总 luminosity 用于
 UVLF histogram，并在 `samples` 中额外记录：
 
+* `sfr`
 * `popiii_luminosity`
 * `popiii_light_fraction`
+* `popiii_sfr`
+
+其中 `sfr` 是每个 halo realization 在观测红移最终时刻的普通
+atomic-cooling/PopII SFR，`popiii_sfr` 是同一时刻的 `SFR_popiii`，
+单位均为 `Msun/yr`。HMF 加权后
+`sum(samples["sfr"] * samples["sample_weight"])` 给出
+`metadata["sfrd_msun_yr_mpc3"]`，而
+`sum(samples["popiii_sfr"] * samples["sample_weight"])` 给出
+`metadata["popiii_sfrd_msun_yr_mpc3"]`，可直接用于
+`rho_SFR`、`rho_SFR,III`、PISN rate-density 等积分诊断。
 
 生产脚本显式开关为 `--enable-popiii`。默认不启用 PopIII，以保证历史
 PopII UVLF 结果不变。

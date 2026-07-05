@@ -154,13 +154,16 @@ def test_hmf_sampling_records_popiii_and_atomic_cooling_stellar_channels(
         log_mass = float(args[1])
         n_tracks = int(args[5])
         luminosity = np.full(n_tracks, 1.0e28, dtype=float)
+        sfr = np.full(n_tracks, 1.0e-2, dtype=float)
         popiii_luminosity = np.zeros(n_tracks, dtype=float)
         return (
             mass_index,
             log_mass,
             luminosity,
+            sfr,
             np.zeros(n_tracks, dtype=float),
             popiii_luminosity,
+            np.zeros(n_tracks, dtype=float),
             np.zeros(n_tracks, dtype=float),
             0.0,
             0,
@@ -227,14 +230,18 @@ def test_hmf_sampling_records_popiii_luminosity_when_enabled(monkeypatch: pytest
         log_mass = float(args[1])
         n_tracks = int(args[5])
         luminosity = np.full(n_tracks, 1.0e28, dtype=float)
+        sfr = np.full(n_tracks, 2.0e-2, dtype=float)
         popiii_luminosity = np.full(n_tracks, 2.5e27, dtype=float)
+        popiii_sfr = np.full(n_tracks, 3.0e-4, dtype=float)
         return (
             mass_index,
             log_mass,
             luminosity,
+            sfr,
             np.zeros(n_tracks, dtype=float),
             popiii_luminosity,
             popiii_luminosity / luminosity,
+            popiii_sfr,
             0.0,
             0,
             n_tracks,
@@ -263,6 +270,12 @@ def test_hmf_sampling_records_popiii_luminosity_when_enabled(monkeypatch: pytest
 
     np.testing.assert_allclose(result.samples["popiii_luminosity"], 2.5e27)
     np.testing.assert_allclose(result.samples["popiii_light_fraction"], 0.25)
+    np.testing.assert_allclose(result.samples["sfr"], 2.0e-2)
+    np.testing.assert_allclose(result.samples["popiii_sfr"], 3.0e-4)
+    expected_popii_sfrd = float(np.sum(result.samples["sfr"] * result.samples["sample_weight"]))
+    expected_sfrd = float(np.sum(result.samples["popiii_sfr"] * result.samples["sample_weight"]))
+    assert result.metadata["sfrd_msun_yr_mpc3"] == pytest.approx(expected_popii_sfrd)
+    assert result.metadata["popiii_sfrd_msun_yr_mpc3"] == pytest.approx(expected_sfrd)
     assert result.metadata["popiii_enabled"] is True
     assert result.metadata["popiii_source_count_by_mass"].shape == (4,)
     assert result.metadata["popiii_source_fraction"] == pytest.approx(1.0)
@@ -289,14 +302,18 @@ def test_hmf_sampling_popiii_source_fraction_uses_active_sources(
         log_mass = float(args[1])
         n_tracks = int(args[5])
         luminosity = np.full(n_tracks, 1.0e28, dtype=float)
+        sfr = np.zeros(n_tracks, dtype=float)
         popiii_luminosity = np.full(n_tracks, 1.0e27, dtype=float)
+        popiii_sfr = np.zeros(n_tracks, dtype=float)
         return (
             mass_index,
             log_mass,
             luminosity,
+            sfr,
             np.zeros(n_tracks, dtype=float),
             popiii_luminosity,
             popiii_luminosity / luminosity,
+            popiii_sfr,
             0.0,
             0,
             0,
