@@ -361,6 +361,7 @@ def _evaluate_point(
     )
     sfr_tracks = compute_sfr_from_tracks(
         histories.tracks,
+        cosmology=cosmology,
         enable_time_delay=bool(args.enable_time_delay),
     )
     n_halos = int(args.n_tracks)
@@ -377,7 +378,7 @@ def _evaluate_point(
         mh_grid=mh_grid,
         sfr_grid=sfr_grid,
         active_grid=starforming_grid,
-        baryon_fraction=cosmology.omega_b / cosmology.omega_m,
+        cosmology=cosmology,
         parameters=parameters,
         random_seed=int(args.metallicity_random_seed + 10000 * redshift_index + 100 * mass_index),
     )

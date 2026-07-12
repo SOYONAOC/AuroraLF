@@ -9,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from auroralf.mah.generator import generate_halo_histories
+from auroralf.mah import Cosmology
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 from auroralf.mah.tng import generate_tng_halo_histories
 
 
@@ -76,7 +78,7 @@ def _require_inputs() -> None:
 def _tracks_to_grid(result, n_tracks: int) -> dict[str, np.ndarray]:
     n_steps = int(result.metadata["grid_size"])
     grids: dict[str, np.ndarray] = {}
-    for name in ("z", "t_gyr", "Mh", "dMh_dt", "active_flag"):
+    for name in ("z", "t_gyr", "Mh", "dMh_dt_raw", "active_flag"):
         values = np.asarray(result.tracks[name])
         if values.size != n_tracks * n_steps:
             raise ValueError(f"track column {name!r} cannot be reshaped to ({n_tracks}, {n_steps})")
@@ -114,11 +116,17 @@ def _positive_peak_smar(dmhdt: np.ndarray, active: np.ndarray) -> np.ndarray:
     return peak[np.isfinite(peak)]
 
 
-def _build_samples(spec: CacheSpec, seed_offset: int) -> dict[str, object]:
+def _build_samples(
+    spec: CacheSpec,
+    seed_offset: int,
+    *,
+    cosmology: Cosmology,
+) -> dict[str, object]:
     tng = generate_tng_halo_histories(
         n_tracks=N_TRACKS,
         z_final=spec.z_final,
         Mh_final=M_FINAL,
+        cosmology=cosmology,
         cache_path=spec.path,
         mass_bin_width_dex=MASS_BIN_WIDTH_DEX,
         min_candidates=MIN_CANDIDATES,
@@ -132,6 +140,7 @@ def _build_samples(spec: CacheSpec, seed_offset: int) -> dict[str, object]:
         n_tracks=N_TRACKS,
         z_final=mc_z_final,
         Mh_final=M_FINAL,
+        cosmology=cosmology,
         z_start_max=float(z_grid[0]),
         M_min=0.0,
         random_seed=2000 + seed_offset,
@@ -175,8 +184,8 @@ def _plot_tracks(samples: list[dict[str, object]], output_dir: Path) -> tuple[Pa
         mc_active = np.asarray(mc_grid["active_flag"], dtype=bool)
         tng_mass_ratio = np.asarray(tng_grid["Mh"], dtype=float) / M_FINAL
         mc_mass_ratio = np.asarray(mc_grid["Mh"], dtype=float) / M_FINAL
-        tng_smar = np.asarray(tng_grid["dMh_dt"], dtype=float) / M_FINAL
-        mc_smar = np.asarray(mc_grid["dMh_dt"], dtype=float) / M_FINAL
+        tng_smar = np.asarray(tng_grid["dMh_dt_raw"], dtype=float) / M_FINAL
+        mc_smar = np.asarray(mc_grid["dMh_dt_raw"], dtype=float) / M_FINAL
 
         mass_tng, count_tng = _percentiles_by_step(tng_mass_ratio, tng_active)
         mass_mc, _ = _percentiles_by_step(mc_mass_ratio, mc_active)
@@ -248,7 +257,12 @@ def _plot_peak_smar(samples: list[dict[str, object]], output_dir: Path) -> tuple
         values = []
         for sample in samples:
             grid = sample[f"{backend}_grid"] if backend == "tng" else sample["mcbride_grid"]
-            values.append(_positive_peak_smar(np.asarray(grid["dMh_dt"], dtype=float), np.asarray(grid["active_flag"], dtype=bool)))
+            values.append(
+                _positive_peak_smar(
+                    np.asarray(grid["dMh_dt_raw"], dtype=float),
+                    np.asarray(grid["active_flag"], dtype=bool),
+                )
+            )
         parts = ax.violinplot(
             values,
             positions=positions + offset,
@@ -311,7 +325,7 @@ def _write_summary(samples: list[dict[str, object]], output_dir: Path) -> Path:
             grid = sample[grid_name]
             result = sample[result_name]
             peak = _positive_peak_smar(
-                np.asarray(grid["dMh_dt"], dtype=float),
+                np.asarray(grid["dMh_dt_raw"], dtype=float),
                 np.asarray(grid["active_flag"], dtype=bool),
             )
             metadata = result.metadata
@@ -340,9 +354,18 @@ def _write_summary(samples: list[dict[str, object]], output_dir: Path) -> Path:
 
 
 def main() -> None:
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     _require_inputs()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    samples = [_build_samples(spec, index) for index, spec in enumerate(CACHE_SPECS)]
+    samples = [
+        _build_samples(spec, index, cosmology=cosmology)
+        for index, spec in enumerate(CACHE_SPECS)
+    ]
     track_png, track_pdf = _plot_tracks(samples, OUTPUT_DIR)
     peak_png, peak_pdf = _plot_peak_smar(samples, OUTPUT_DIR)
     csv_path = _write_summary(samples, OUTPUT_DIR)

@@ -15,6 +15,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.io.analysis import (
+    GATE_DELAY_BURST_CONFIG_DIFFERENCES,
+    load_uvlf_result,
+    require_compatible_results,
+    select_mode_result,
+)
+from auroralf.results import UVLFRunResult
+
 
 OBS_UVLF_DIR = PROJECT_ROOT / "external_data" / "observations" / "uvlf"
 OBS_FILES = {
@@ -29,16 +37,16 @@ OBS_MUV_MIN = -22.5
 OBS_MUV_MAX = -16.0
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot gate-mode UVLFs across delay and burst settings.")
-    parser.add_argument("--no-delay-no-burst-npz", required=True)
-    parser.add_argument("--no-delay-burst-npz", required=True)
-    parser.add_argument("--delay-no-burst-npz", required=True)
-    parser.add_argument("--delay-burst-npz", required=True)
+    parser.add_argument("--no-delay-no-burst-hdf5", required=True)
+    parser.add_argument("--no-delay-burst-hdf5", required=True)
+    parser.add_argument("--delay-no-burst-hdf5", required=True)
+    parser.add_argument("--delay-burst-hdf5", required=True)
     parser.add_argument("--z", type=float, default=12.5)
     parser.add_argument("--mode", default=MODE)
     parser.add_argument("--output-prefix", required=True)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_path(path_text: str, *, must_exist: bool) -> Path:
@@ -49,10 +57,6 @@ def _resolve_path(path_text: str, *, must_exist: bool) -> Path:
     if must_exist and not path.exists():
         raise FileNotFoundError(f"required file not found: {path}")
     return path
-
-
-def _z_tag(z_value: float) -> str:
-    return f"z{str(float(z_value)).replace('.', 'p')}"
 
 
 def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]]:
@@ -85,19 +89,22 @@ def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]
     return datasets
 
 
-def _load_case(path: Path, *, tag: str, mode: str, reference_centers: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
-    with np.load(path, allow_pickle=False) as payload:
-        center_key = f"{tag}_bin_centers"
-        phi_key = f"{tag}_{mode}_phi"
-        mode_names = [str(item) for item in np.asarray(payload["mode_names"])]
-        if mode not in mode_names:
-            raise ValueError(f"mode {mode} is not present in {path}")
-        if center_key not in payload.files or phi_key not in payload.files:
-            raise KeyError(f"missing {center_key} or {phi_key} in {path}")
-        centers = np.asarray(payload[center_key], dtype=float)
-        phi = np.asarray(payload[phi_key], dtype=float)
+def _load_model_result(path: Path) -> UVLFRunResult:
+    return load_uvlf_result(path)
+
+
+def _load_case(
+    result: UVLFRunResult,
+    *,
+    z_obs: float,
+    mode: str,
+    reference_centers: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    series = select_mode_result(result, redshift=z_obs, mode=mode)
+    centers = series.bin_centers_muv
+    phi = series.phi_observed_per_mpc3_per_mag
     if reference_centers is not None and not np.allclose(centers, reference_centers, rtol=0.0, atol=0.0):
-        raise ValueError(f"UVLF bin centers differ for {path}")
+        raise ValueError(f"UVLF bin centers differ at z={z_obs:g}, mode={mode}")
     return centers, phi
 
 
@@ -113,19 +120,32 @@ def _ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
 def main() -> None:
     args = _parse_args()
     paths = {
-        "no_delay_no_burst": _resolve_path(args.no_delay_no_burst_npz, must_exist=True),
-        "no_delay_burst": _resolve_path(args.no_delay_burst_npz, must_exist=True),
-        "delay_no_burst": _resolve_path(args.delay_no_burst_npz, must_exist=True),
-        "delay_burst": _resolve_path(args.delay_burst_npz, must_exist=True),
+        "no_delay_no_burst": _resolve_path(args.no_delay_no_burst_hdf5, must_exist=True),
+        "no_delay_burst": _resolve_path(args.no_delay_burst_hdf5, must_exist=True),
+        "delay_no_burst": _resolve_path(args.delay_no_burst_hdf5, must_exist=True),
+        "delay_burst": _resolve_path(args.delay_burst_hdf5, must_exist=True),
     }
     output_prefix = _resolve_path(args.output_prefix, must_exist=False).with_suffix("")
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    tag = _z_tag(float(args.z))
+    results = {name: _load_model_result(path) for name, path in paths.items()}
+    baseline_result = results["no_delay_no_burst"]
+    for case_name, result in results.items():
+        require_compatible_results(
+            baseline_result,
+            result,
+            allowed_config_differences=GATE_DELAY_BURST_CONFIG_DIFFERENCES,
+            context=f"gate/delay/burst comparison ({case_name})",
+        )
     centers: np.ndarray | None = None
     phi_by_case: dict[str, np.ndarray] = {}
-    for case_name, path in paths.items():
-        case_centers, phi = _load_case(path, tag=tag, mode=str(args.mode), reference_centers=centers)
+    for case_name, result in results.items():
+        case_centers, phi = _load_case(
+            result,
+            z_obs=float(args.z),
+            mode=str(args.mode),
+            reference_centers=centers,
+        )
         if centers is None:
             centers = case_centers
         phi_by_case[case_name] = phi
@@ -144,7 +164,7 @@ def main() -> None:
     summary_lines = [
         f"z: {float(args.z):g}",
         f"mode: {args.mode}",
-        *(f"{name}_npz: {path}" for name, path in paths.items()),
+        *(f"{name}_hdf5: {path}" for name, path in paths.items()),
         "",
     ]
 

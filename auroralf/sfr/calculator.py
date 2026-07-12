@@ -4,8 +4,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from auroralf.mah import CosmologySet
-from auroralf.mah.models import GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN, KM_PER_MPC, SECONDS_PER_GYR
+from auroralf.mah.models import (
+    GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN,
+    KM_PER_MPC,
+    SECONDS_PER_GYR,
+    Cosmology,
+)
 
 
 PROTON_MASS_KG = 1.67262192369e-27
@@ -192,6 +196,43 @@ def _prepare_track_columns(
     return sorted_arrays, unique_ids, boundaries, group_ids
 
 
+def _validate_accretion_rate_columns(tracks: dict[str, np.ndarray], n_rows: int) -> None:
+    if n_rows == 0:
+        raise ValueError("tracks contains no halo history rows")
+
+    rate_columns: dict[str, np.ndarray] = {}
+    for name in ("dMh_dt_raw", "dMh_dt_sfr", "dMh_dt_clipped"):
+        values = np.asarray(tracks[name])
+        if values.ndim != 1:
+            raise ValueError(f"tracks column '{name}' must be a 1D array")
+        if values.size != n_rows:
+            raise ValueError(f"tracks column '{name}' does not match halo_id length")
+        rate_columns[name] = values
+
+    clipped = rate_columns["dMh_dt_clipped"]
+    if clipped.dtype != np.dtype(np.bool_):
+        raise ValueError("tracks column 'dMh_dt_clipped' must have bool dtype")
+
+    numeric_rates: dict[str, np.ndarray] = {}
+    for name in ("dMh_dt_raw", "dMh_dt_sfr"):
+        try:
+            values = np.asarray(rate_columns[name], dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"tracks column '{name}' must contain finite numeric values") from exc
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"tracks column '{name}' must contain only finite values")
+        numeric_rates[name] = values
+
+    raw = numeric_rates["dMh_dt_raw"]
+    effective = numeric_rates["dMh_dt_sfr"]
+    if np.any(effective < 0.0):
+        raise ValueError("dMh_dt_sfr must be non-negative")
+    if not np.array_equal(effective, np.maximum(raw, 0.0)):
+        raise ValueError("dMh_dt_sfr must equal maximum(dMh_dt_raw, 0)")
+    if not np.array_equal(clipped, raw < 0.0):
+        raise ValueError("dMh_dt_clipped must equal dMh_dt_raw < 0")
+
+
 def _interpolate_grouped(
     x: np.ndarray,
     y: np.ndarray,
@@ -243,6 +284,8 @@ def _interpolate_grouped(
 
 def compute_sfr_from_tracks(
     tracks: dict[str, np.ndarray],
+    *,
+    cosmology: Cosmology,
     mu: float = 0.61,
     atomic_cooling_temperature: float = 1.0e4,
     enable_time_delay: bool = False,
@@ -252,12 +295,25 @@ def compute_sfr_from_tracks(
 ) -> dict[str, np.ndarray]:
     """Compute SFR in Msun/yr and related virial quantities from halo history tracks."""
 
-    required = ("halo_id", "step", "z", "t_gyr", "Mh", "dMh_dt")
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
+
+    required = (
+        "halo_id",
+        "step",
+        "z",
+        "t_gyr",
+        "Mh",
+        "dMh_dt_raw",
+        "dMh_dt_sfr",
+        "dMh_dt_clipped",
+    )
     missing = [name for name in required if name not in tracks]
     if missing:
         raise KeyError(f"tracks is missing required columns: {missing}")
 
     n_rows = int(np.asarray(tracks["halo_id"]).size)
+    _validate_accretion_rate_columns(tracks, n_rows)
     for name in required:
         if np.asarray(tracks[name]).size != n_rows:
             raise ValueError(f"tracks column '{name}' does not match halo_id length")
@@ -266,28 +322,44 @@ def compute_sfr_from_tracks(
     max_burst_lookback_gyr = float(burst_lookback_max_myr) / 1.0e3
     if max_burst_lookback_gyr <= 0.0:
         raise ValueError("burst_lookback_max_myr must be positive")
-    cosmo = CosmologySet()
-    baryon_fraction = cosmo.omegab / cosmo.omegam
+    baryon_fraction = cosmology.omega_b / cosmology.omega_m
     sorted_tracks, _, boundaries, group_ids = _prepare_track_columns(tracks)
     z = np.asarray(sorted_tracks["z"], dtype=float)
     t_gyr = np.asarray(sorted_tracks["t_gyr"], dtype=float)
     mass = np.asarray(sorted_tracks["Mh"], dtype=float)
-    mdot = np.asarray(sorted_tracks["dMh_dt"], dtype=float)
+    mdot = np.asarray(sorted_tracks["dMh_dt_sfr"], dtype=float)
 
-    hubble = cosmo.H0u * np.sqrt(cosmo.omegam * (1.0 + z) ** 3 + cosmo.omegalam)
-    rho_crit = cosmo.rhocrit * (hubble / cosmo.H0u) ** 2
-    omega_m_z = cosmo.omegam * (1.0 + z) ** 3 / (cosmo.omegam * (1.0 + z) ** 3 + cosmo.omegalam)
-    delta = omega_m_z - 1.0
-    delta_vir = 18.0 * np.pi**2 + 82.0 * delta - 39.0 * delta**2
-    rho_vir = delta_vir * rho_crit
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        hubble = cosmology.h0_km_s_mpc * np.sqrt(
+            cosmology.omega_m * (1.0 + z) ** 3 + cosmology.omega_lambda
+        )
+        rho_crit = cosmology.rhocrit * (hubble / cosmology.h0_km_s_mpc) ** 2
+        omega_m_z = cosmology.omega_m * (1.0 + z) ** 3 / (
+            cosmology.omega_m * (1.0 + z) ** 3 + cosmology.omega_lambda
+        )
+        delta = omega_m_z - 1.0
+        delta_vir = 18.0 * np.pi**2 + 82.0 * delta - 39.0 * delta**2
+        rho_vir = delta_vir * rho_crit
 
-    # Use Msun and Mpc consistently so virial quantities remain numerically stable.
-    r_vir = (3.0 * mass / (4.0 * np.pi * delta_vir * rho_crit)) ** (1.0 / 3.0)
-    v_c = np.sqrt(GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN * mass / r_vir)
-    t_vir = mu * PROTON_MASS_KG * (v_c * 1.0e3) ** 2 / (2.0 * BOLTZMANN_CONSTANT_J_K)
-    tau_del = r_vir * KM_PER_MPC / v_c / SECONDS_PER_GYR
-    td_burst = np.sqrt(3.0 * np.pi / (32.0 * GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN * rho_vir))
-    td_burst = td_burst * KM_PER_MPC / SECONDS_PER_GYR
+        # Use Msun and Mpc consistently so virial quantities remain numerically stable.
+        r_vir = (3.0 * mass / (4.0 * np.pi * delta_vir * rho_crit)) ** (1.0 / 3.0)
+        v_c = np.sqrt(GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN * mass / r_vir)
+        t_vir = mu * PROTON_MASS_KG * (v_c * 1.0e3) ** 2 / (2.0 * BOLTZMANN_CONSTANT_J_K)
+        tau_del = r_vir * KM_PER_MPC / v_c / SECONDS_PER_GYR
+        td_burst = np.sqrt(
+            3.0 * np.pi / (32.0 * GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN * rho_vir)
+        )
+        td_burst = td_burst * KM_PER_MPC / SECONDS_PER_GYR
+
+    core_virial_quantities = {
+        "r_vir": r_vir,
+        "V_c": v_c,
+        "T_vir": t_vir,
+        "tau_del": tau_del,
+        "td_burst": td_burst,
+    }
+    if any(not np.all(np.isfinite(values)) for values in core_virial_quantities.values()):
+        raise RuntimeError("SFR core physical quantities must be finite")
 
     starts = boundaries[:-1][group_ids]
     ends = boundaries[1:][group_ids]
@@ -371,11 +443,15 @@ def compute_sfr_from_tracks(
     output["td_burst"] = td_burst
     output["t_src"] = t_src
     output["Mh_src"] = mh_src
-    output["dMh_dt_src"] = mdot_src
+    output["dMh_dt_sfr_src"] = mdot_src
     output["fstar_src"] = fstar_src
     output["fstar_now"] = fstar_now
     output["mdot_burst"] = mdot_burst
     output["SFR"] = sfr
+    if not np.all(np.isfinite(sfr)):
+        raise RuntimeError("SFR core physical quantities must be finite")
+    if np.any(sfr < 0.0):
+        raise RuntimeError("SFR calculation returned a negative value")
     return output
 
 __all__ = [

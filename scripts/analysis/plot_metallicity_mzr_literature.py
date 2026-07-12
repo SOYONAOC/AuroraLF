@@ -22,6 +22,8 @@ from auroralf.chemistry import (  # noqa: E402
     fire2_highz_mzr_oh12,
     jades_lowmass_mzr_oh12,
 )
+from auroralf.mah import Cosmology  # noqa: E402
+from auroralf.seeding import derive_pipeline_random_seeds  # noqa: E402
 from auroralf.uvlf import (  # noqa: E402
     IMF_MODE_CANONICAL,
     IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
@@ -106,12 +108,17 @@ def _final_finite_value(values: np.ndarray, key: str) -> float:
     return float(array[finite[-1]])
 
 
-def _estimate_stellar_mass_medians(payload: np.lib.npyio.NpzFile, log_masses: np.ndarray) -> dict[float, dict[str, float]]:
+def _estimate_stellar_mass_medians(
+    payload: np.lib.npyio.NpzFile,
+    log_masses: np.ndarray,
+    *,
+    cosmology: Cosmology,
+) -> dict[float, dict[str, float]]:
     z_final = float(np.asarray(payload["z_final"], dtype=float)[0])
     z_start_max = float(np.asarray(payload["z_start_max"], dtype=float)[0])
     n_tracks = int(np.asarray(payload["n_tracks"], dtype=int)[0])
     n_grid = int(np.asarray(payload["n_grid"], dtype=int)[0])
-    random_seed = int(np.asarray(payload["random_seed"], dtype=int)[0])
+    base_seed = int(np.asarray(payload["base_seed"], dtype=np.uint64)[0])
     returned_fraction = float(np.asarray(payload["metal_returned_fraction"], dtype=float)[0])
 
     if not 0.0 <= returned_fraction < 1.0:
@@ -119,14 +126,18 @@ def _estimate_stellar_mass_medians(payload: np.lib.npyio.NpzFile, log_masses: np
 
     summaries: dict[float, dict[str, float]] = {}
     for mass_index, log_mass in enumerate(log_masses):
-        seed = int(random_seed + 1000 * mass_index)
         result = run_halo_uv_pipeline(
             n_tracks=n_tracks,
             z_final=z_final,
             Mh_final=float(10.0**float(log_mass)),
+            cosmology=cosmology,
+            random_seeds=derive_pipeline_random_seeds(
+                base_seed,
+                redshift=z_final,
+                mass_index=mass_index,
+            ),
             z_start_max=z_start_max,
             n_grid=n_grid,
-            random_seed=seed,
             workers=1,
             imf_mode=IMF_MODE_CANONICAL,
         )
@@ -273,6 +284,7 @@ def _plot_comparison(
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     history_path = _resolve_path(args.history_npz)
     if not history_path.exists():
         raise FileNotFoundError(history_path)
@@ -283,7 +295,11 @@ def main() -> None:
     with np.load(history_path, allow_pickle=False) as payload:
         log_masses = np.asarray(payload["log_masses"], dtype=float)
         mode_names = _mode_names(payload)
-        stellar_mass_summary = _estimate_stellar_mass_medians(payload, log_masses)
+        stellar_mass_summary = _estimate_stellar_mass_medians(
+            payload,
+            log_masses,
+            cosmology=cosmology,
+        )
 
         rows: list[dict[str, float | str]] = []
         for log_mass in log_masses:

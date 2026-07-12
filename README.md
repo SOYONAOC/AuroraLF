@@ -1,5 +1,50 @@
 # AuroraLF
 
+## v2 typed API
+
+AuroraLF v2 exposes one strict configuration boundary and one in-memory run
+function:
+
+```python
+from pathlib import Path
+
+from auroralf import UVLFRunConfig, UVLFRunResult, run_uvlf
+
+config = UVLFRunConfig.from_toml(Path("configs/uvlf/production.toml"))
+result: UVLFRunResult = run_uvlf(config)
+canonical_z6 = result.for_redshift(6.0).for_mode("canonical")
+```
+
+TOML paths are resolved relative to the TOML file, not the current working
+directory. `run_uvlf` validates the SSP files used by enabled modes and the
+active MAH-backend cache, then delegates to the shared-batch streaming core and returns
+`UVLFRunResult`; it does not write `config.output.artifact_path`. All configured
+IMF modes reuse each halo's MAH, SFR, and chemistry preparation. Public runs
+use serial execution when `sampling.workers = 1` and a spawn-based process pool
+otherwise. The active worker count is capped by the number of final halo masses,
+and the parallel scheduler keeps at most twice that many running or completed
+mass tasks in memory while consuming results in deterministic mass order.
+Every v2 TOML file must set a positive `sampling.mass_batch_size`; this bounds
+the number of final halo masses prepared in each streaming chunk. Each
+redshift uses one Reed07 interpolation grid over the full configured mass
+range, so changing the chunk size changes neither seeded masses nor HMF
+weights and histogram results.
+
+## Reproducible environment
+
+The supported interpreter and exact dependency versions are declared in
+`pyproject.toml` and frozen in `uv.lock`. Create or synchronize a project-local
+environment without re-resolving versions:
+
+```bash
+uv sync --frozen --all-groups
+PYTHONPATH=. .venv/bin/python -m pytest tests
+```
+
+Runtime, analysis, test, and slide-build dependencies are separate groups. The
+lock currently targets Python `>=3.13,<3.14`; SciPy is intentionally pinned to
+`1.17.1` because the tested HMF/CAMB path is incompatible with SciPy `1.18`.
+
 ## Project layout
 
 Core code:
@@ -36,7 +81,7 @@ Keep external source data under `external_data/`, with large local libraries ign
 导入：
 
 ```python
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
 ```
 
 输入：
@@ -50,11 +95,14 @@ from auroralf.mah import generate_halo_histories
 - `z_start_max`
   回溯的最高红移，默认 `50.0`
 - `M_min`
-  最低质量阈值；默认 `None` 时使用 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`，也可以传标量、与红移网格同长度的数组，或 `M_min(z)` 形式的可调用对象
+  最低质量阈值；默认 `None` 时使用
+  `massfunc.SFRD(h=cosmology.H0/100, omegam=cosmology.omega_m).M_vir(mu=0.61, Tvir=1e4, z)`；
+  也可以传标量、与红移网格同长度的数组，或 `M_min(z)` 形式的可调用对象
 - `cosmology`
-  `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
+  keyword-only 必填的 `auroralf.mah.Cosmology`；生成 MAH、SFR、HMF 与 UVLF
+  时必须复用同一对象，library 内部不会构造隐藏默认值
 - `random_seed`
-  随机种子
+  MAH 低层抽样种子
 - `time_grid_mode`
   支持：
   - `"uniform_in_z"`
@@ -69,9 +117,9 @@ from auroralf.mah import generate_halo_histories
 - `store_inactive_history`
   是否保留低于 `M_min` 之后的历史点
 - `sampler`
-  `beta, gamma` 的抽样方式，支持 `"mcbride"` 和 `"gaussian"`
+  `beta, gamma` 的抽样方式，只支持 `"mcbride"` 和 `"gaussian_approximation"`
 - `pilot_samples`
-  当 `sampler="gaussian"` 时使用的 pilot sample 数目
+  当 `sampler="gaussian_approximation"` 时使用的 pilot sample 数目
 
 输出：
 
@@ -100,8 +148,18 @@ from auroralf.mah import generate_halo_histories
   相邻时间步间隔，单位 `Gyr`
 - `Mh`
   halo mass
-- `dMh_dt`
-  halo mass accretion rate
+- `dMh_dt_raw`
+  原始 halo mass 导数，单位 `Msun/Gyr`；允许为负，用于 MAH/SMAR 诊断
+- `dMh_dt_sfr`
+  成星路径使用的有效吸积率，单位 `Msun/Gyr`，严格等于
+  `maximum(dMh_dt_raw, 0)`
+- `dMh_dt_clipped`
+  负吸积裁剪标记，严格等于 `dMh_dt_raw < 0`
+
+负吸积统计 metadata 的 denominator 按后端定义：McBride 的
+`negative_dmhdt_total_count` 是返回轨道中 finite analytic-rate 行数；TNG/THESAN
+则是两端都 resolved 的相邻 snapshot transition 数，不包含每条轨道首步或
+unresolved boundary。
 - `active_flag`
   是否仍处于有效区间；当 `Mh < M_min` 后为 `False`
 - `termination_flag`
@@ -127,7 +185,12 @@ from auroralf.sfr import compute_sfr_from_tracks
   - `z`
   - `t_gyr`
   - `Mh`
-  - `dMh_dt`
+  - `dMh_dt_raw`
+  - `dMh_dt_sfr`
+  - `dMh_dt_clipped`
+- `cosmology`
+  必填的 keyword-only `auroralf.mah.Cosmology` 实例；调用方应将生成 MAH
+  时使用的同一对象继续传入 SFR，确保 Hubble 参数、临界密度与重子比例一致
 - `mu`
   平均分子量，默认 `0.61`
 - `atomic_cooling_temperature`
@@ -146,7 +209,7 @@ from auroralf.sfr import compute_sfr_from_tracks
   - `td_burst`
   - `t_src`
   - `Mh_src`
-  - `dMh_dt_src`
+  - `dMh_dt_sfr_src`
   - `fstar_src`
   - `fstar_now`
   - `mdot_burst`
@@ -155,25 +218,35 @@ from auroralf.sfr import compute_sfr_from_tracks
 说明：
 
 - `SFR` 单位为 `Msun/yr`
-- 当 `enable_time_delay=False` 时，直接用当前时刻的 `Mh` 和 `dMh_dt`
+- 当 `enable_time_delay=False` 时，直接用当前时刻的 `Mh` 和 `dMh_dt_sfr`
 - 当 `enable_time_delay=True` 时，使用
   `g(t-t') \propto (t-t') \exp[-(t-t')/(\kappa t_d)]`
   的 extended-burst 核对
-  `fstar(Mh(t')) * dMh_dt(t')`
+  `fstar(Mh(t')) * dMh_dt_sfr(t')`
   做时间卷积
-- `tau_del/t_src/Mh_src/dMh_dt_src` 仍保留，作为与旧单一延迟时间口径可对照的诊断量
+- `tau_del/t_src/Mh_src/dMh_dt_sfr_src` 仍保留，作为 source-time 诊断量
 - `mdot_burst` 仍保留，表示只对 `dMh/dt` 做 kernel 卷积后的诊断量；真正进入 delay-SFR 的是
-  `kernel * fstar(Mh) * dMh_dt` 的积分
+  `kernel * fstar(Mh) * dMh_dt_sfr` 的积分
 - 若 `T_vir < 1e4 K`，则 `SFR = 0`
 
 最小调用：
 
 ```python
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
 from auroralf.sfr import compute_sfr_from_tracks
 
-result = generate_halo_histories(n_tracks=100, z_final=6.0, Mh_final=1e11)
-sfr_tracks = compute_sfr_from_tracks(result.tracks, enable_time_delay=True)
+cosmology = Cosmology()
+result = generate_halo_histories(
+    n_tracks=100,
+    z_final=6.0,
+    Mh_final=1e11,
+    cosmology=cosmology,
+)
+sfr_tracks = compute_sfr_from_tracks(
+    result.tracks,
+    cosmology=cosmology,
+    enable_time_delay=True,
+)
 ```
 
 ## `auroralf.chemistry.compute_regulator_metallicity()`
@@ -370,12 +443,18 @@ from auroralf.ssp import compute_halo_uv_luminosity
 最小调用：
 
 ```python
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
 from auroralf.sfr import compute_sfr_from_tracks
 from auroralf.ssp import compute_halo_uv_luminosity, load_uv1600_table
 
-histories = generate_halo_histories(n_tracks=1, z_final=6.0, Mh_final=1e11)
-sfr_tracks = compute_sfr_from_tracks(histories.tracks)
+cosmology = Cosmology()
+histories = generate_halo_histories(
+    n_tracks=1,
+    z_final=6.0,
+    Mh_final=1e11,
+    cosmology=cosmology,
+)
+sfr_tracks = compute_sfr_from_tracks(histories.tracks, cosmology=cosmology)
 
 ages_myr, luv_per_msun = load_uv1600_table(
     "external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
@@ -425,7 +504,7 @@ from auroralf.uvlf import run_halo_uv_pipeline
   Pop II IMF 模式，支持：
   - `"canonical"`：所有源时刻都使用 canonical Pop II SSP
   - `"z10_mild_topheavy"`：保留的历史模式名；默认使用 active source-time 与 birth-metallicity gate，不再默认要求 `z >= z_topheavy_min`
-  - `"mah_burst_mild_topheavy"`：满足 `Mh / dMh_dt <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
+  - `"mah_burst_mild_topheavy"`：满足 `Mh / dMh_dt_sfr <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
 - `imf_transition_parameters`
   `auroralf.uvlf.IMFTransitionParameters`，默认
   `source_redshift_gate_enabled=False`、`growth_time_threshold_myr=50.0`、
@@ -433,11 +512,14 @@ from auroralf.uvlf import run_halo_uv_pipeline
   历史 source-redshift gate 时使用；若 `metallicity_topheavy_max_zsun` 设为
   `None`，则关闭金属丰度 gate
 - `cosmology`
-  `auroralf.mah.Cosmology`；未提供时使用项目默认宇宙学
-- `random_seed`
-  随机种子
+  keyword-only 必填的 `auroralf.mah.Cosmology`；同一对象会传给 MAH、SFR、
+  Pop III/chemistry 与 UV convolution 路径
+- `random_seeds`
+  keyword-only 必填的 `auroralf.seeding.PipelineRandomSeeds`；其中 `mah`、
+  `metallicity`、`burst` 分别且只传给对应随机过程，不允许 `None` 或隐式 entropy fallback
 - `sampler`
-  `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
+  `auroralf.mah` 参数抽样方式，只支持 `"mcbride"` 和
+  `"gaussian_approximation"`，默认 `"mcbride"`
 - `mah_backend`
   MAH 来源，默认 `"mcbride"`。可选 `"tng"` 或 `"thesan"` 时只替代 halo assembly
   history；SFR、IMF gate、SSP、UV 卷积和 UVLF normalization 仍使用 AuroraLF 当前流程
@@ -449,6 +531,10 @@ from auroralf.uvlf import run_halo_uv_pipeline
   `mah_backend="thesan"` 时必填，指向 THESAN-dark-1 compact MAH cache 文件或目录
 - `thesan_mass_bin_width_dex` / `thesan_min_candidates` / `thesan_smoothing_myr`
   THESAN cache 中按 `log10(Mh_final)` 近邻抽取 MAH shape 的 bin 半宽、最少候选数和平滑时间尺度
+
+TNG/THESAN cache 必须包含 finite、物理有效的 `hubble`、`omega_m`、`omega_b`
+attributes，并与传入 `cosmology` 严格匹配；不匹配会显式报错，不能把不同宇宙学的
+时间网格、质量换算与 HMF 权重混在同一次运行中。
 - `enable_time_delay`
   是否在 `auroralf.sfr` 计算中启用基于 dynamical time 的 extended-burst 延迟核，默认 `False`
 - `workers`
@@ -459,14 +545,10 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `regulator_metallicity_parameters`
   可选 `auroralf.chemistry.RegulatorMetallicityParameters`；提供时由累计 `Mstar`、halo baryon gas reservoir
   和有效 `lambda_Z` 给出 `Z_birth(t)` 与 `Z_gas(t)`，作为默认物理金属丰度闭包
-- `metallicity_random_seed`
-  MZR 或 regulator scatter 的随机种子；不影响 MAH 抽样随机种子
 - `burst_scatter_dex`
   对源时刻 SFR 施加 lognormal burst scatter 的标准差，单位 dex；默认 `0.0` 表示关闭
 - `burst_scatter_timescale_myr`
   burst scatter 在同一 halo 内保持相关的时间尺度，单位 `Myr`；默认 `20.0`
-- `burst_scatter_random_seed`
-  burst scatter 随机种子；若未提供，则复用该 halo 的 MAH `random_seed`
 - `burst_scatter_preserve_mean`
   是否对每条 halo 的 burst 后 SFR 逐条归一化，使 `integral SFR dt` 与 no-burst 历史一致；默认 `True`。
   关闭后仅使用原始 lognormal multiplier，不保证单条 halo 的形成恒星质量守恒
@@ -512,7 +594,8 @@ from auroralf.uvlf import run_halo_uv_pipeline
 说明：
 
 - 这个函数封装了完整主流程：`auroralf.mah -> auroralf.sfr -> auroralf.ssp UV convolution`
-- `auroralf.mah` 部分使用默认 `M_min`，即 `massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)`
+- `auroralf.mah` 部分使用默认 `M_min` 时，atomic-cooling threshold 会显式使用
+  同一个 `cosmology` 的 `h` 与 `omega_m`
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
 - Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
 - 默认 mild top-heavy 还要求本步成星前 `Z_birth <= 0.05 Zsun`；这个阈值位于低金属 IMF 过渡区间内，并与当前 top-heavy SSP 的 `0.05 Zsun` 选择一致
@@ -527,12 +610,15 @@ from auroralf.uvlf import run_halo_uv_pipeline
 最小调用：
 
 ```python
+from auroralf.mah import Cosmology
 from auroralf.uvlf import run_halo_uv_pipeline
 
+cosmology = Cosmology()
 result = run_halo_uv_pipeline(
     n_tracks=10000,
     z_final=6.0,
     Mh_final=1e12,
+    cosmology=cosmology,
     workers=32,
 )
 
@@ -552,12 +638,17 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 
 - `z_obs`
   观测红移
+- `cosmology`
+  keyword-only 必填的 `auroralf.mah.Cosmology`；HMF 权重和每个内层 pipeline
+  worker 都使用该对象
 - `N_mass`
   外层 Monte Carlo 抽取的 halo 终质量个数，默认 `3000`
 - `n_tracks`
   每个质量点内层生成的 luminosity realization 个数，默认 `1000`
-- `random_seed`
-  随机种子
+- `base_seed`
+  keyword-only 必填的非负 Python `int`，范围为 `0 <= base_seed <= 2**64-1`。HMF mass draw 和每个质量点的 MAH、
+  metallicity、burst seed 由稳定 `SeedSequence` 派生；key 含 redshift 和 mass index，
+  不含 IMF mode 或遍历顺序
 - `quantity`
   统计对象，支持 `"Muv"` 和 `"luminosity"`；默认 `"Muv"`
 - `bins`
@@ -571,7 +662,8 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - `n_grid`
   内层 `auroralf/mah` 和 `auroralf/sfr` 使用的 redshift grid 点数，默认 `240`
 - `sampler`
-  `auroralf.mah` 参数抽样方式，默认 `"mcbride"`
+  `auroralf.mah` 参数抽样方式，只支持 `"mcbride"` 和
+  `"gaussian_approximation"`，默认 `"mcbride"`
 - `mah_backend`
   MAH 来源，默认 `"mcbride"`；`"tng"` 和 `"thesan"` 分别从对应 compact MAH cache
   有放回抽样条件分布 `P(MAH | Mh, z)`，不改变外层 Reed07 HMF 权重
@@ -589,6 +681,11 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   mild top-heavy Pop II SSP 文件路径；仅非 canonical IMF 模式实际读取
 - `topheavy_ssp_metallicity`
   HDF5 mild top-heavy SSP 的金属丰度，单位为 `Z/Zsun`；默认 `0.05`
+- `enable_popiii` / `popiii_sfr_parameters` / `popiii_ssp_file`
+  Pop III 开关、`auroralf.sfr.PopIIISFRParameters` 和 SSP 路径。
+  `popiii_sfr_parameters.lw_background_j21` 是 HMF Pop III 质量下限、stellar-channel
+  分类、内层 pipeline 和 metadata 的唯一 LW background 来源；接口不再接受独立的
+  `lw_background_j21` 参数
 - `imf_mode`
   同 `run_halo_uv_pipeline()`，默认 `"canonical"`
 - `imf_transition_parameters`
@@ -597,23 +694,15 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   可选进度文件路径；若提供，会把外层 `N_mass` 循环进度持续写入该 txt 文件
 - `mass_function_model`
   外层 halo mass function 权重模型；当前生产接口只支持 `"hmf_reed07"`，使用 `hmf` 包中的 Reed07 fitting function。旧的 `"massfunc_st"` 和 Watson13 分支已禁用。
-- `lw_background_j21`
-  Pop III minihalo 分流使用的均匀 LW background，单位为
-  `1e-21 erg s^-1 cm^-2 Hz^-1 sr^-1`；默认 `0.0`，即无 LW feedback 的
-  H2 cooling floor
 - `mzr_metallicity_parameters`
   可选 `auroralf.chemistry.MZRBirthMetallicityParameters`；会透传给每个质量点的 `run_halo_uv_pipeline()`
 - `regulator_metallicity_parameters`
   可选 `auroralf.chemistry.RegulatorMetallicityParameters`；会透传给每个质量点的 `run_halo_uv_pipeline()`，
   与 MZR backend 二选一
-- `metallicity_random_seed`
-  MZR 或 regulator scatter 随机种子；外层每个质量点会使用 `metallicity_random_seed + mass_index`
 - `burst_scatter_dex`
   透传给每个质量点的 SFR burst scatter 标准差，单位 dex；默认 `0.0`
 - `burst_scatter_timescale_myr`
   burst scatter 时间相关尺度，单位 `Myr`；默认 `20.0`
-- `burst_scatter_random_seed`
-  burst scatter 随机种子；外层每个质量点会使用 `burst_scatter_random_seed + mass_index`
 - `burst_scatter_preserve_mean`
   是否对每条 halo 的 burst 后 SFR 逐条归一化，使 `integral SFR dt` 与 no-burst 历史一致；默认 `True`
 
@@ -661,10 +750,12 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 
 - 外层在 `log10 Mh in [9, 13]` 上均匀抽样
 - HMF 采样层会记录 Pop III minihalo 分流下限和 atomic-cooling 上限：
-  `popiii_minimum_mass_msun = 2.5e5 * (26/(1+z_obs)) *
-  (1 + 22.87 * lw_background_j21**0.47)`。
-  默认 `lw_background_j21=0.0` 时，该式退化到无 LW feedback 的 H2 cooling floor。
-  `atomic_cooling_mass_msun = massfunc.SFRD().M_vir(0.61, 1e4, z_obs)`。
+  `popiii_minimum_mass_msun = 3.3e7 * (1+z_obs)**(-1.5) *
+  (1 + 2.0 * popiii_sfr_parameters.lw_background_j21**0.6)`。
+  默认 `popiii_sfr_parameters.lw_background_j21=0.0` 时，该式退化到无 LW
+  feedback 的 H2 cooling floor。
+  `atomic_cooling_mass_msun` 使用
+  `massfunc.SFRD(h=cosmology.H0/100, omegam=cosmology.omega_m).M_vir(0.61, 1e4, z_obs)`。
   `samples["stellar_channel"]` 和 `metadata["stellar_channel_by_mass"]`
   把 `Mh < M_PopIII,min` 标记为 `below_popiii_min`，
   `M_PopIII,min <= Mh < M_atomic` 标记为 `popiii`，
@@ -681,17 +772,21 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - 非 canonical IMF 模式默认使用 birth-metallicity gate，因此需要传入 regulator 或 MZR birth-metallicity backend；
   关闭该 gate 时可把 `IMFTransitionParameters.metallicity_topheavy_max_zsun` 设为 `None`
 - `burst_scatter_dex > 0` 时，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
-  canonical 与 top-heavy mode 若使用同一个 `burst_scatter_random_seed`，会共享同一组 burst realization
+  相同 `base_seed`、redshift 和 mass index 在所有 IMF mode 中共享同一组 paired realization
 - 默认 `burst_scatter_preserve_mean=True` 时，每条 halo 的 burst 历史会做 mass-conserving 归一化：
   `SFR_burst(t) = SFR_0(t) B(t) integral SFR_0 dt / integral SFR_0(t) B(t) dt`
 
 最小调用：
 
 ```python
+from auroralf.mah import Cosmology
 from auroralf.uvlf import sample_uvlf_from_hmf
 
+cosmology = Cosmology()
 result = sample_uvlf_from_hmf(
     z_obs=6.0,
+    cosmology=cosmology,
+    base_seed=42,
     N_mass=3000,
     n_tracks=1000,
     pipeline_workers=32,
@@ -701,77 +796,53 @@ print(result.samples["Muv"].shape)
 print(result.uvlf["phi"])
 ```
 
-## 生产 UVLF 脚本中的金属演化选项
+## v2 production UVLF workflow
 
-生产脚本 `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` 必须通过 SLURM wrapper 提交。
-生产脚本默认启用 `enable_time_delay=True`；若要做历史 no-delay 对照，需要显式传入 `--disable-time-delay`。
-非 canonical 且启用 metallicity gate 的生产运行默认使用 `regulator`；经验 MZR prior 可用
-`--metallicity-source mzr` 显式选择；`--metallicity-source none` 只能和关闭 metallicity gate 的历史对照一起使用。
-regulator backend 的 dry-run 示例：
+`configs/uvlf/production.toml` is the single production configuration. It
+contains the cosmology, MAH backend, time-delay model, metallicity backend,
+source-time IMF gates, burst-scatter policy, HMF sampling, worker count, and
+absolute output target after TOML-relative path resolution. Unknown keys,
+invalid units/ranges, missing SSP/cache files, and incompatible metallicity
+gates fail before sampling starts.
 
-```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source regulator --regulator-gas-fraction-norm 0.02 --regulator-yield 0.01 --regulator-metal-loading-norm 20 --regulator-metal-loading-mass-slope -0.5 --metallicity-random-seed 123 --metallicity-topheavy-max-zsun 0.05
-```
-
-MZR backend 的 dry-run 示例：
+Render and inspect the exact scheduler command before submission:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source mzr --mzr-relation fire2_highz --metallicity-random-seed 123 --metallicity-topheavy-max-zsun 0.05
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_v2.py \
+  --config configs/uvlf/production.toml \
+  --mem 64G --time 12:00:00 --dry-run
 ```
 
-no-delay 对照示例：
+Submit the same command without `--dry-run`. `sampling.workers` must not exceed
+the allocated CPUs. The runner refuses to execute outside a SLURM allocation;
+large production calculations must not run on a login node.
 
-```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --disable-time-delay --metallicity-source regulator --metallicity-random-seed 123 --metallicity-topheavy-max-zsun 0.05
-```
+The output is one versioned HDF5 v2 artifact plus a completion marker. Results
+are first published as atomic `(redshift, IMF mode)` shards, then strictly
+validated and atomically merged. Provenance records the canonical config hash,
+Git revision and dirty state, seed namespace, checksummed scientific inputs,
+and a checksummed immutable SLURM execution record containing resources,
+command, job ID, logs, exit code, and final validation.
 
-常用金属演化参数：
+Existing outputs are never silently replaced:
 
-- `--metallicity-source`
-  birth-metallicity backend，支持 `regulator`、`mzr`、`none`
-- `--metallicity-random-seed`
-  MZR 或 regulator scatter 随机种子
-- `--mzr-relation`
-  MZR backend 使用的经验关系，支持 `fire2_highz` 和 `jades_lowmass`
-- `--mzr-stellar-mass-floor`、`--mzr-scatter-dex`、`--mzr-returned-fraction`
-  MZR backend 的低质量下限、lognormal scatter 和 surviving stellar mass 返回比例
-- `--regulator-gas-fraction-norm`、`--regulator-gas-fraction-mass-slope`、`--regulator-gas-fraction-redshift-slope`
-  regulator backend 的 reservoir fraction `fres(Mh,z)=Mgas/(fb Mh)` 参数；扫描推荐默认 `fres=0.02`。
-  这不是 `Mgas/(Mgas+Mstar)` 形式的 galaxy gas fraction
-- `--regulator-yield`、`--regulator-returned-fraction`、`--regulator-inflow-metallicity-zsun`
-  regulator backend 的 metal yield、即时返回比例和 inflow metallicity
-- `--regulator-metal-loading-norm`、`--regulator-metal-loading-mass-slope`、`--regulator-metal-loading-redshift-slope`
-  regulator backend 的有效金属损失项 `lambda_Z(Mh,z)`；只影响 metallicity，不改变 SFR
-- `--regulator-metallicity-scatter-dex`
-  regulator backend 的 lognormal metallicity scatter，单位 dex
-- `--metallicity-topheavy-max-zsun`
-  mild top-heavy IMF 的 birth-metallicity 上限，单位 `Z/Zsun`，默认 `0.05`
-- `--disable-metallicity-topheavy-gate`
-  关闭 birth-metallicity gate，用于历史分支对照；默认不关闭
+- default policy: fail if final or shard artifacts already exist;
+- `--resume`: reuse only exact schema/config/provenance-compatible shards;
+- `--overwrite`: deliberately replace the requested run's artifact set;
+- an HDF5 file without its marker, or a marker without its HDF5 file, is an
+  explicit incomplete-artifact error.
 
-脚本输出的 `.npz` 和 summary txt 会记录 `metallicity_source`、金属阈值、backend 参数、每个红移/IMF mode 的 `final_gas_metallicity_zsun_median` 和 `birth_metallicity_zsun_starforming_median`。若默认金属 gate 开启且运行非 canonical IMF mode，必须选择 `regulator` 或 `mzr` backend。
+The old `run_uvlf_compare_imf_no_delay_all_z.py` and
+`submit_uvlf_imf_compare.py` entry points are migration-only shims. Scientific
+options that were formerly CLI flags now belong in the typed TOML config. In
+particular, non-canonical modes with a non-`None` birth-metallicity gate require
+`metallicity_source = "regulator"` or `"mzr"`; burst scatter is controlled by
+`burst_scatter_dex`, `burst_scatter_correlation_timescale_myr`, and
+`burst_scatter_mass_conserving` under `[star_formation]`.
 
-## 生产 UVLF 脚本中的 burst scatter 选项
-
-生产脚本默认不启用 burst scatter。启用 `0.5 dex`、`20 Myr` 相关尺度的示例：
-
-```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --burst-scatter-dex 0.5 --burst-scatter-timescale-myr 20 --burst-scatter-random-seed 777
-```
-
-常用参数：
-
-- `--burst-scatter-dex`
-  SFR lognormal scatter 的标准差，单位 dex；`0.3 dex` 约对应瞬时 SFR 的因子 `2`
-- `--burst-scatter-timescale-myr`
-  同一个随机 multiplier 在 halo 历史中保持相关的时间尺度；默认 `20 Myr`
-- `--burst-scatter-random-seed`
-  burst scatter 随机种子；生产脚本对不同红移加 `1000*z_index`，对不同 IMF mode 保持相同 seed，
-  因此 canonical 与 top-heavy 分支使用同一组 burst realization
-- `--disable-burst-scatter-mean-preservation`
-  关闭逐 halo 的 mass-conserving burst 归一化；默认不关闭。该参数名沿用历史接口
-
-脚本输出的 `.npz` 会记录 `burst_scatter_dex`、`burst_scatter_timescale_myr`、`burst_scatter_random_seed`、`burst_scatter_preserve_mean` 和 `burst_scatter_mass_conserving`。
+Legacy `.npz` UVLF products can be migrated with
+`scripts/data/convert_uvlf_npz_to_v2_hdf5.py`. New production runs should not
+write or consume the legacy production `.npz` format.
 
 ## `auroralf.uvlf.compute_dust_attenuated_uvlf()`
 
@@ -826,11 +897,14 @@ from auroralf.uvlf import compute_dust_attenuated_uvlf
 最小调用：
 
 ```python
+from auroralf.mah import Cosmology
 from auroralf.uvlf import sample_uvlf_from_hmf, compute_dust_attenuated_uvlf
 import numpy as np
 
+cosmology = Cosmology()
 result = sample_uvlf_from_hmf(
     z_obs=6.0,
+    cosmology=cosmology,
     N_mass=3000,
     n_tracks=1000,
     bins=np.linspace(-28.0, -10.0, 21),
@@ -894,6 +968,9 @@ from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
   halo mass；支持标量或 `numpy.ndarray`
 - `z_obs`
   红移
+- `cosmology`
+  keyword-only 必填的 `auroralf.mah.Cosmology`；其 `H0`、`omega_m` 与
+  `omega_b` 会直接传给 `hmf.MassFunction`
 
 输出：
 
@@ -911,8 +988,14 @@ from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
 
 ```python
 import numpy as np
+from auroralf.mah import Cosmology
 from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
 
+cosmology = Cosmology()
 masses = np.logspace(8, 12, 100)
-dndm = compute_reed07_halo_mass_function_dndm(masses, 6.0)
+dndm = compute_reed07_halo_mass_function_dndm(
+    masses,
+    6.0,
+    cosmology=cosmology,
+)
 ```

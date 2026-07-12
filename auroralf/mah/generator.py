@@ -8,7 +8,7 @@ from astropy.cosmology import FlatLambdaCDM
 
 from .models import Cosmology, HaloHistoryResult
 from .physics import accretion_rate
-from .sampling import sample_parameters
+from .sampling import sample_parameters, validate_parameter_sampler
 
 
 def _build_astropy_cosmology(cosmology: Cosmology) -> FlatLambdaCDM:
@@ -67,15 +67,16 @@ def _resolve_redshift_grid(
 def _resolve_mass_floor(
     mass_floor: float | np.ndarray | Callable[[np.ndarray], np.ndarray] | None,
     redshift: np.ndarray,
+    *,
+    cosmology: Cosmology,
 ) -> np.ndarray:
     if mass_floor is None:
-        try:
-            import massfunc as mf
-        except ImportError as exc:
-            raise ImportError("M_min=None requires the optional dependency massfunc to be installed") from exc
+        from auroralf.cooling import compute_atomic_cooling_mass_msun
 
-        cosmo = mf.SFRD()
-        return np.asarray(cosmo.M_vir(0.61, 1.0e4, redshift), dtype=float)
+        return np.asarray(
+            compute_atomic_cooling_mass_msun(redshift, cosmology=cosmology),
+            dtype=float,
+        )
 
     if callable(mass_floor):
         values = np.asarray(mass_floor(redshift), dtype=float)
@@ -105,13 +106,15 @@ def _flatten_tracks(
         "t_gyr": [],
         "dt_gyr": [],
         "Mh": [],
-        "dMh_dt": [],
+        "dMh_dt_raw": [],
+        "dMh_dt_sfr": [],
+        "dMh_dt_clipped": [],
         "active_flag": [],
         "termination_flag": [],
     }
 
     n_steps = redshift.size
-    completed_flag = np.full(n_steps, "active", dtype=object)
+    completed_flag = np.full(n_steps, "active", dtype="<U11")
     completed_flag[-1] = "completed"
 
     for halo_id in range(mass.shape[0]):
@@ -142,10 +145,17 @@ def _flatten_tracks(
         columns["t_gyr"].append(time_gyr[slc].copy())
         columns["dt_gyr"].append(dt_gyr[slc].copy())
         columns["Mh"].append(mass[halo_id, slc].copy())
-        columns["dMh_dt"].append(mdot[halo_id, slc].copy())
+        raw_mdot = mdot[halo_id, slc].copy()
+        columns["dMh_dt_raw"].append(raw_mdot)
+        columns["dMh_dt_sfr"].append(np.maximum(raw_mdot, 0.0))
+        columns["dMh_dt_clipped"].append(raw_mdot < 0.0)
         columns["active_flag"].append(active[slc].copy())
         columns["termination_flag"].append(termination[slc].copy())
 
+    if not columns["halo_id"]:
+        raise RuntimeError(
+            "no halo history rows remain after applying M_min with store_inactive_history=False"
+        )
     return {name: np.concatenate(parts) for name, parts in columns.items()}
 
 
@@ -153,9 +163,10 @@ def generate_halo_histories(
     n_tracks: int,
     z_final: float,
     Mh_final: float,
+    *,
+    cosmology: Cosmology,
     z_start_max: float = 50.0,
     M_min: float | np.ndarray | Callable[[np.ndarray], np.ndarray] | None = None,
-    cosmology: Cosmology | None = None,
     random_seed: int | None = None,
     time_grid_mode: str = "uniform_in_z",
     dt: float | None = None,
@@ -165,6 +176,8 @@ def generate_halo_histories(
     sampler: str = "mcbride",
     pilot_samples: int = 50_000,
 ) -> HaloHistoryResult:
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
     if n_tracks <= 0:
         raise ValueError("n_tracks must be positive")
     if z_start_max <= z_final:
@@ -172,7 +185,7 @@ def generate_halo_histories(
     if Mh_final <= 0.0:
         raise ValueError("Mh_final must be positive")
 
-    cosmology = Cosmology() if cosmology is None else cosmology
+    sampler = validate_parameter_sampler(sampler)
     redshift, time_gyr = _resolve_redshift_grid(
         z_final=z_final,
         z_start_max=z_start_max,
@@ -183,7 +196,7 @@ def generate_halo_histories(
         custom_grid=custom_grid,
     )
     dt_gyr = np.diff(time_gyr, prepend=time_gyr[0])
-    floor_mass = _resolve_mass_floor(M_min, redshift)
+    floor_mass = _resolve_mass_floor(M_min, redshift, cosmology=cosmology)
 
     rng = np.random.default_rng(random_seed)
     samples, gaussian_approximation = sample_parameters(
@@ -215,6 +228,13 @@ def generate_halo_histories(
         floor_mass=floor_mass,
         store_inactive_history=store_inactive_history,
     )
+    raw_dmhdt = np.asarray(tracks["dMh_dt_raw"], dtype=float)
+    clipped_dmhdt = np.asarray(tracks["dMh_dt_clipped"], dtype=bool)
+    total_dmhdt_count = int(np.count_nonzero(np.isfinite(raw_dmhdt)))
+    negative_dmhdt_count = int(np.count_nonzero(clipped_dmhdt))
+    negative_dmhdt_fraction = (
+        float(negative_dmhdt_count / total_dmhdt_count) if total_dmhdt_count > 0 else 0.0
+    )
 
     metadata: dict[str, Any] = {
         "n_tracks": n_tracks,
@@ -227,6 +247,9 @@ def generate_halo_histories(
         "store_inactive_history": store_inactive_history,
         "M_min_mode": "massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)" if M_min is None else "user_provided",
         "random_seed": random_seed,
+        "negative_dmhdt_clip_count": negative_dmhdt_count,
+        "negative_dmhdt_total_count": total_dmhdt_count,
+        "negative_dmhdt_clip_fraction": negative_dmhdt_fraction,
         "cosmology": {
             "H0_km_s_Mpc": cosmology.h0_km_s_mpc,
             "Omega_m": cosmology.omega_m,

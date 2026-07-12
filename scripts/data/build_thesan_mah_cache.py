@@ -14,8 +14,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.file_version import (
+    capture_source_file_provenance,
+    verify_source_file_provenance,
+)
+from auroralf.io.atomic_publish import publish_hdf5_atomic
+from auroralf.mah.thesan import THESAN_MAH_CACHE_SCHEMA_VERSION
 
-THESAN_MAH_CACHE_SCHEMA_VERSION = "auroralf_thesan_mah_cache_v0"
 DEFAULT_THESAN_ROOT = PROJECT_ROOT / "external_data/thesan/thesan-dark-1"
 DEFAULT_SELECTED_HALOS = PROJECT_ROOT / "outputs/thesan_discovery/selected_halos.csv"
 DEFAULT_HUBBLE = 0.6774
@@ -23,6 +28,7 @@ DEFAULT_OMEGA_M = 0.3089
 DEFAULT_OMEGA_B = 0.0486
 DEFAULT_MASS_FIELD = "Group_M_Crit200"
 DEFAULT_UNRESOLVED_MASS_RATIO_FILL = 1.0e-6
+THESAN_CACHE_CREATOR_VERSION = "auroralf.build_thesan_mah_cache.v1"
 
 
 def _tag_from_z(z_value: float) -> str:
@@ -71,7 +77,7 @@ def _resolve_project_path(path_value: str) -> Path:
     path = Path(path_value).expanduser()
     if not path.is_absolute():
         path = (PROJECT_ROOT / path).resolve()
-    return path
+    return path.resolve()
 
 
 def _read_selected_rows(
@@ -118,6 +124,20 @@ def _read_selected_rows(
         raise ValueError(
             f"no selected halos match snapshot={snapshot}, tree_file={tree_file}, "
             f"min_logm={min_logm}, max_logm={max_logm}"
+        )
+    identities = [
+        (
+            int(row["snapshot"]),
+            int(row["tree_file"]),
+            int(row["tree_num"]),
+            int(row["tree_index"]),
+        )
+        for row in rows
+    ]
+    if len(set(identities)) != len(identities):
+        raise ValueError(
+            "selected halo table contains duplicate composite tree identities "
+            "(snapshot, tree_file, tree_num, tree_index)"
         )
     if max_halos is not None:
         if int(max_halos) <= 0:
@@ -201,6 +221,7 @@ def _build_cache(args: argparse.Namespace) -> Path:
     root = _resolve_project_path(args.root)
     selected_path = _resolve_project_path(args.selected_halos)
     tree_file_filter = _parse_tree_file_filter(str(args.tree_file))
+    selected_provenance = capture_source_file_provenance(selected_path)
 
     rows = _read_selected_rows(
         selected_path,
@@ -211,6 +232,7 @@ def _build_cache(args: argparse.Namespace) -> Path:
         max_halos=args.max_halos,
         random_seed=int(args.random_seed),
     )
+    verify_source_file_provenance(selected_provenance)
 
     if float(args.unresolved_mass_ratio_fill) <= 0.0:
         raise ValueError("--unresolved-mass-ratio-fill must be positive")
@@ -227,6 +249,10 @@ def _build_cache(args: argparse.Namespace) -> Path:
         if len(missing_tree_paths) > 10:
             names += f", ... ({len(missing_tree_paths)} total)"
         raise FileNotFoundError(f"THESAN LHaloTree file(s) not found: {names}")
+    tree_provenance = {
+        tree_file: capture_source_file_provenance(path)
+        for tree_file, path in tree_paths.items()
+    }
 
     header_tree_file = requested_tree_files[0]
     with h5py.File(tree_paths[header_tree_file], "r") as handle:
@@ -331,6 +357,26 @@ def _build_cache(args: argparse.Namespace) -> Path:
         raise RuntimeError("final snapshot must be resolved for every selected THESAN track")
     if not np.all(np.isfinite(mass_ratio)) or np.any(mass_ratio <= 0.0):
         raise RuntimeError("mass_ratio must be finite and positive after unresolved fill")
+    verify_source_file_provenance(selected_provenance)
+    for provenance in tree_provenance.values():
+        verify_source_file_provenance(provenance)
+    source_provenance = [
+        selected_provenance,
+        *(tree_provenance[index] for index in requested_tree_files),
+    ]
+    source_identifiers = np.asarray(
+        [provenance.identifier for provenance in source_provenance],
+        dtype=h5py.string_dtype(encoding="utf-8"),
+    )
+    source_checksums = np.asarray(
+        [provenance.sha256 for provenance in source_provenance],
+        dtype=h5py.string_dtype(encoding="ascii", length=64),
+    )
+    selection_description = (
+        f"THESAN selected-halo table rows for snapshot {int(args.snapshot)}; "
+        f"tree_file={args.tree_file}, branch_start={args.branch_start}, "
+        f"min_logm={args.min_logm}, max_logm={args.max_logm}, max_halos={args.max_halos}"
+    )
     if args.output is None:
         z_tag = _tag_from_z(float(z_grid[-1]))
         tree_tag = "allchunks" if tree_file_filter is None else f"file{tree_file_filter}"
@@ -339,25 +385,27 @@ def _build_cache(args: argparse.Namespace) -> Path:
         )
     else:
         output = _resolve_project_path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists() and not args.force:
-        raise FileExistsError(f"output cache already exists: {output}; pass --force to overwrite")
 
-    with h5py.File(output, "w") as handle:
+    def write_cache(handle: h5py.File) -> None:
         handle.attrs["schema_version"] = THESAN_MAH_CACHE_SCHEMA_VERSION
         handle.attrs["source_simulation"] = "Thesan-Dark-1"
         handle.attrs["source_tree"] = "LHaloTree"
         handle.attrs["source_tree_file_pattern"] = str(
-            (root / "postprocessing/trees/LHaloTree/trees_sf1_190.{tree_file}.hdf5").relative_to(PROJECT_ROOT)
+            (root / "postprocessing/trees/LHaloTree/trees_sf1_190.{tree_file}.hdf5").resolve()
         )
-        handle.attrs["source_selection_table"] = str(selected_path.relative_to(PROJECT_ROOT))
+        handle.attrs["source_selection_table"] = str(selected_path.resolve())
         handle.attrs["tree_file_subset"] = "all" if tree_file_filter is None else int(tree_file_filter)
         handle.attrs["source_tree_file_count"] = int(len(requested_tree_files))
         handle.attrs["branch_start"] = str(args.branch_start)
-        handle.attrs["publication_complete"] = False
+        handle.attrs["publication_complete"] = True
         handle.attrs["snapshot"] = int(args.snapshot)
         handle.attrs["z_final"] = float(z_grid[-1])
         handle.attrs["mass_unit"] = "Msun"
+        handle.attrs["time_unit"] = "Gyr"
+        handle.attrs["redshift_unit"] = "dimensionless"
+        handle.attrs["mass_ratio_unit"] = "dimensionless"
+        handle.attrs["selection_description"] = selection_description
+        handle.attrs["creator_version"] = THESAN_CACHE_CREATOR_VERSION
         handle.attrs["source_mass_field"] = str(args.mass_field)
         handle.attrs["hubble"] = float(args.hubble)
         handle.attrs["omega_m"] = float(args.omega_m)
@@ -384,6 +432,13 @@ def _build_cache(args: argparse.Namespace) -> Path:
         handle.create_dataset("branch_length", data=branch_length)
         handle.create_dataset("zero_mass_node_count", data=zero_mass_node_count)
         handle.create_dataset("resolved_snap_count", data=resolved_snap_count)
+        handle.create_dataset("source_file_identifier", data=source_identifiers)
+        handle.create_dataset("source_file_sha256", data=source_checksums)
+        verify_source_file_provenance(selected_provenance)
+        for provenance in tree_provenance.values():
+            verify_source_file_provenance(provenance)
+
+    publish_hdf5_atomic(output, write_cache, overwrite=bool(args.force))
 
     print(f"wrote_thesan_mah_cache={output}", flush=True)
     print(f"n_selected={len(rows)}", flush=True)

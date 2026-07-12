@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -10,11 +12,14 @@ import numpy as np
 import pytest
 from astropy import units as u
 
-from auroralf.mah import HaloHistoryResult
+from auroralf.mah import Cosmology, HaloHistoryResult
+from auroralf.seeding import derive_pipeline_random_seeds
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run" / "run_uvlf_compare_imf_no_delay_all_z.py"
+V2_RUN_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run" / "run_uvlf_v2.py"
+PRODUCTION_CONFIG = PROJECT_ROOT / "configs" / "uvlf" / "production.toml"
 
 
 def test_popiii_flat_sfe_matches_cruz_constant_efficiency() -> None:
@@ -57,6 +62,7 @@ def test_popiii_parameters_reject_invalid_values(params: dict[str, float | str])
 
 
 def test_popiii_duty_cycle_uses_molecular_floor_and_upper_cutoff() -> None:
+    from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters, compute_popiii_duty_cycle
     from auroralf.uvlf.cooling import compute_popiii_lw_minimum_mass_msun
 
@@ -69,7 +75,12 @@ def test_popiii_duty_cycle_uses_molecular_floor_and_upper_cutoff() -> None:
     )
     molecular_floor = compute_popiii_lw_minimum_mass_msun(z_obs, lw_background_j21=0.0)
 
-    duty = compute_popiii_duty_cycle(halo_mass, z_obs, params)
+    duty = compute_popiii_duty_cycle(
+        halo_mass,
+        z_obs,
+        params,
+        cosmology=Cosmology(),
+    )
 
     assert duty == pytest.approx(np.exp(-molecular_floor / halo_mass) * np.exp(-halo_mass / 1.0e8))
 
@@ -77,11 +88,13 @@ def test_popiii_duty_cycle_uses_molecular_floor_and_upper_cutoff() -> None:
         halo_mass,
         z_obs,
         replace(params, lw_background_j21=0.2),
+        cosmology=Cosmology(),
     )
     assert stronger_lw < duty
 
 
 def test_popiii_sfr_grid_forms_stars_in_minihalos_below_atomic_threshold() -> None:
+    from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters, compute_popiii_sfr_from_grids
     from auroralf.uvlf.cooling import compute_atomic_cooling_mass_msun
 
@@ -90,22 +103,265 @@ def test_popiii_sfr_grid_forms_stars_in_minihalos_below_atomic_threshold() -> No
     dmhdt_grid = np.full_like(mh_grid, 1.0e8)
     active_grid = np.ones_like(mh_grid, dtype=bool)
     params = PopIIISFRParameters(upper_mass_mode="fixed", upper_mass_msun=1.0e8)
+    cosmology = Cosmology(omega_m=0.4, omega_b=0.064, omega_lambda=0.6)
 
     result = compute_popiii_sfr_from_grids(
         mh_grid=mh_grid,
-        dmhdt_grid=dmhdt_grid,
+        dmhdt_sfr_grid=dmhdt_grid,
         z_grid=z_grid,
         active_grid=active_grid,
-        baryon_fraction=0.16,
+        cosmology=cosmology,
         parameters=params,
     )
 
-    assert np.all(mh_grid < compute_atomic_cooling_mass_msun(z_grid))
+    assert np.all(mh_grid < compute_atomic_cooling_mass_msun(z_grid, cosmology=cosmology))
     assert np.any(result.sfr_grid > 0.0)
     np.testing.assert_allclose(
         result.sfr_grid,
         0.16 * result.fstar_grid * result.duty_cycle_grid * dmhdt_grid / 1.0e9,
     )
+
+
+def test_popiii_atomic_upper_mass_uses_supplied_cosmology() -> None:
+    from auroralf.cooling import compute_atomic_cooling_mass_msun
+    from auroralf.mah import Cosmology
+    from auroralf.sfr import PopIIISFRParameters, compute_popiii_upper_mass_msun
+
+    cosmology = Cosmology(
+        h0=2.0 * Cosmology().h0,
+        omega_m=0.4,
+        omega_b=0.08,
+        omega_lambda=0.6,
+    )
+    result = compute_popiii_upper_mass_msun(
+        10.0,
+        PopIIISFRParameters(upper_mass_mode="atomic"),
+        cosmology=cosmology,
+    )
+
+    assert result == pytest.approx(
+        compute_atomic_cooling_mass_msun(10.0, cosmology=cosmology)
+    )
+
+
+def test_popiii_atomic_public_apis_require_cosmology() -> None:
+    from auroralf.sfr import (
+        compute_popiii_duty_cycle,
+        compute_popiii_sfr_from_grids,
+        compute_popiii_upper_mass_msun,
+    )
+
+    with pytest.raises(TypeError, match="cosmology"):
+        compute_popiii_upper_mass_msun(10.0)
+    with pytest.raises(TypeError, match="cosmology"):
+        compute_popiii_duty_cycle(1.0e7, 10.0)
+    with pytest.raises(TypeError, match="cosmology"):
+        compute_popiii_sfr_from_grids(
+            mh_grid=np.array([[1.0e7]]),
+            dmhdt_sfr_grid=np.array([[1.0e8]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+        )
+
+
+@pytest.mark.parametrize("invalid_rate", [np.nan, np.inf, -np.inf])
+def test_popiii_sfr_rejects_nonfinite_effective_accretion_rate(invalid_rate: float) -> None:
+    from auroralf.sfr import compute_popiii_sfr_from_grids
+
+    with pytest.raises(ValueError, match="dmhdt_sfr_grid.*finite"):
+        compute_popiii_sfr_from_grids(
+            mh_grid=np.array([[1.0e7]]),
+            dmhdt_sfr_grid=np.array([[invalid_rate]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+            cosmology=Cosmology(),
+        )
+
+
+def test_popiii_sfr_rejects_legacy_baryon_fraction_argument() -> None:
+    from auroralf.sfr import compute_popiii_sfr_from_grids
+
+    with pytest.raises(TypeError, match="baryon_fraction"):
+        compute_popiii_sfr_from_grids(
+            mh_grid=np.array([[1.0e7]]),
+            dmhdt_sfr_grid=np.array([[1.0e8]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+            baryon_fraction=0.16,
+            cosmology=Cosmology(),
+        )
+
+
+def test_popiii_sfr_reports_overflow_without_emitting_runtime_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import warnings
+
+    import auroralf.sfr.popiii as popiii
+
+    maximum = np.finfo(float).max
+    monkeypatch.setattr(
+        popiii,
+        "compute_popiii_star_formation_efficiency",
+        lambda halo_mass_msun, parameters=None: np.full_like(halo_mass_msun, maximum, dtype=float),
+    )
+    monkeypatch.setattr(
+        popiii,
+        "compute_popiii_duty_cycle",
+        lambda halo_mass_msun, z_obs, parameters=None, *, cosmology: np.ones_like(
+            halo_mass_msun,
+            dtype=float,
+        ),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(RuntimeError, match="SFR.*non-finite or negative"):
+            popiii.compute_popiii_sfr_from_grids(
+                mh_grid=np.array([[1.0e7]]),
+                dmhdt_sfr_grid=np.array([[maximum]]),
+                z_grid=np.array([[10.0]]),
+                active_grid=np.array([[True]]),
+                cosmology=Cosmology(),
+            )
+    assert not [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
+
+
+def test_visbal2015_atomic_cooling_mass_matches_paper_formula() -> None:
+    from auroralf.sfr import compute_visbal2015_atomic_cooling_mass_msun
+
+    redshift = np.array([10.0, 20.0])
+
+    mass = compute_visbal2015_atomic_cooling_mass_msun(redshift)
+
+    expected = 3.0e7 * ((1.0 + redshift) / 11.0) ** 1.5
+    np.testing.assert_allclose(mass, expected)
+
+
+def test_visbal2015_popiii_sfr_uses_hubble_time_scaling() -> None:
+    from auroralf.mah.models import Cosmology
+    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+
+    cosmology = Cosmology(omega_m=0.4, omega_b=0.064, omega_lambda=0.6)
+    z_grid = np.array([[10.0, 10.0]])
+    mh_grid = np.array([[3.0e7, 6.0e7]])
+    active_grid = np.ones_like(mh_grid, dtype=bool)
+
+    result = compute_popiii_sfr_visbal2015_from_grids(
+        mh_grid=mh_grid,
+        z_grid=z_grid,
+        active_grid=active_grid,
+        fstar=0.1,
+        eta_duty=0.1,
+        cosmology=cosmology,
+    )
+
+    expected = 0.16 * 0.1 * mh_grid * cosmology.hubble(z_grid) / 0.1 / 1.0e9
+    np.testing.assert_allclose(result.sfr_grid, expected)
+    np.testing.assert_allclose(result.sfr_grid[0, 1], 2.0 * result.sfr_grid[0, 0])
+
+    shorter_duty = compute_popiii_sfr_visbal2015_from_grids(
+        mh_grid=mh_grid,
+        z_grid=z_grid,
+        active_grid=active_grid,
+        fstar=0.1,
+        eta_duty=0.01,
+        cosmology=cosmology,
+    )
+    np.testing.assert_allclose(shorter_duty.sfr_grid, 10.0 * result.sfr_grid)
+
+
+def test_visbal2015_popiii_sfr_requires_cosmology() -> None:
+    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+
+    with pytest.raises(TypeError, match="cosmology"):
+        compute_popiii_sfr_visbal2015_from_grids(
+            mh_grid=np.array([[3.0e7]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+            fstar=0.1,
+            eta_duty=1.0,
+        )
+
+
+def test_visbal2015_atomic_window_includes_one_to_two_mcool() -> None:
+    from auroralf.mah.models import Cosmology
+    from auroralf.sfr import (
+        compute_popiii_sfr_visbal2015_from_grids,
+        compute_visbal2015_atomic_cooling_mass_msun,
+    )
+
+    z_grid = np.full((1, 4), 10.0)
+    mcool = compute_visbal2015_atomic_cooling_mass_msun(z_grid)
+    mh_grid = np.array([[0.99, 1.0, 2.0, 2.01]]) * mcool
+    active_grid = np.ones_like(mh_grid, dtype=bool)
+    cosmology = Cosmology(omega_m=0.4, omega_b=0.064, omega_lambda=0.6)
+
+    result = compute_popiii_sfr_visbal2015_from_grids(
+        mh_grid=mh_grid,
+        z_grid=z_grid,
+        active_grid=active_grid,
+        fstar=0.1,
+        eta_duty=1.0,
+        cosmology=cosmology,
+    )
+
+    expected_raw = 0.16 * 0.1 * mh_grid * cosmology.hubble(z_grid) / 1.0e9
+    expected_window = np.array([[False, True, True, False]])
+    np.testing.assert_allclose(result.mcool_msun_grid, mcool)
+    np.testing.assert_allclose(result.mh_over_mcool_grid, mh_grid / mcool)
+    np.testing.assert_array_equal(result.atomic_window_grid, expected_window)
+    np.testing.assert_allclose(result.raw_sfr_scaling_grid, expected_raw)
+    np.testing.assert_allclose(result.sfr_grid, np.where(expected_window, expected_raw, 0.0))
+
+
+def test_visbal2015_inactive_rows_have_zero_raw_and_gated_sfr() -> None:
+    from auroralf.mah import Cosmology
+    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+
+    result = compute_popiii_sfr_visbal2015_from_grids(
+        mh_grid=np.array([[3.0e7, 6.0e7], [3.0e7, 6.0e7]]),
+        z_grid=np.full((2, 2), 10.0),
+        active_grid=np.array([[True, True], [False, False]]),
+        fstar=0.1,
+        eta_duty=1.0,
+        cosmology=Cosmology(),
+    )
+
+    assert np.all(result.raw_sfr_scaling_grid[0] > 0.0)
+    np.testing.assert_array_equal(result.raw_sfr_scaling_grid[1], np.zeros(2))
+    np.testing.assert_array_equal(result.sfr_grid[1], np.zeros(2))
+
+
+def test_visbal2015_rejects_legacy_baryon_fraction_argument() -> None:
+    from auroralf.mah import Cosmology
+    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+
+    with pytest.raises(TypeError, match="baryon_fraction"):
+        compute_popiii_sfr_visbal2015_from_grids(
+            mh_grid=np.array([[3.0e7]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+            baryon_fraction=0.16,
+            fstar=0.1,
+            eta_duty=1.0,
+            cosmology=Cosmology(),
+        )
+
+
+def test_visbal2015_rejects_nonfinite_eq10_scaling() -> None:
+    from auroralf.mah import Cosmology
+    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+
+    with pytest.raises(RuntimeError, match="non-finite or negative"):
+        compute_popiii_sfr_visbal2015_from_grids(
+            mh_grid=np.array([[3.0e7]]),
+            z_grid=np.array([[10.0]]),
+            active_grid=np.array([[True]]),
+            fstar=0.1,
+            eta_duty=np.nextafter(0.0, 1.0),
+            cosmology=Cosmology(),
+        )
 
 
 def test_popiii_ssp_loader_reads_instantaneous_schaerer_l1500_table(tmp_path) -> None:
@@ -136,6 +392,56 @@ def test_popiii_ssp_loader_reads_instantaneous_schaerer_l1500_table(tmp_path) ->
     )
     assert luminosity_per_msun[0] == pytest.approx(expected.value)
     assert np.all(luminosity_per_msun > 0.0)
+
+
+def test_popiii_uv_cache_reloads_same_path_atomic_replacement_and_hits_when_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from auroralf.ssp import uv1600
+
+    def table_text(log_luminosity: str) -> str:
+        return "\n".join(
+            [
+                "# Star-formation: instantaneous burst at age=0",
+                "# log(age) L_1500",
+                f" 4.000E+00 {log_luminosity}",
+                " 6.000E+00 32.00",
+            ]
+        ) + "\n"
+
+    path = tmp_path / "pop3_test_is5.25"
+    replacement = tmp_path / "replacement_is5.25"
+    path.write_text(table_text("33.00"), encoding="utf-8")
+    uv1600._load_popiii_uv_luminosity_table_cached.cache_clear()
+    real_load = uv1600._load_popiii_uv_luminosity_table_from_schaerer
+    reads: list[Path] = []
+
+    def read_spy(**kwargs: object) -> tuple[np.ndarray, np.ndarray]:
+        reads.append(Path(str(kwargs["file_path"])))
+        return real_load(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        uv1600,
+        "_load_popiii_uv_luminosity_table_from_schaerer",
+        read_spy,
+    )
+    _, first = uv1600.load_popiii_uv_luminosity_table(path)
+    _, unchanged = uv1600.load_popiii_uv_luminosity_table(path)
+    assert len(reads) == 1
+    np.testing.assert_array_equal(unchanged, first)
+    original_mtime_ns = path.stat().st_mtime_ns
+
+    replacement.write_text(table_text("34.00"), encoding="utf-8")
+    assert replacement.stat().st_size == path.stat().st_size
+    os.utime(replacement, ns=(original_mtime_ns, original_mtime_ns))
+    os.replace(replacement, path)
+    os.utime(path, ns=(original_mtime_ns, original_mtime_ns))
+
+    _, replaced = uv1600.load_popiii_uv_luminosity_table(path)
+
+    assert len(reads) == 2
+    assert replaced[0] == pytest.approx(first[0] * 10.0)
 
 
 def test_popiii_ssp_loader_rejects_constant_sfr_tables(tmp_path) -> None:
@@ -187,6 +493,7 @@ def test_popiii_ssp_loader_reconstructs_is5_age_grid_when_printed_log_ages_repea
 
 def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.MonkeyPatch) -> None:
     import auroralf.uvlf.pipeline as pipeline
+    from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters
 
     tracks = {
@@ -196,7 +503,9 @@ def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.
         "t_gyr": np.array([0.18, 0.28, 0.48]),
         "dt_gyr": np.array([0.0, 0.10, 0.20]),
         "Mh": np.array([2.0e6, 4.0e6, 8.0e6]),
-        "dMh_dt": np.full(3, 1.0e8),
+        "dMh_dt_raw": np.full(3, 1.0e8),
+        "dMh_dt_sfr": np.full(3, 1.0e8),
+        "dMh_dt_clipped": np.zeros(3, dtype=bool),
         "active_flag": np.ones(3, dtype=bool),
         "termination_flag": np.array(["active", "active", "completed"], dtype=object),
     }
@@ -204,7 +513,13 @@ def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.
     def fake_generate_halo_histories(**kwargs: object) -> HaloHistoryResult:
         return HaloHistoryResult(
             tracks={name: values.copy() for name, values in tracks.items()},
-            metadata={"time_grid_mode": "uniform_in_t", "dt_gyr_median": 0.15},
+            metadata={
+                "time_grid_mode": "uniform_in_t",
+                "dt_gyr_median": 0.15,
+                "negative_dmhdt_clip_count": 0,
+                "negative_dmhdt_total_count": 3,
+                "negative_dmhdt_clip_fraction": 0.0,
+            },
         )
 
     def fake_load_uv1600_table(file_path: object, **kwargs: object) -> tuple[np.ndarray, np.ndarray]:
@@ -221,6 +536,8 @@ def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.
         n_tracks=1,
         z_final=10.0,
         Mh_final=8.0e6,
+        cosmology=Cosmology(),
+        random_seeds=derive_pipeline_random_seeds(42, redshift=10.0, mass_index=0),
         z_start_max=20.0,
         n_grid=3,
         workers=1,
@@ -231,6 +548,8 @@ def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.
         n_tracks=1,
         z_final=10.0,
         Mh_final=8.0e6,
+        cosmology=Cosmology(),
+        random_seeds=derive_pipeline_random_seeds(42, redshift=10.0, mass_index=0),
         z_start_max=20.0,
         n_grid=3,
         workers=1,
@@ -252,14 +571,38 @@ def test_pipeline_adds_popiii_uv_without_changing_popii_sfr(monkeypatch: pytest.
         + enabled.uv_luminosities_popiii,
     )
     assert enabled.metadata["popiii_enabled"] is True
+    enabled_popiii_sfr = np.asarray(enabled.sfr_tracks["SFR_popiii"]).reshape(
+        enabled.active_grid.shape
+    )
+    expected_popiii_source = enabled.active_grid & (enabled_popiii_sfr > 0.0)
+    np.testing.assert_array_equal(enabled.popiii_source_grid, expected_popiii_source)
+    np.testing.assert_array_equal(
+        np.asarray(enabled.sfr_tracks["popiii_source_flag"]).reshape(
+            enabled.active_grid.shape
+        ),
+        expected_popiii_source,
+    )
+    assert enabled.metadata["popiii_source_count"] == int(
+        np.count_nonzero(expected_popiii_source)
+    )
     assert enabled.metadata["popiii_source_count"] > 0
     assert enabled.metadata["popiii_light_fraction_median"] > 0.0
+    assert disabled.metadata["mah_backend"] == "mcbride"
+    assert disabled.metadata["negative_dmhdt_clip_count"] == 0
+    assert disabled.metadata["negative_dmhdt_total_count"] == 3
+    assert disabled.metadata["negative_dmhdt_clip_fraction"] == pytest.approx(
+        disabled.metadata["negative_dmhdt_clip_count"]
+        / disabled.metadata["negative_dmhdt_total_count"]
+    )
+    assert "tng_negative_dmhdt_clip_count" not in disabled.metadata
+    assert "thesan_negative_dmhdt_clip_count" not in disabled.metadata
 
 
 def test_pipeline_keeps_popiii_minihalos_when_popii_atomic_gate_inactive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import auroralf.uvlf.pipeline as pipeline
+    from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters
     from auroralf.uvlf.cooling import compute_atomic_cooling_mass_msun
 
@@ -275,10 +618,13 @@ def test_pipeline_keeps_popiii_minihalos_when_popii_atomic_gate_inactive(
     monkeypatch.setattr(pipeline, "load_uv1600_table", fake_load_uv1600_table)
     monkeypatch.setattr(pipeline, "load_popiii_uv_luminosity_table", fake_load_popiii_table)
 
+    cosmology = Cosmology()
     result = pipeline.run_halo_uv_pipeline(
         n_tracks=1,
         z_final=z_final,
         Mh_final=mh_final,
+        cosmology=cosmology,
+        random_seeds=derive_pipeline_random_seeds(42, redshift=z_final, mass_index=0),
         z_start_max=16.0,
         n_grid=8,
         workers=1,
@@ -288,17 +634,20 @@ def test_pipeline_keeps_popiii_minihalos_when_popii_atomic_gate_inactive(
         popiii_ssp_file="popiii.dat",
     )
 
-    assert mh_final < compute_atomic_cooling_mass_msun(z_final)
+    assert mh_final < compute_atomic_cooling_mass_msun(
+        z_final,
+        cosmology=cosmology,
+    )
     np.testing.assert_allclose(result.sfr_tracks["SFR"], 0.0)
     assert np.any(result.sfr_tracks["SFR_popiii"] > 0.0)
     assert np.any(result.uv_luminosities_popiii > 0.0)
 
 
-def test_run_script_help_exposes_popiii_arguments() -> None:
+def test_v2_run_script_uses_config_only_and_legacy_entry_is_disabled() -> None:
     completed = subprocess.run(
         [
             sys.executable,
-            str(RUN_SCRIPT_PATH),
+            str(V2_RUN_SCRIPT_PATH),
             "--help",
         ],
         cwd=PROJECT_ROOT,
@@ -307,32 +656,33 @@ def test_run_script_help_exposes_popiii_arguments() -> None:
         text=True,
     )
 
-    assert "--enable-popiii" in completed.stdout
-    assert "--popiii-epsilon-star" in completed.stdout
-    assert "--popiii-mp" in completed.stdout
-    assert "--popiii-alpha-star" in completed.stdout
-    assert "--popiii-beta-star" in completed.stdout
-    assert "--popiii-upper-mass-mode" in completed.stdout
-    assert "--popiii-upper-mass-msun" in completed.stdout
-    assert "--popiii-ssp-file" in completed.stdout
-    assert "--lw-background-j21" in completed.stdout
+    assert "--config" in completed.stdout
+    assert "--enable-popiii" not in completed.stdout
+    legacy = subprocess.run(
+        [sys.executable, str(RUN_SCRIPT_PATH)],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert legacy.returncode != 0
+    assert "legacy UVLF production entry point is disabled" in legacy.stderr
 
 
-def test_run_script_defaults_keep_popiii_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    spec = importlib.util.spec_from_file_location("run_uvlf_compare_imf_no_delay_all_z", RUN_SCRIPT_PATH)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
+def test_production_config_keeps_popiii_disabled_with_explicit_parameters() -> None:
+    from auroralf import UVLFRunConfig
 
-    monkeypatch.setattr(sys, "argv", [str(RUN_SCRIPT_PATH)])
-    args = module._parse_args()
+    population = UVLFRunConfig.from_toml(PRODUCTION_CONFIG).stellar_population
+    assert population.enable_popiii is False
+    assert population.popiii_efficiency == pytest.approx(1.0e-3)
+    assert population.popiii_pivot_halo_mass_msun == pytest.approx(1.0e7)
+    assert population.popiii_low_mass_slope == pytest.approx(0.0)
+    assert population.popiii_high_mass_slope == pytest.approx(0.0)
+    assert population.popiii_upper_mass_mode == "atomic"
+    assert population.popiii_upper_mass_msun is None
+    assert population.lw_background_j21 == pytest.approx(0.0)
 
-    assert args.enable_popiii is False
-    assert args.popiii_epsilon_star == pytest.approx(1.0e-3)
-    assert args.popiii_mp == pytest.approx(1.0e7)
-    assert args.popiii_alpha_star == pytest.approx(0.0)
-    assert args.popiii_beta_star == pytest.approx(0.0)
-    assert args.popiii_upper_mass_mode == "atomic"
-    assert args.popiii_upper_mass_msun is None
-    assert args.lw_background_j21 == pytest.approx(0.0)
+
+def test_production_uvlf_helper_has_no_independent_lw_parameter() -> None:
+    from auroralf import run_uvlf
+
+    assert tuple(inspect.signature(run_uvlf).parameters) == ("config",)

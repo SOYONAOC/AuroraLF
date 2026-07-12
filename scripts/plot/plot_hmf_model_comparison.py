@@ -16,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.mah import Cosmology
+
 from auroralf.uvlf import (
     MASS_FUNCTION_MODEL_HMF_REED07,
     compute_halo_mass_function_dndm,
@@ -77,6 +79,7 @@ def _set_ratio_ylim(ax: plt.Axes, values: list[np.ndarray]) -> None:
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     models = tuple(validate_mass_function_model(model) for model in args.models)
     reference_model = validate_mass_function_model(args.reference_model)
     if reference_model not in models:
@@ -107,6 +110,7 @@ def main() -> None:
                 compute_halo_mass_function_dndm(
                     halo_mass,
                     z_obs,
+                    cosmology=cosmology,
                     mass_function_model=model,
                 ),
                 dtype=float,

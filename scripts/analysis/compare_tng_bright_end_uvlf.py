@@ -10,6 +10,9 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+from auroralf.mah import Cosmology
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
+from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf, uv_luminosity_to_muv
 from auroralf.uvlf.pipeline import run_halo_uv_pipeline
 
@@ -91,6 +94,7 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def run_fixed_mass_scan(
     *,
+    cosmology: Cosmology,
     n_tracks: int,
     min_candidates: int,
     mass_bin_width_dex: float,
@@ -98,7 +102,7 @@ def run_fixed_mass_scan(
     logm_grid = np.arange(10.0, 11.76, 0.25)
     rows: list[dict[str, Any]] = []
     for spec_index, spec in enumerate(SPECS):
-        for logm in logm_grid:
+        for mass_index, logm in enumerate(logm_grid):
             candidates = _candidate_count(spec.cache_path, float(logm), mass_bin_width_dex)
             if candidates < min_candidates:
                 continue
@@ -108,6 +112,12 @@ def run_fixed_mass_scan(
                     n_tracks=n_tracks,
                     z_final=spec.z_final,
                     Mh_final=mh_final,
+                    cosmology=cosmology,
+                    random_seeds=derive_pipeline_random_seeds(
+                        71_000 + 1000 * spec_index,
+                        redshift=spec.z_final,
+                        mass_index=mass_index,
+                    ),
                     z_start_max=20.1,
                     n_grid=240,
                     mah_backend=backend,
@@ -115,7 +125,6 @@ def run_fixed_mass_scan(
                     tng_mass_bin_width_dex=mass_bin_width_dex,
                     tng_min_candidates=min_candidates,
                     tng_time_grid_mode="uniform_in_t",
-                    random_seed=71_000 + 1000 * spec_index + int(round(logm * 100.0)) + (0 if backend == "mcbride" else 500),
                     enable_time_delay=True,
                     workers=1,
                 )
@@ -138,6 +147,7 @@ def run_fixed_mass_scan(
 
 def run_bright_hmf_uvlf(
     *,
+    cosmology: Cosmology,
     n_mass: int,
     n_tracks: int,
     min_candidates: int,
@@ -149,9 +159,10 @@ def run_bright_hmf_uvlf(
         for backend in ("mcbride", "tng"):
             result = sample_uvlf_from_hmf(
                 z_obs=spec.z_final,
+                cosmology=cosmology,
                 N_mass=n_mass,
                 n_tracks=n_tracks,
-                random_seed=81_000 + 1000 * spec_index + (0 if backend == "mcbride" else 500),
+                base_seed=81_000 + 1000 * spec_index,
                 bins=bins,
                 logM_min=spec.hmf_logm_min,
                 logM_max=spec.hmf_logm_max,
@@ -306,6 +317,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     for spec in SPECS:
@@ -313,11 +330,13 @@ def main() -> None:
             raise FileNotFoundError(f"TNG MAH cache not found: {spec.cache_path}")
 
     fixed_rows = run_fixed_mass_scan(
+        cosmology=cosmology,
         n_tracks=int(args.fixed_n_tracks),
         min_candidates=int(args.min_candidates),
         mass_bin_width_dex=float(args.mass_bin_width_dex),
     )
     hmf_rows = run_bright_hmf_uvlf(
+        cosmology=cosmology,
         n_mass=int(args.hmf_n_mass),
         n_tracks=int(args.hmf_n_tracks),
         min_candidates=int(args.hmf_min_candidates),

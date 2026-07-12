@@ -15,7 +15,8 @@ Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -112,13 +113,20 @@ def _interpolate_track_at_lookback(lookback: np.ndarray, ratio: np.ndarray, targ
     return values
 
 
-def _build_mcbride_ratio(*, z_grid: np.ndarray, logm_center: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def _build_mcbride_ratio(
+    *,
+    cosmology: Cosmology,
+    z_grid: np.ndarray,
+    logm_center: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
     n_tracks = MCBRIDE_TRACKS_PER_BIN
     mh_final = 10.0 ** float(logm_center)
     result = generate_halo_histories(
         n_tracks=n_tracks,
         z_final=float(z_grid[-1]),
         Mh_final=mh_final,
+        cosmology=cosmology,
         z_start_max=float(z_grid[0]),
         M_min=0.0,
         random_seed=int(seed),
@@ -133,7 +141,13 @@ def _build_mcbride_ratio(*, z_grid: np.ndarray, logm_center: float, seed: int) -
     return np.asarray(grid["t_gyr"][0], dtype=float), ratio
 
 
-def _plot(thesan: dict[str, Any], tng: dict[str, Any], output_dir: Path) -> tuple[Path, Path, Path]:
+def _plot(
+    thesan: dict[str, Any],
+    tng: dict[str, Any],
+    output_dir: Path,
+    *,
+    cosmology: Cosmology,
+) -> tuple[Path, Path, Path]:
     plt.rcParams.update(
         {
             "font.size": 9,
@@ -164,7 +178,12 @@ def _plot(thesan: dict[str, Any], tng: dict[str, Any], output_dir: Path) -> tupl
         if tng_indices.size == 0:
             raise ValueError(f"TNG cache has no resolved tracks in logM bin [{lo}, {hi})")
 
-        mc_t, mc_ratio = _build_mcbride_ratio(z_grid=np.asarray(thesan["z_grid"], dtype=float), logm_center=0.5 * (lo + hi), seed=9000 + panel_index)
+        mc_t, mc_ratio = _build_mcbride_ratio(
+            cosmology=cosmology,
+            z_grid=np.asarray(thesan["z_grid"], dtype=float),
+            logm_center=0.5 * (lo + hi),
+            seed=9000 + panel_index,
+        )
         thesan_lookback = _lookback_myr(np.asarray(thesan["t_gyr_grid"], dtype=float))
         tng_lookback = _lookback_myr(np.asarray(tng["t_gyr_grid"], dtype=float))
         mc_lookback = _lookback_myr(mc_t)
@@ -247,9 +266,20 @@ def _plot(thesan: dict[str, Any], tng: dict[str, Any], output_dir: Path) -> tupl
 
 
 def main() -> None:
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     thesan = _load_cache(THESAN_CACHE)
     tng = _load_cache(TNG_CACHE)
-    png_path, pdf_path, summary_path = _plot(thesan, tng, OUTPUT_DIR)
+    png_path, pdf_path, summary_path = _plot(
+        thesan,
+        tng,
+        OUTPUT_DIR,
+        cosmology=cosmology,
+    )
     print(f"wrote_png={png_path}", flush=True)
     print(f"wrote_pdf={pdf_path}", flush=True)
     print(f"wrote_summary={summary_path}", flush=True)

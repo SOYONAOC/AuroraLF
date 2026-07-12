@@ -14,10 +14,13 @@ from .popiii import (
     POPIII_UPPER_MASS_MODES,
     PopIIISFRGridResult,
     PopIIISFRParameters,
+    PopIIIVisbal2015SFRGridResult,
     compute_popiii_duty_cycle,
     compute_popiii_sfr_from_grids,
+    compute_popiii_sfr_visbal2015_from_grids,
     compute_popiii_star_formation_efficiency,
     compute_popiii_upper_mass_msun,
+    compute_visbal2015_atomic_cooling_mass_msun,
 )
 
 __all__ = [
@@ -30,10 +33,13 @@ __all__ = [
     "POPIII_UPPER_MASS_MODES",
     "PopIIISFRGridResult",
     "PopIIISFRParameters",
+    "PopIIIVisbal2015SFRGridResult",
     "SFRModelParameters",
     "compute_sfr_from_tracks",
     "compute_popiii_duty_cycle",
     "compute_popiii_sfr_from_grids",
+    "compute_popiii_sfr_visbal2015_from_grids",
     "compute_popiii_star_formation_efficiency",
     "compute_popiii_upper_mass_msun",
+    "compute_visbal2015_atomic_cooling_mass_msun",
 ]

@@ -16,6 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from auroralf.uvlf.imf import IMF_MODE_CANONICAL
+from auroralf.io.analysis import (
+    BURST_CONFIG_DIFFERENCES,
+    load_uvlf_result,
+    require_compatible_results,
+    select_mode_result,
+)
+from auroralf.results import UVLFRunResult
 
 
 OBS_UVLF_DIR = PROJECT_ROOT / "external_data" / "observations" / "uvlf"
@@ -40,10 +47,10 @@ OBS_MUV_MIN = -22.5
 OBS_MUV_MAX = -16.0
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare UVLFs with and without SFR burst scatter.")
-    parser.add_argument("--no-burst-npz", required=True)
-    parser.add_argument("--burst-npz", required=True)
+    parser.add_argument("--no-burst-hdf5", required=True)
+    parser.add_argument("--burst-hdf5", required=True)
     parser.add_argument("--z", type=float, default=12.5)
     parser.add_argument(
         "--mode",
@@ -51,7 +58,7 @@ def _parse_args() -> argparse.Namespace:
         help="Optional IMF mode to plot by itself, for example z10_mild_topheavy.",
     )
     parser.add_argument("--output-prefix", required=True)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_path(path_text: str, *, must_exist: bool) -> Path:
@@ -62,10 +69,6 @@ def _resolve_path(path_text: str, *, must_exist: bool) -> Path:
     if must_exist and not path.exists():
         raise FileNotFoundError(f"required file not found: {path}")
     return path
-
-
-def _z_tag(z_value: float) -> str:
-    return f"z{str(float(z_value)).replace('.', 'p')}"
 
 
 def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]]:
@@ -98,20 +101,8 @@ def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]
     return datasets
 
 
-def _mode_names(data: np.lib.npyio.NpzFile) -> list[str]:
-    return [str(mode) for mode in np.asarray(data["mode_names"])]
-
-
-def _require_matching_setup(no_burst: np.lib.npyio.NpzFile, burst: np.lib.npyio.NpzFile, tag: str) -> None:
-    for key in ("mode_names", f"{tag}_bin_centers"):
-        if key not in no_burst.files or key not in burst.files:
-            raise KeyError(f"missing required key in input NPZ files: {key}")
-    if list(_mode_names(no_burst)) != list(_mode_names(burst)):
-        raise ValueError("mode_names differ between no-burst and burst NPZ files")
-    centers_no = np.asarray(no_burst[f"{tag}_bin_centers"], dtype=float)
-    centers_burst = np.asarray(burst[f"{tag}_bin_centers"], dtype=float)
-    if not np.allclose(centers_no, centers_burst, rtol=0.0, atol=0.0):
-        raise ValueError("UVLF bin centers differ between no-burst and burst NPZ files")
+def _load_model_result(path: Path) -> UVLFRunResult:
+    return load_uvlf_result(path)
 
 
 def _finite_positive(values: np.ndarray) -> np.ndarray:
@@ -121,21 +112,24 @@ def _finite_positive(values: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     args = _parse_args()
-    no_burst_path = _resolve_path(args.no_burst_npz, must_exist=True)
-    burst_path = _resolve_path(args.burst_npz, must_exist=True)
+    no_burst_path = _resolve_path(args.no_burst_hdf5, must_exist=True)
+    burst_path = _resolve_path(args.burst_hdf5, must_exist=True)
     output_prefix = _resolve_path(args.output_prefix, must_exist=False).with_suffix("")
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    tag = _z_tag(float(args.z))
-    no_burst = np.load(no_burst_path, allow_pickle=False)
-    burst = np.load(burst_path, allow_pickle=False)
+    no_burst = _load_model_result(no_burst_path)
+    burst = _load_model_result(burst_path)
     try:
-        _require_matching_setup(no_burst, burst, tag)
-        centers = np.asarray(no_burst[f"{tag}_bin_centers"], dtype=float)
-        mode_names = _mode_names(no_burst)
+        require_compatible_results(
+            no_burst,
+            burst,
+            allowed_config_differences=BURST_CONFIG_DIFFERENCES,
+            context="burst comparison",
+        )
+        mode_names = list(no_burst.config.stellar_population.imf_modes)
         if args.mode is not None:
             if args.mode not in mode_names:
-                raise ValueError(f"requested mode is not present in NPZ files: {args.mode}")
+                raise ValueError(f"requested mode is not present in HDF5 artifacts: {args.mode}")
             mode_names = [str(args.mode)]
         elif IMF_MODE_CANONICAL not in mode_names:
             raise ValueError("canonical mode is required for this comparison")
@@ -164,20 +158,32 @@ def main() -> None:
         ylim_values: list[np.ndarray] = []
         ratio_values: list[np.ndarray] = []
         summary_lines = [
-            f"no_burst_npz: {no_burst_path}",
-            f"burst_npz: {burst_path}",
+            f"no_burst_hdf5: {no_burst_path}",
+            f"burst_hdf5: {burst_path}",
             f"z: {float(args.z):g}",
             f"mode: {' '.join(mode_names)}",
-            f"burst_scatter_dex: {float(np.asarray(burst['burst_scatter_dex'])[0]) if 'burst_scatter_dex' in burst.files else np.nan:g}",
-            f"burst_scatter_timescale_myr: {float(np.asarray(burst['burst_scatter_timescale_myr'])[0]) if 'burst_scatter_timescale_myr' in burst.files else np.nan:g}",
+            f"burst_scatter_dex: {burst.config.star_formation.burst_scatter_dex:g}",
+            "burst_scatter_timescale_myr: "
+            f"{burst.config.star_formation.burst_scatter_correlation_timescale_myr:g}",
             "",
         ]
 
         for mode in mode_names:
+            no_burst_series = select_mode_result(
+                no_burst,
+                redshift=float(args.z),
+                mode=mode,
+            )
+            burst_series = select_mode_result(
+                burst,
+                redshift=float(args.z),
+                mode=mode,
+            )
+            centers = no_burst_series.bin_centers_muv
             color = MODE_COLORS.get(mode, "0.4")
             label = "low-Z TH" if single_mode and mode == "z10_mild_topheavy" else MODE_LABELS.get(mode, mode.replace("_", " "))
-            phi_no = np.asarray(no_burst[f"{tag}_{mode}_phi"], dtype=float)
-            phi_burst = np.asarray(burst[f"{tag}_{mode}_phi"], dtype=float)
+            phi_no = no_burst_series.phi_observed_per_mpc3_per_mag
+            phi_burst = burst_series.phi_observed_per_mpc3_per_mag
             valid_no = np.isfinite(phi_no) & (phi_no > 0.0)
             valid_burst = np.isfinite(phi_burst) & (phi_burst > 0.0)
             ylim_values.append(phi_no[valid_no])
@@ -277,8 +283,7 @@ def main() -> None:
         plt.close(fig)
         txt_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     finally:
-        no_burst.close()
-        burst.close()
+        del no_burst, burst
 
     print(f"saved_png={png_path}")
     print(f"saved_pdf={pdf_path}")

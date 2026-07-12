@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,10 @@ import numpy as np
 from hmf import MassFunction
 
 from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
+from auroralf.seeding import (
+    derive_hmf_mass_seed,
+    derive_pipeline_random_seeds,
+)
 from auroralf.mah import (
     MAH_BACKEND_MCBRIDE,
     MAH_BACKEND_THESAN,
@@ -17,6 +23,7 @@ from auroralf.mah import (
     THESAN_TIME_GRID_SNAPSHOT,
     validate_thesan_time_grid_mode,
     TNG_TIME_GRID_SNAPSHOT,
+    Cosmology,
     validate_mah_backend,
     validate_tng_time_grid_mode,
 )
@@ -63,9 +70,6 @@ DEFAULT_MASS_FUNCTION_MODEL = MASS_FUNCTION_MODEL_HMF_REED07
 DEFAULT_HMF_DLOG10M = 0.005
 MASS_FUNCTION_NS = 0.965
 MASS_FUNCTION_SIGMA8 = 0.811
-MASS_FUNCTION_H = 0.674
-MASS_FUNCTION_OMEGA_M = 0.315
-MASS_FUNCTION_OMEGA_B_H2 = 0.0224
 HMF_REED07_FITTING_FUNCTION = "Reed07"
 DEPRECATED_MASS_FUNCTION_MODELS = {"massfunc_st", "hmf_watson13_fof"}
 
@@ -100,34 +104,183 @@ def validate_mass_function_model(model: str) -> str:
     return normalized
 
 
-def _hmf_reed07_dndm(
-    halo_mass_msun: np.ndarray,
-    z_obs: float,
-    *,
-    hmf_dlog10m: float,
-) -> np.ndarray:
-    if hmf_dlog10m <= 0.0:
-        raise ValueError("hmf_dlog10m must be positive")
+def _strict_finite_real(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a real non-boolean value")
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
 
-    h = MASS_FUNCTION_H
-    halo_mass_hmf = halo_mass_msun * h
-    log_mass_hmf = np.log10(halo_mass_hmf)
-    grid_min = np.floor((float(np.min(log_mass_hmf)) - 2.0 * hmf_dlog10m) / hmf_dlog10m) * hmf_dlog10m
-    grid_max = np.ceil((float(np.max(log_mass_hmf)) + 2.0 * hmf_dlog10m) / hmf_dlog10m) * hmf_dlog10m
-    grid_max += hmf_dlog10m
+
+def _validate_real_mass_values(name: str, values: object) -> None:
+    if isinstance(values, np.ndarray):
+        if np.issubdtype(values.dtype, np.bool_) or np.issubdtype(
+            values.dtype,
+            np.complexfloating,
+        ):
+            raise TypeError(f"{name} must contain real non-boolean values")
+        if np.issubdtype(values.dtype, np.integer) or np.issubdtype(
+            values.dtype,
+            np.floating,
+        ):
+            return
+        if values.dtype == np.dtype(object) and all(
+            isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
+            for item in values.flat
+        ):
+            return
+        raise TypeError(f"{name} must contain real non-boolean values")
+    if isinstance(values, (list, tuple)) and all(
+        isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
+        for item in values
+    ):
+        return
+    if isinstance(values, Real) and not isinstance(values, (bool, np.bool_)):
+        return
+    raise TypeError(f"{name} must contain real non-boolean values")
+
+
+def _immutable_float_vector(name: str, values: object) -> np.ndarray:
+    _validate_real_mass_values(name, values)
+    vector = np.array(values, dtype=float, copy=True)
+    if vector.ndim != 1 or vector.size < 2 or not np.all(np.isfinite(vector)):
+        raise ValueError(f"{name} must be a finite 1D array with at least two values")
+    immutable = np.frombuffer(vector.tobytes(order="C"), dtype=vector.dtype).reshape(
+        vector.shape
+    )
+    immutable.flags.writeable = False
+    return immutable
+
+
+@dataclass(frozen=True, slots=True)
+class Reed07HMFInterpolator:
+    log10_halo_mass_min_msun: float
+    log10_halo_mass_max_msun: float
+    redshift: float
+    cosmology: Cosmology
+    hmf_dlog10m: float
+    log_mass_grid: np.ndarray
+    log_dndm_grid: np.ndarray
+
+    def __post_init__(self) -> None:
+        log_min = _strict_finite_real(
+            "log10_halo_mass_min_msun",
+            self.log10_halo_mass_min_msun,
+        )
+        log_max = _strict_finite_real(
+            "log10_halo_mass_max_msun",
+            self.log10_halo_mass_max_msun,
+        )
+        redshift = _strict_finite_real("redshift", self.redshift)
+        step = _strict_finite_real("hmf_dlog10m", self.hmf_dlog10m)
+        if log_max <= log_min:
+            raise ValueError(
+                "log10_halo_mass_max_msun must exceed log10_halo_mass_min_msun"
+            )
+        if redshift < 0.0:
+            raise ValueError("redshift must be non-negative")
+        if step <= 0.0:
+            raise ValueError("hmf_dlog10m must be positive")
+        if type(self.cosmology) is not Cosmology:
+            raise TypeError("cosmology must be exactly Cosmology")
+        log_mass_grid = _immutable_float_vector(
+            "log_mass_grid",
+            self.log_mass_grid,
+        )
+        log_dndm_grid = _immutable_float_vector(
+            "log_dndm_grid",
+            self.log_dndm_grid,
+        )
+        if log_mass_grid.size != log_dndm_grid.size:
+            raise ValueError("HMF interpolation grids must have equal length")
+        if np.any(np.diff(log_mass_grid) <= 0.0):
+            raise ValueError("log_mass_grid must be strictly increasing")
+        configured_log_mass = np.log(10.0) * np.array([log_min, log_max])
+        if (
+            configured_log_mass[0] < log_mass_grid[0]
+            or configured_log_mass[1] > log_mass_grid[-1]
+        ):
+            raise ValueError("HMF interpolation grid must cover the configured mass range")
+        for name, value in (
+            ("log10_halo_mass_min_msun", log_min),
+            ("log10_halo_mass_max_msun", log_max),
+            ("redshift", redshift),
+            ("hmf_dlog10m", step),
+            ("log_mass_grid", log_mass_grid),
+            ("log_dndm_grid", log_dndm_grid),
+        ):
+            object.__setattr__(self, name, value)
+
+    def evaluate(self, halo_mass_msun: object) -> np.ndarray | float:
+        _validate_real_mass_values("halo mass", halo_mass_msun)
+        mass = np.array(halo_mass_msun, dtype=float, copy=True)
+        if mass.size == 0:
+            raise ValueError("halo mass must be non-empty")
+        if not np.all(np.isfinite(mass)) or np.any(mass <= 0.0):
+            raise ValueError("halo mass must be finite and positive")
+        log10_mass = np.log10(mass)
+        if np.any(log10_mass < self.log10_halo_mass_min_msun) or np.any(
+            log10_mass > self.log10_halo_mass_max_msun
+        ):
+            raise ValueError("halo mass must lie within the configured mass range")
+        result = np.exp(
+            np.interp(np.log(mass), self.log_mass_grid, self.log_dndm_grid)
+        )
+        if not np.all(np.isfinite(result)) or np.any(result <= 0.0):
+            raise RuntimeError("Reed07 HMF interpolation returned invalid dn/dM values")
+        if np.ndim(halo_mass_msun) == 0:
+            return float(result)
+        return np.asarray(result, dtype=float).reshape(mass.shape)
+
+
+def prepare_reed07_hmf_interpolator(
+    *,
+    log10_halo_mass_min_msun: float,
+    log10_halo_mass_max_msun: float,
+    z_obs: float,
+    cosmology: Cosmology,
+    hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
+) -> Reed07HMFInterpolator:
+    log_min = _strict_finite_real(
+        "log10_halo_mass_min_msun",
+        log10_halo_mass_min_msun,
+    )
+    log_max = _strict_finite_real(
+        "log10_halo_mass_max_msun",
+        log10_halo_mass_max_msun,
+    )
+    redshift = _strict_finite_real("z_obs", z_obs)
+    step = _strict_finite_real("hmf_dlog10m", hmf_dlog10m)
+    if log_max <= log_min:
+        raise ValueError(
+            "log10_halo_mass_max_msun must exceed log10_halo_mass_min_msun"
+        )
+    if redshift < 0.0:
+        raise ValueError("z_obs must be non-negative")
+    if step <= 0.0:
+        raise ValueError("hmf_dlog10m must be positive")
+    if type(cosmology) is not Cosmology:
+        raise TypeError("cosmology must be exactly Cosmology")
+
+    h = cosmology.h0_km_s_mpc / 100.0
+    log_h = np.log10(h)
+    grid_min = np.floor((log_min + log_h - 2.0 * step) / step) * step
+    grid_max = np.ceil((log_max + log_h + 2.0 * step) / step) * step
+    grid_max += step
 
     mass_function = MassFunction(
         Mmin=grid_min,
         Mmax=grid_max,
-        dlog10m=float(hmf_dlog10m),
-        z=float(z_obs),
+        dlog10m=step,
+        z=redshift,
         hmf_model=HMF_REED07_FITTING_FUNCTION,
         sigma_8=MASS_FUNCTION_SIGMA8,
         n=MASS_FUNCTION_NS,
         cosmo_params={
-            "H0": 100.0 * h,
-            "Om0": MASS_FUNCTION_OMEGA_M,
-            "Ob0": MASS_FUNCTION_OMEGA_B_H2 / h**2,
+            "H0": cosmology.h0_km_s_mpc,
+            "Om0": cosmology.omega_m,
+            "Ob0": cosmology.omega_b,
         },
         transfer_params={"extrapolate_with_eh": True},
     )
@@ -140,20 +293,48 @@ def _hmf_reed07_dndm(
 
     log_grid_mass = np.log(grid_mass_msun[valid])
     log_grid_dndm = np.log(grid_dndm[valid])
-    log_mass = np.log(halo_mass_msun)
-    if np.min(log_mass) < log_grid_mass[0] or np.max(log_mass) > log_grid_mass[-1]:
-        raise RuntimeError(
-            f"{MASS_FUNCTION_MODEL_HMF_REED07} interpolation grid does not cover the requested halo masses"
-        )
-    return np.exp(np.interp(log_mass, log_grid_mass, log_grid_dndm))
+    return Reed07HMFInterpolator(
+        log10_halo_mass_min_msun=log_min,
+        log10_halo_mass_max_msun=log_max,
+        redshift=redshift,
+        cosmology=cosmology,
+        hmf_dlog10m=step,
+        log_mass_grid=log_grid_mass,
+        log_dndm_grid=log_grid_dndm,
+    )
+
+
+def _hmf_reed07_dndm(
+    halo_mass_msun: np.ndarray,
+    z_obs: float,
+    *,
+    cosmology: Cosmology,
+    hmf_dlog10m: float,
+) -> np.ndarray:
+    log_mass = np.log10(halo_mass_msun)
+    log_min = float(np.min(log_mass))
+    log_max = float(np.max(log_mass))
+    if log_max == log_min:
+        log_max = float(np.nextafter(log_min, np.inf))
+    interpolator = prepare_reed07_hmf_interpolator(
+        log10_halo_mass_min_msun=log_min,
+        log10_halo_mass_max_msun=log_max,
+        z_obs=z_obs,
+        cosmology=cosmology,
+        hmf_dlog10m=hmf_dlog10m,
+    )
+    return np.asarray(interpolator.evaluate(halo_mass_msun), dtype=float)
 
 
 def compute_reed07_halo_mass_function_dndm(
     halo_mass_msun: np.ndarray | float,
     z_obs: float,
     *,
+    cosmology: Cosmology,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
 ) -> np.ndarray | float:
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
     mass = np.asarray(halo_mass_msun, dtype=float)
     if not np.all(np.isfinite(mass)):
         raise ValueError("halo masses must be finite")
@@ -161,7 +342,12 @@ def compute_reed07_halo_mass_function_dndm(
         raise ValueError("halo masses must be positive")
 
     mass_1d = np.atleast_1d(mass)
-    dndm = _hmf_reed07_dndm(mass_1d, float(z_obs), hmf_dlog10m=float(hmf_dlog10m))
+    dndm = _hmf_reed07_dndm(
+        mass_1d,
+        float(z_obs),
+        cosmology=cosmology,
+        hmf_dlog10m=float(hmf_dlog10m),
+    )
     if not np.all(np.isfinite(dndm)):
         raise RuntimeError(f"{MASS_FUNCTION_MODEL_HMF_REED07} returned non-finite dn/dM values")
     if np.any(dndm < 0.0):
@@ -176,6 +362,7 @@ def compute_halo_mass_function_dndm(
     halo_mass_msun: np.ndarray | float,
     z_obs: float,
     *,
+    cosmology: Cosmology,
     mass_function_model: str = DEFAULT_MASS_FUNCTION_MODEL,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
 ) -> np.ndarray | float:
@@ -185,6 +372,7 @@ def compute_halo_mass_function_dndm(
     return compute_reed07_halo_mass_function_dndm(
         halo_mass_msun,
         z_obs,
+        cosmology=cosmology,
         hmf_dlog10m=hmf_dlog10m,
     )
 
@@ -270,18 +458,17 @@ def _run_single_mass_sample(args: tuple[Any, ...]) -> tuple[Any, ...]:
         topheavy_ssp_metallicity,
         imf_mode,
         imf_transition_parameters,
-        random_seed,
+        random_seeds,
         sfr_model_parameters,
         mzr_metallicity_parameters,
         regulator_metallicity_parameters,
-        metallicity_random_seed,
         burst_scatter_dex,
         burst_scatter_timescale_myr,
-        burst_scatter_random_seed,
         burst_scatter_preserve_mean,
         enable_popiii,
         popiii_sfr_parameters,
         popiii_ssp_file,
+        cosmology,
     ) = args
 
     t0 = time.perf_counter()
@@ -289,9 +476,10 @@ def _run_single_mass_sample(args: tuple[Any, ...]) -> tuple[Any, ...]:
         n_tracks=n_tracks,
         z_final=z_obs,
         Mh_final=float(mass),
+        cosmology=cosmology,
+        random_seeds=random_seeds,
         z_start_max=z_start_max,
         n_grid=n_grid,
-        random_seed=random_seed,
         sampler=sampler,
         mah_backend=mah_backend,
         tng_mah_cache_path=tng_mah_cache_path,
@@ -314,10 +502,8 @@ def _run_single_mass_sample(args: tuple[Any, ...]) -> tuple[Any, ...]:
         sfr_model_parameters=sfr_model_parameters,
         mzr_metallicity_parameters=mzr_metallicity_parameters,
         regulator_metallicity_parameters=regulator_metallicity_parameters,
-        metallicity_random_seed=metallicity_random_seed,
         burst_scatter_dex=burst_scatter_dex,
         burst_scatter_timescale_myr=burst_scatter_timescale_myr,
-        burst_scatter_random_seed=burst_scatter_random_seed,
         burst_scatter_preserve_mean=burst_scatter_preserve_mean,
         enable_popiii=enable_popiii,
         popiii_sfr_parameters=popiii_sfr_parameters,
@@ -372,8 +558,9 @@ def sample_uvlf_from_hmf(
     z_obs: float,
     N_mass: int = 3000,
     n_tracks: int = 1000,
-    random_seed: int | None = 42,
     *,
+    cosmology: Cosmology,
+    base_seed: int,
     quantity: str = "Muv",
     bins: int | np.ndarray = 40,
     logM_min: float = LOGM_MIN,
@@ -407,16 +594,26 @@ def sample_uvlf_from_hmf(
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
     mass_function_model: str = DEFAULT_MASS_FUNCTION_MODEL,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
-    lw_background_j21: float = DEFAULT_LW_BACKGROUND_J21,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
     regulator_metallicity_parameters: RegulatorMetallicityParameters | None = None,
-    metallicity_random_seed: int | None = None,
     burst_scatter_dex: float = 0.0,
     burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
-    burst_scatter_random_seed: int | None = None,
     burst_scatter_preserve_mean: bool = True,
 ) -> UVLFSamplingResult:
     """Sample a UVLF by Monte Carlo integration over a halo mass function."""
+
+    hmf_mass_seed = derive_hmf_mass_seed(base_seed, z_obs)
+    z_obs = float(z_obs)
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
+    if not isinstance(popiii_sfr_parameters, PopIIISFRParameters):
+        raise TypeError("popiii_sfr_parameters must be an instance of PopIIISFRParameters")
+    popiii_lw_array = np.asarray(popiii_sfr_parameters.lw_background_j21, dtype=float)
+    if popiii_lw_array.ndim != 0:
+        raise ValueError("lw_background_j21 must be scalar, finite, and non-negative")
+    popiii_lw_background_j21 = float(popiii_lw_array)
+    if not np.isfinite(popiii_lw_background_j21) or popiii_lw_background_j21 < 0.0:
+        raise ValueError("lw_background_j21 must be scalar, finite, and non-negative")
 
     if quantity not in {"Muv", "luminosity"}:
         raise ValueError("quantity must be either 'Muv' or 'luminosity'")
@@ -428,8 +625,6 @@ def sample_uvlf_from_hmf(
         raise ValueError("burst_scatter_dex must be non-negative")
     if float(burst_scatter_timescale_myr) <= 0.0:
         raise ValueError("burst_scatter_timescale_myr must be positive")
-    if np.ndim(np.asarray(lw_background_j21, dtype=float)) != 0:
-        raise ValueError("lw_background_j21 must be scalar")
     imf_mode = validate_imf_mode(imf_mode)
     mah_backend = validate_mah_backend(mah_backend)
     tng_time_grid_mode = validate_tng_time_grid_mode(tng_time_grid_mode)
@@ -482,23 +677,31 @@ def sample_uvlf_from_hmf(
         progress_text = _write_progress(progress_file, completed=0, total=N_mass, elapsed_seconds=0.0)
         if print_progress:
             print(progress_text.strip(), flush=True)
-    rng = np.random.default_rng(random_seed)
+    rng = np.random.default_rng(hmf_mass_seed)
 
     t0 = time.perf_counter()
     logMh = rng.uniform(logM_min, logM_max, size=N_mass)
     Mh = np.power(10.0, logMh)
-    atomic_cooling_mass_msun = float(compute_atomic_cooling_mass_msun(z_obs))
+    atomic_cooling_mass_msun = float(
+        compute_atomic_cooling_mass_msun(z_obs, cosmology=cosmology)
+    )
     popiii_minimum_mass_msun = float(
-        compute_popiii_lw_minimum_mass_msun(z_obs, lw_background_j21=float(lw_background_j21))
+        compute_popiii_lw_minimum_mass_msun(z_obs, lw_background_j21=popiii_lw_background_j21)
     )
     stellar_channel_by_mass = np.asarray(
-        classify_halo_stellar_channels(Mh, z_obs=z_obs, lw_background_j21=float(lw_background_j21)),
+        classify_halo_stellar_channels(
+            Mh,
+            z_obs=z_obs,
+            cosmology=cosmology,
+            lw_background_j21=popiii_lw_background_j21,
+        ),
         dtype=f"<U{max(len(channel) for channel in STELLAR_CHANNELS)}",
     )
     dndm = np.asarray(
         compute_halo_mass_function_dndm(
             Mh,
             z_obs,
+            cosmology=cosmology,
             mass_function_model=mass_function_model,
             hmf_dlog10m=hmf_dlog10m,
         ),
@@ -530,6 +733,14 @@ def sample_uvlf_from_hmf(
     active_source_count_by_mass = np.empty(N_mass, dtype=np.int64)
     final_gas_metallicity_zsun_median_by_mass = np.full(N_mass, np.nan, dtype=float)
     birth_metallicity_zsun_starforming_median_by_mass = np.full(N_mass, np.nan, dtype=float)
+    pipeline_random_seeds_by_mass = [
+        derive_pipeline_random_seeds(
+            base_seed,
+            redshift=float(z_obs),
+            mass_index=mass_index,
+        )
+        for mass_index in range(N_mass)
+    ]
 
     progress_stride = max(1, N_mass // 100)
     tasks = [
@@ -560,18 +771,17 @@ def sample_uvlf_from_hmf(
             topheavy_ssp_metallicity,
             imf_mode,
             imf_transition_parameters,
-            None if random_seed is None else int(random_seed + mass_index),
+            pipeline_random_seeds_by_mass[mass_index],
             sfr_model_parameters,
             mzr_metallicity_parameters,
             regulator_metallicity_parameters,
-            None if metallicity_random_seed is None else int(metallicity_random_seed + mass_index),
             float(burst_scatter_dex),
             float(burst_scatter_timescale_myr),
-            None if burst_scatter_random_seed is None else int(burst_scatter_random_seed + mass_index),
             bool(burst_scatter_preserve_mean),
             bool(enable_popiii),
             popiii_sfr_parameters,
             str(popiii_ssp_file),
+            cosmology,
         )
         for mass_index, (log_mass, mass, weight) in enumerate(zip(logMh, Mh, mass_weight, strict=True))
     ]
@@ -648,7 +858,10 @@ def sample_uvlf_from_hmf(
                     print(progress_text.strip(), flush=True)
     else:
         completed = 0
-        with ProcessPoolExecutor(max_workers=max(1, pipeline_workers)) as executor:
+        with ProcessPoolExecutor(
+            max_workers=max(1, pipeline_workers),
+            mp_context=mp.get_context("spawn"),
+        ) as executor:
             future_to_index = {executor.submit(_run_single_mass_sample, task): task[0] for task in tasks}
             for future in as_completed(future_to_index):
                 (
@@ -796,7 +1009,16 @@ def sample_uvlf_from_hmf(
         "z_obs": z_obs,
         "N_mass": N_mass,
         "n_tracks": n_tracks,
-        "random_seed": random_seed,
+        "base_seed": base_seed,
+        "hmf_mass_seed": hmf_mass_seed,
+        "pipeline_random_seeds_by_mass": {
+            "mah": np.asarray([seeds.mah for seeds in pipeline_random_seeds_by_mass], dtype=np.uint64),
+            "metallicity": np.asarray(
+                [seeds.metallicity for seeds in pipeline_random_seeds_by_mass],
+                dtype=np.uint64,
+            ),
+            "burst": np.asarray([seeds.burst for seeds in pipeline_random_seeds_by_mass], dtype=np.uint64),
+        },
         "logM_min": logM_min,
         "logM_max": logM_max,
         "halo_mass_by_mass": Mh,
@@ -809,7 +1031,7 @@ def sample_uvlf_from_hmf(
         "popiii_molecular_cooling_redshift_exponent": POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT,
         "popiii_lw_feedback_coefficient": POPIII_LW_FEEDBACK_COEFFICIENT,
         "popiii_lw_feedback_exponent": POPIII_LW_FEEDBACK_EXPONENT,
-        "lw_background_j21": float(lw_background_j21),
+        "lw_background_j21": popiii_lw_background_j21,
         "popiii_minimum_mass_msun": popiii_minimum_mass_msun,
         "stellar_channel_by_mass": stellar_channel_by_mass,
         "stellar_channel_counts": {
@@ -821,9 +1043,11 @@ def sample_uvlf_from_hmf(
         "mass_function_parameters": {
             "ns": MASS_FUNCTION_NS,
             "sigma8": MASS_FUNCTION_SIGMA8,
-            "h": MASS_FUNCTION_H,
-            "omegam": MASS_FUNCTION_OMEGA_M,
-            "omegab_h2": MASS_FUNCTION_OMEGA_B_H2,
+            "h": cosmology.h0_km_s_mpc / 100.0,
+            "h0_km_s_mpc": cosmology.h0_km_s_mpc,
+            "omega_m": cosmology.omega_m,
+            "omega_b": cosmology.omega_b,
+            "omega_lambda": cosmology.omega_lambda,
         },
         "pipeline_workers": max(1, pipeline_workers),
         "mah_backend": mah_backend,
@@ -862,7 +1086,6 @@ def sample_uvlf_from_hmf(
         "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
         "burst_scatter_dex": float(burst_scatter_dex),
         "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
-        "burst_scatter_random_seed": burst_scatter_random_seed,
         "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
         "burst_scatter_mass_conserving": bool(burst_scatter_preserve_mean),
         "sfr_model_parameters": {
@@ -902,7 +1125,6 @@ def sample_uvlf_from_hmf(
         else "regulator"
         if regulator_metallicity_parameters is not None
         else "none",
-        "metallicity_random_seed": metallicity_random_seed,
         "mzr_metallicity_parameters": mzr_metallicity_parameters.as_metadata()
         if mzr_metallicity_parameters is not None
         else None,

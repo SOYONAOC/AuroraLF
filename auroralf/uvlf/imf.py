@@ -32,8 +32,8 @@ class IMFTransitionParameters:
     """Parameters for selecting a mild top-heavy Pop II SSP from halo histories.
 
     The MAH-burst mode marks a star-forming time step as mild top-heavy when the
-    halo growth time Mh / dMh_dt is shorter than ``growth_time_threshold_myr``.
-    The code assumes dMh_dt is stored in Msun/Gyr, matching the SFR module.
+    halo growth time ``Mh / dMh_dt_sfr`` is shorter than ``growth_time_threshold_myr``.
+    The effective SFR accretion rate is stored in ``Msun/Gyr``.
     When ``metallicity_topheavy_max_zsun`` is not ``None``, a source time must
     also have pre-star-formation birth metallicity below this threshold.
     The historical source-redshift gate is retained for explicit comparisons
@@ -69,7 +69,7 @@ def compute_topheavy_source_flags(
     imf_mode: str,
     z_grid: np.ndarray,
     mh_grid: np.ndarray,
-    dmhdt_grid: np.ndarray,
+    dmhdt_sfr_grid: np.ndarray,
     active_grid: np.ndarray,
     birth_metallicity_zsun_grid: np.ndarray | None = None,
     transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
@@ -79,11 +79,15 @@ def compute_topheavy_source_flags(
     mode = validate_imf_mode(imf_mode)
     z = np.asarray(z_grid, dtype=float)
     mh = np.asarray(mh_grid, dtype=float)
-    dmhdt = np.asarray(dmhdt_grid, dtype=float)
+    dmhdt_sfr = np.asarray(dmhdt_sfr_grid, dtype=float)
     active = np.asarray(active_grid, dtype=bool)
 
-    if mh.shape != dmhdt.shape or mh.shape != active.shape:
-        raise ValueError("mh_grid, dmhdt_grid, and active_grid must have identical shapes")
+    if mh.shape != dmhdt_sfr.shape or mh.shape != active.shape:
+        raise ValueError("mh_grid, dmhdt_sfr_grid, and active_grid must have identical shapes")
+    if not np.all(np.isfinite(dmhdt_sfr)):
+        raise ValueError("dmhdt_sfr_grid must contain only finite values")
+    if np.any(dmhdt_sfr < 0.0):
+        raise ValueError("dmhdt_sfr_grid must be non-negative")
     if z.ndim == 1:
         if z.size != mh.shape[1]:
             raise ValueError("1D z_grid length must match the time axis of the halo grids")
@@ -125,6 +129,6 @@ def compute_topheavy_source_flags(
         raise ValueError("growth_time_threshold_myr must be positive")
 
     growth_time_gyr = np.full_like(mh, np.inf, dtype=float)
-    positive_growth = np.isfinite(mh) & np.isfinite(dmhdt) & (mh > 0.0) & (dmhdt > 0.0)
-    growth_time_gyr[positive_growth] = mh[positive_growth] / dmhdt[positive_growth]
+    positive_growth = np.isfinite(mh) & np.isfinite(dmhdt_sfr) & (mh > 0.0) & (dmhdt_sfr > 0.0)
+    growth_time_gyr[positive_growth] = mh[positive_growth] / dmhdt_sfr[positive_growth]
     return source_gate & (growth_time_gyr <= threshold_gyr) & metallicity_gate

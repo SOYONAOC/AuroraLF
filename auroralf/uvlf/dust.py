@@ -92,7 +92,25 @@ def intrinsic_muv_jacobian(
     """Return dM_UV / dM_UV^obs for the dust-corrected mapping."""
 
     muv_obs_array = np.asarray(muv_obs, dtype=float)
-    jacobian = np.full_like(muv_obs_array, 1.09 + 0.007 * z, dtype=float)
+    beta = np.asarray(uv_continuum_slope_beta(muv_obs_array, z, m0=m0), dtype=float)
+    attenuation_raw = c1 + c0 * beta
+    attenuation_slope = c0 * (-0.007 * z - 0.09)
+    active_jacobian = 1.0 - attenuation_slope
+    valid = (
+        np.isfinite(muv_obs_array)
+        & np.isfinite(z)
+        & np.isfinite(c0)
+        & np.isfinite(c1)
+        & np.isfinite(m0)
+        & np.isfinite(beta)
+        & np.isfinite(attenuation_raw)
+        & np.isfinite(active_jacobian)
+    )
+    jacobian = np.where(
+        valid & (attenuation_raw > 0.0),
+        active_jacobian,
+        np.where(valid & (attenuation_raw <= 0.0), 1.0, np.nan),
+    )
     if np.ndim(muv_obs) == 0:
         return float(jacobian)
     return jacobian

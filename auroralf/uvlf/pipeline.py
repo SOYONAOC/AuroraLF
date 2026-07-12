@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import multiprocessing
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import InitVar, dataclass, replace
+from numbers import Real
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
+from auroralf.seeding import PipelineRandomSeeds
 from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
     MZRBirthMetallicityResult,
@@ -46,11 +50,11 @@ from auroralf.sfr import (
 from auroralf.ssp import (
     DEFAULT_POPIII_UV_SSP_FILE,
     SSP_UV_LOOKBACK_MAX_MYR,
-    compute_halo_uv_luminosity,
-    interpolate_ssp_luminosity,
+    compute_final_ssp_observable_from_sfr_grid,
     load_popiii_uv_luminosity_table,
     load_uv1600_table,
 )
+from auroralf.ssp.convolution import _reject_boolean_scalar, _reject_boolean_values
 from .imf import (
     DEFAULT_CANONICAL_SSP_FILE,
     DEFAULT_IMF_TRANSITION_PARAMETERS,
@@ -93,6 +97,794 @@ class HaloUVPipelineResult:
     gas_mass_grid: np.ndarray | None = None
 
 
+def _validate_real_array_members(name: str, values: object) -> None:
+    if isinstance(values, np.ndarray):
+        if np.issubdtype(values.dtype, np.bool_) or np.issubdtype(
+            values.dtype,
+            np.complexfloating,
+        ):
+            raise TypeError(f"{name} must contain real non-boolean values")
+        if np.issubdtype(values.dtype, np.integer) or np.issubdtype(
+            values.dtype,
+            np.floating,
+        ):
+            return
+        if values.dtype == np.dtype(object):
+            if all(
+                isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
+                for item in values.flat
+            ):
+                return
+        raise TypeError(f"{name} must contain real non-boolean values")
+    if isinstance(values, (list, tuple)) and all(
+        isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
+        for item in values
+    ):
+        return
+    raise TypeError(f"{name} must contain real non-boolean values")
+
+
+def _immutable_array(values: np.ndarray) -> np.ndarray:
+    contiguous = np.ascontiguousarray(np.asarray(values))
+    if contiguous.dtype.hasobject:
+        first = None if contiguous.size == 0 else contiguous.flat[0]
+        if first is None or (
+            isinstance(first, str)
+            and all(isinstance(item, str) for item in contiguous.flat)
+        ):
+            contiguous = np.ascontiguousarray(contiguous, dtype=str)
+        elif isinstance(first, (bool, np.bool_)) and all(
+            isinstance(item, (bool, np.bool_)) for item in contiguous.flat
+        ):
+            contiguous = np.ascontiguousarray(contiguous, dtype=bool)
+        elif (
+            isinstance(first, Real)
+            and not isinstance(first, (bool, np.bool_))
+            and all(
+                isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
+                for item in contiguous.flat
+            )
+        ):
+            contiguous = np.ascontiguousarray(contiguous, dtype=float)
+        else:
+            raise TypeError(
+                "object-dtype arrays must contain only strings, booleans, or real values"
+            )
+    immutable = np.frombuffer(
+        contiguous.tobytes(order="C"),
+        dtype=contiguous.dtype,
+    ).reshape(contiguous.shape)
+    immutable.flags.writeable = False
+    return immutable
+
+
+def _normalized_numpy_scalar_item(value: np.generic, *, operation: str) -> object:
+    item = value.item()
+    if item is value or isinstance(item, np.generic):
+        raise TypeError(
+            f"cannot {operation} NumPy scalar type {type(value).__name__} "
+            f"with dtype {value.dtype} without losing extended precision"
+        )
+    return item
+
+
+def _deep_freeze(value: object) -> object:
+    if isinstance(value, np.generic):
+        return _deep_freeze(
+            _normalized_numpy_scalar_item(value, operation="freeze")
+        )
+    if isinstance(value, np.ndarray):
+        return _immutable_array(value)
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {
+                _deep_freeze(key): _deep_freeze(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    if value is None or isinstance(
+        value,
+        (bool, int, float, str, bytes, Path),
+    ):
+        return value
+    raise TypeError(
+        f"unsupported unknown or mutable value in shared metadata: {type(value).__name__}"
+    )
+
+
+def _readonly_flat_view(values: np.ndarray) -> np.ndarray:
+    flattened = values.reshape(-1)
+    flattened.flags.writeable = False
+    return flattened
+
+
+def _freeze_mapping_reusing_arrays(
+    values: Mapping[object, object],
+    *,
+    replacements: Mapping[str, tuple[np.ndarray, np.ndarray]],
+) -> Mapping[object, object]:
+    frozen: dict[object, object] = {}
+    for key, item in values.items():
+        frozen_key = _deep_freeze(key)
+        replacement_pair = replacements.get(key) if isinstance(key, str) else None
+        if replacement_pair is not None and isinstance(item, np.ndarray):
+            source, replacement = replacement_pair
+            same_layout = (
+                item.shape == source.shape
+                and item.strides == source.strides
+                and item.dtype == source.dtype
+                and item.__array_interface__["data"][0]
+                == source.__array_interface__["data"][0]
+            )
+            if same_layout:
+                frozen[frozen_key] = replacement
+                continue
+        frozen[frozen_key] = _deep_freeze(item)
+    return MappingProxyType(frozen)
+
+
+def _deep_thaw_mapping_key(value: object) -> object:
+    if isinstance(value, np.generic):
+        return _deep_thaw_mapping_key(
+            _normalized_numpy_scalar_item(value, operation="thaw mapping key")
+        )
+    if isinstance(value, tuple):
+        return tuple(_deep_thaw_mapping_key(item) for item in value)
+    if isinstance(value, frozenset):
+        return frozenset(_deep_thaw_mapping_key(item) for item in value)
+    if value is None or isinstance(
+        value,
+        (bool, int, float, str, bytes, Path),
+    ):
+        return value
+    raise TypeError(f"unsupported frozen mapping key: {type(value).__name__}")
+
+
+def _deep_thaw(value: object) -> object:
+    if isinstance(value, np.generic):
+        return _deep_thaw(
+            _normalized_numpy_scalar_item(value, operation="thaw")
+        )
+    if isinstance(value, np.ndarray):
+        return np.array(value, copy=True)
+    if isinstance(value, Mapping):
+        return {
+            _deep_thaw_mapping_key(key): _deep_thaw(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_deep_thaw(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return {_deep_thaw(item) for item in value}
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    if value is None or isinstance(
+        value,
+        (bool, int, float, str, bytes, Path),
+    ):
+        return value
+    raise TypeError(f"unsupported frozen value: {type(value).__name__}")
+
+
+def _readonly_grid(
+    name: str,
+    values: object,
+    *,
+    boolean: bool = False,
+    immutable: bool = True,
+) -> np.ndarray:
+    if not boolean:
+        _validate_real_array_members(name, values)
+    array = np.asarray(values, dtype=bool if boolean else float)
+    if array.ndim != 2 or array.size == 0:
+        raise ValueError(f"{name} must be a non-empty 2D array")
+    if boolean and np.asarray(values).dtype != np.dtype(bool):
+        raise TypeError(f"{name} must have exact boolean dtype")
+    return _immutable_array(array) if immutable else array
+
+
+def _readonly_vector(
+    name: str,
+    values: object,
+    *,
+    boolean: bool = False,
+    immutable: bool = True,
+) -> np.ndarray:
+    if not boolean:
+        _validate_real_array_members(name, values)
+    array = np.asarray(values, dtype=bool if boolean else float)
+    if array.ndim != 1 or array.size == 0:
+        raise ValueError(f"{name} must be a non-empty 1D array")
+    if boolean and np.asarray(values).dtype != np.dtype(bool):
+        raise TypeError(f"{name} must have exact boolean dtype")
+    return _immutable_array(array) if immutable else array
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class SharedHaloBatch:
+    histories: HaloHistoryResult
+    sfr_tracks: Mapping[str, object]
+    popiii_enabled: bool
+    redshift_grid: np.ndarray
+    floor_mass_msun: np.ndarray
+    time_gyr_grid: np.ndarray
+    redshift_history_grid: np.ndarray
+    halo_mass_msun_grid: np.ndarray
+    dmh_dt_sfr_msun_per_gyr_grid: np.ndarray
+    sfr_msun_per_yr_grid: np.ndarray
+    active_grid: np.ndarray
+    starforming_grid: np.ndarray
+    popiii_sfr_msun_per_yr_grid: np.ndarray
+    popiii_source_grid: np.ndarray
+    popiii_fstar_grid: np.ndarray
+    popiii_duty_cycle_grid: np.ndarray
+    popiii_lower_mass_msun_grid: np.ndarray
+    popiii_upper_mass_msun_grid: np.ndarray
+    burst_sfr_multiplier_grid: np.ndarray
+    birth_metallicity_zsun_grid: np.ndarray | None
+    gas_metallicity_zsun_grid: np.ndarray | None
+    metal_mass_msun_grid: np.ndarray | None
+    gas_mass_msun_grid: np.ndarray | None
+    metallicity_source: str
+    timing_mah_generation_seconds: float
+    timing_sfr_and_chemistry_seconds: float
+    _freeze_arrays: InitVar[bool] = True
+
+    def __post_init__(self, _freeze_arrays: bool) -> None:
+        if type(_freeze_arrays) is not bool:
+            raise TypeError("_freeze_arrays must be exactly bool")
+        if type(self.histories) is not HaloHistoryResult:
+            raise TypeError("histories must be exactly HaloHistoryResult")
+        if not isinstance(self.histories.tracks, Mapping) or not isinstance(
+            self.histories.metadata,
+            Mapping,
+        ):
+            raise TypeError("histories tracks and metadata must be mappings")
+        if not isinstance(self.sfr_tracks, Mapping):
+            raise TypeError("sfr_tracks must be a mapping")
+        if type(self.popiii_enabled) is not bool:
+            raise TypeError("popiii_enabled must be exactly bool")
+        time_grid = _readonly_grid(
+            "time_gyr_grid",
+            self.time_gyr_grid,
+            immutable=_freeze_arrays,
+        )
+        shape = time_grid.shape
+        float_grids: dict[str, np.ndarray] = {}
+        for name in (
+            "redshift_history_grid",
+            "halo_mass_msun_grid",
+            "dmh_dt_sfr_msun_per_gyr_grid",
+            "sfr_msun_per_yr_grid",
+            "popiii_sfr_msun_per_yr_grid",
+            "popiii_fstar_grid",
+            "popiii_duty_cycle_grid",
+            "popiii_lower_mass_msun_grid",
+            "popiii_upper_mass_msun_grid",
+            "burst_sfr_multiplier_grid",
+        ):
+            grid = _readonly_grid(
+                name,
+                getattr(self, name),
+                immutable=_freeze_arrays,
+            )
+            if grid.shape != shape:
+                raise ValueError(f"{name} must match time_gyr_grid shape {shape}")
+            float_grids[name] = grid
+        bool_grids: dict[str, np.ndarray] = {}
+        for name in ("active_grid", "starforming_grid", "popiii_source_grid"):
+            grid = _readonly_grid(
+                name,
+                getattr(self, name),
+                boolean=True,
+                immutable=_freeze_arrays,
+            )
+            if grid.shape != shape:
+                raise ValueError(f"{name} must match time_gyr_grid shape {shape}")
+            bool_grids[name] = grid
+        redshift_grid = _readonly_vector(
+            "redshift_grid",
+            self.redshift_grid,
+            immutable=_freeze_arrays,
+        )
+        floor_mass = _readonly_vector(
+            "floor_mass_msun",
+            self.floor_mass_msun,
+            immutable=_freeze_arrays,
+        )
+        if redshift_grid.size != shape[1] or floor_mass.size != shape[1]:
+            raise ValueError("redshift_grid and floor_mass_msun must match the history time axis")
+        if not np.all(np.isfinite(time_grid)) or np.any(np.diff(time_grid, axis=1) <= 0.0):
+            raise ValueError("time_gyr_grid must be finite and strictly increasing per halo")
+        if not np.all(np.isfinite(redshift_grid)) or np.any(redshift_grid < 0.0):
+            raise ValueError("redshift_grid must be finite and non-negative")
+        if not np.all(np.isfinite(floor_mass)) or np.any(floor_mass < 0.0):
+            raise ValueError("floor_mass_msun must be finite and non-negative")
+        for name in (
+            "redshift_history_grid",
+            "halo_mass_msun_grid",
+            "dmh_dt_sfr_msun_per_gyr_grid",
+            "sfr_msun_per_yr_grid",
+            "popiii_sfr_msun_per_yr_grid",
+            "popiii_fstar_grid",
+            "popiii_duty_cycle_grid",
+            "burst_sfr_multiplier_grid",
+        ):
+            grid = float_grids[name]
+            if not np.all(np.isfinite(grid)) or np.any(grid < 0.0):
+                raise ValueError(f"{name} must be finite and non-negative")
+        for name in ("popiii_lower_mass_msun_grid", "popiii_upper_mass_msun_grid"):
+            finite = float_grids[name][np.isfinite(float_grids[name])]
+            if np.any(np.isinf(float_grids[name])) or np.any(finite < 0.0):
+                raise ValueError(f"{name} may contain NaN but finite values must be non-negative")
+        expected_starforming = (
+            bool_grids["active_grid"]
+            & np.isfinite(float_grids["sfr_msun_per_yr_grid"])
+            & (float_grids["sfr_msun_per_yr_grid"] > 0.0)
+        )
+        if not np.array_equal(bool_grids["starforming_grid"], expected_starforming):
+            raise ValueError("starforming_grid must exactly match active positive finite canonical SFR")
+        popiii_sfr = float_grids["popiii_sfr_msun_per_yr_grid"]
+        popiii_source = bool_grids["popiii_source_grid"]
+        expected_popiii_source = bool_grids["active_grid"] & (popiii_sfr > 0.0)
+        if not np.array_equal(popiii_source, expected_popiii_source):
+            raise ValueError(
+                "popiii_source_grid must exactly match active positive Pop III SFR"
+            )
+        popiii_fstar = float_grids["popiii_fstar_grid"]
+        popiii_duty = float_grids["popiii_duty_cycle_grid"]
+        if np.any(popiii_fstar > 1.0):
+            raise ValueError("popiii_fstar_grid must lie in [0, 1]")
+        if np.any(popiii_duty > 1.0):
+            raise ValueError("popiii_duty_cycle_grid must lie in [0, 1]")
+        if self.popiii_enabled:
+            if np.any(popiii_sfr[~bool_grids["active_grid"]] != 0.0):
+                raise ValueError("Pop III SFR must be zero outside active cells")
+            if np.any(popiii_fstar[popiii_source] <= 0.0):
+                raise ValueError("Pop III source cells require positive fstar")
+            if np.any(popiii_duty[popiii_source] <= 0.0):
+                raise ValueError("Pop III source cells require positive duty cycle")
+            lower = float_grids["popiii_lower_mass_msun_grid"]
+            upper = float_grids["popiii_upper_mass_msun_grid"]
+            source_bounds_valid = (
+                np.isfinite(lower[popiii_source])
+                & np.isfinite(upper[popiii_source])
+                & (lower[popiii_source] > 0.0)
+                & (upper[popiii_source] > 0.0)
+            )
+            if not np.all(source_bounds_valid):
+                raise ValueError(
+                    "Pop III source duty-cycle mass scales must be finite and positive"
+                )
+        else:
+            disabled_zero = (
+                np.all(popiii_sfr == 0.0)
+                and not np.any(popiii_source)
+                and np.all(popiii_fstar == 0.0)
+                and np.all(popiii_duty == 0.0)
+            )
+            if not disabled_zero:
+                raise ValueError(
+                    "disabled Pop III requires SFR, source, fstar, and duty to be zero"
+                )
+            if not (
+                np.all(np.isnan(float_grids["popiii_lower_mass_msun_grid"]))
+                and np.all(np.isnan(float_grids["popiii_upper_mass_msun_grid"]))
+            ):
+                raise ValueError("disabled Pop III requires all bounds to be NaN")
+        optional_grids: dict[str, np.ndarray | None] = {}
+        for name in (
+            "birth_metallicity_zsun_grid",
+            "gas_metallicity_zsun_grid",
+            "metal_mass_msun_grid",
+            "gas_mass_msun_grid",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                optional_grids[name] = None
+                continue
+            grid = _readonly_grid(name, value, immutable=_freeze_arrays)
+            if grid.shape != shape or not np.all(np.isfinite(grid)) or np.any(grid < 0.0):
+                raise ValueError(f"{name} must match shape {shape} and be finite non-negative")
+            optional_grids[name] = grid
+        if self.metallicity_source not in ("none", "mzr", "regulator"):
+            raise ValueError("metallicity_source must be one of ('none', 'mzr', 'regulator')")
+        present_optional = {
+            name for name, value in optional_grids.items() if value is not None
+        }
+        expected_optional = {
+            "none": set(),
+            "mzr": {"birth_metallicity_zsun_grid"},
+            "regulator": set(optional_grids),
+        }[self.metallicity_source]
+        if present_optional != expected_optional:
+            raise ValueError(
+                "metallicity_source must agree with the supplied metallicity grids"
+            )
+        track_expectations = {
+            "SFR": float_grids["sfr_msun_per_yr_grid"].reshape(-1),
+            "SFR_popiii": popiii_sfr.reshape(-1),
+            "fstar_popiii": popiii_fstar.reshape(-1),
+            "popiii_duty_cycle": popiii_duty.reshape(-1),
+            "popiii_lower_mass_msun": float_grids[
+                "popiii_lower_mass_msun_grid"
+            ].reshape(-1),
+            "popiii_upper_mass_msun": float_grids[
+                "popiii_upper_mass_msun_grid"
+            ].reshape(-1),
+        }
+        for name, expected in track_expectations.items():
+            if name not in self.sfr_tracks:
+                raise ValueError(f"sfr_tracks is missing required field {name!r}")
+            actual = np.asarray(self.sfr_tracks[name])
+            if actual.shape != expected.shape or not np.array_equal(
+                actual,
+                expected,
+                equal_nan=True,
+            ):
+                raise ValueError(f"sfr_tracks[{name!r}] must match its shared grid")
+        if "popiii_source_flag" not in self.sfr_tracks:
+            raise ValueError("sfr_tracks is missing required field 'popiii_source_flag'")
+        source_track = np.asarray(self.sfr_tracks["popiii_source_flag"])
+        if source_track.dtype != np.dtype(bool) or not np.array_equal(
+            source_track,
+            popiii_source.reshape(-1),
+        ):
+            raise ValueError(
+                "sfr_tracks['popiii_source_flag'] must match popiii_source_grid"
+            )
+        for name in ("timing_mah_generation_seconds", "timing_sfr_and_chemistry_seconds"):
+            raw_value = getattr(self, name)
+            if isinstance(raw_value, (bool, np.bool_)) or not isinstance(raw_value, Real):
+                raise TypeError(f"{name} must be a real non-boolean value")
+            value = float(raw_value)
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "time_gyr_grid", time_grid)
+        object.__setattr__(self, "popiii_enabled", self.popiii_enabled)
+        if _freeze_arrays:
+            frozen_history_tracks = _deep_freeze(self.histories.tracks)
+            if not isinstance(frozen_history_tracks, Mapping):
+                raise RuntimeError("frozen halo history tracks must remain a mapping")
+            frozen_history_metadata = _deep_freeze(self.histories.metadata)
+            if not isinstance(frozen_history_metadata, Mapping):
+                raise RuntimeError("frozen halo history metadata must remain a mapping")
+            frozen_histories = HaloHistoryResult(
+                tracks=frozen_history_tracks,  # type: ignore[arg-type]
+                metadata=frozen_history_metadata,  # type: ignore[arg-type]
+            )
+            sfr_array_replacements = {
+                "t_gyr": (
+                    np.asarray(self.time_gyr_grid).reshape(-1),
+                    _readonly_flat_view(time_grid),
+                ),
+                "z": (
+                    np.asarray(self.redshift_history_grid).reshape(-1),
+                    _readonly_flat_view(float_grids["redshift_history_grid"]),
+                ),
+                "Mh": (
+                    np.asarray(self.halo_mass_msun_grid).reshape(-1),
+                    _readonly_flat_view(float_grids["halo_mass_msun_grid"]),
+                ),
+                "dMh_dt_sfr": (
+                    np.asarray(self.dmh_dt_sfr_msun_per_gyr_grid).reshape(-1),
+                    _readonly_flat_view(
+                        float_grids["dmh_dt_sfr_msun_per_gyr_grid"]
+                    ),
+                ),
+                "active_flag": (
+                    np.asarray(self.active_grid).reshape(-1),
+                    _readonly_flat_view(bool_grids["active_grid"]),
+                ),
+                "SFR": (
+                    np.asarray(self.sfr_msun_per_yr_grid).reshape(-1),
+                    _readonly_flat_view(float_grids["sfr_msun_per_yr_grid"]),
+                ),
+                "SFR_popiii": (
+                    np.asarray(self.popiii_sfr_msun_per_yr_grid).reshape(-1),
+                    _readonly_flat_view(popiii_sfr),
+                ),
+                "fstar_popiii": (
+                    np.asarray(self.popiii_fstar_grid).reshape(-1),
+                    _readonly_flat_view(popiii_fstar),
+                ),
+                "popiii_duty_cycle": (
+                    np.asarray(self.popiii_duty_cycle_grid).reshape(-1),
+                    _readonly_flat_view(popiii_duty),
+                ),
+                "popiii_lower_mass_msun": (
+                    np.asarray(self.popiii_lower_mass_msun_grid).reshape(-1),
+                    _readonly_flat_view(float_grids["popiii_lower_mass_msun_grid"]),
+                ),
+                "popiii_upper_mass_msun": (
+                    np.asarray(self.popiii_upper_mass_msun_grid).reshape(-1),
+                    _readonly_flat_view(float_grids["popiii_upper_mass_msun_grid"]),
+                ),
+                "popiii_source_flag": (
+                    np.asarray(self.popiii_source_grid).reshape(-1),
+                    _readonly_flat_view(popiii_source),
+                ),
+            }
+            frozen_sfr_tracks = _freeze_mapping_reusing_arrays(
+                self.sfr_tracks,
+                replacements=sfr_array_replacements,
+            )
+            object.__setattr__(self, "histories", frozen_histories)
+            object.__setattr__(self, "sfr_tracks", frozen_sfr_tracks)
+        object.__setattr__(self, "redshift_grid", redshift_grid)
+        object.__setattr__(self, "floor_mass_msun", floor_mass)
+        for name, value in float_grids.items():
+            object.__setattr__(self, name, value)
+        for name, value in bool_grids.items():
+            object.__setattr__(self, name, value)
+        for name, value in optional_grids.items():
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedSSPKernels:
+    canonical_age_myr: np.ndarray
+    canonical_luminosity_per_msun: np.ndarray
+    topheavy_age_myr: np.ndarray | None
+    topheavy_luminosity_per_msun: np.ndarray | None
+    popiii_age_myr: np.ndarray | None
+    popiii_luminosity_per_msun: np.ndarray | None
+    canonical_ssp_path: Path
+    topheavy_ssp_path: Path
+    popiii_ssp_path: Path
+    topheavy_ssp_template_metallicity_zsun: float | None
+
+    def __post_init__(self) -> None:
+        pairs = (
+            ("canonical", self.canonical_age_myr, self.canonical_luminosity_per_msun),
+            ("topheavy", self.topheavy_age_myr, self.topheavy_luminosity_per_msun),
+            ("popiii", self.popiii_age_myr, self.popiii_luminosity_per_msun),
+        )
+        for prefix, age_values, luminosity_values in pairs:
+            if (age_values is None) != (luminosity_values is None):
+                raise ValueError(f"{prefix} SSP age and luminosity must be provided together")
+            if age_values is None or luminosity_values is None:
+                continue
+            ages = _readonly_vector(f"{prefix}_age_myr", age_values)
+            luminosity = _readonly_vector(
+                f"{prefix}_luminosity_per_msun",
+                luminosity_values,
+            )
+            if ages.size != luminosity.size:
+                raise ValueError(f"{prefix} SSP age and luminosity arrays must have equal length")
+            if not np.all(np.isfinite(ages)) or np.any(ages <= 0.0) or np.any(np.diff(ages) <= 0.0):
+                raise ValueError(f"{prefix} SSP ages must be finite positive and strictly increasing")
+            if not np.all(np.isfinite(luminosity)) or np.any(luminosity < 0.0):
+                raise ValueError(f"{prefix} SSP luminosity must be finite and non-negative")
+            object.__setattr__(self, f"{prefix}_age_myr", ages)
+            object.__setattr__(self, f"{prefix}_luminosity_per_msun", luminosity)
+        if self.canonical_age_myr is None or self.canonical_luminosity_per_msun is None:
+            raise ValueError("canonical SSP kernels are required")
+        for name in ("canonical_ssp_path", "topheavy_ssp_path", "popiii_ssp_path"):
+            path = getattr(self, name)
+            if not isinstance(path, Path) or not path.is_absolute():
+                raise ValueError(f"{name} must be an absolute pathlib.Path")
+        metallicity = self.topheavy_ssp_template_metallicity_zsun
+        if metallicity is not None:
+            if isinstance(metallicity, (bool, np.bool_)) or not isinstance(
+                metallicity,
+                Real,
+            ):
+                raise TypeError(
+                    "topheavy_ssp_template_metallicity_zsun must be a real non-boolean value"
+                )
+            metallicity = float(metallicity)
+            if not np.isfinite(metallicity) or metallicity <= 0.0:
+                raise ValueError(
+                    "topheavy_ssp_template_metallicity_zsun must be finite and positive"
+                )
+            object.__setattr__(
+                self,
+                "topheavy_ssp_template_metallicity_zsun",
+                metallicity,
+            )
+
+    def __reduce_ex__(self, protocol: int) -> tuple[object, tuple[object, ...]]:
+        del protocol
+        return (
+            _rebuild_loaded_ssp_kernels,
+            (
+                self.canonical_age_myr,
+                self.canonical_luminosity_per_msun,
+                self.topheavy_age_myr,
+                self.topheavy_luminosity_per_msun,
+                self.popiii_age_myr,
+                self.popiii_luminosity_per_msun,
+                self.canonical_ssp_path,
+                self.topheavy_ssp_path,
+                self.popiii_ssp_path,
+                self.topheavy_ssp_template_metallicity_zsun,
+            ),
+        )
+
+
+def _rebuild_loaded_ssp_kernels(
+    canonical_age_myr: object,
+    canonical_luminosity_per_msun: object,
+    topheavy_age_myr: object,
+    topheavy_luminosity_per_msun: object,
+    popiii_age_myr: object,
+    popiii_luminosity_per_msun: object,
+    canonical_ssp_path: object,
+    topheavy_ssp_path: object,
+    popiii_ssp_path: object,
+    topheavy_ssp_template_metallicity_zsun: object,
+) -> LoadedSSPKernels:
+    return LoadedSSPKernels(
+        canonical_age_myr=canonical_age_myr,
+        canonical_luminosity_per_msun=canonical_luminosity_per_msun,
+        topheavy_age_myr=topheavy_age_myr,
+        topheavy_luminosity_per_msun=topheavy_luminosity_per_msun,
+        popiii_age_myr=popiii_age_myr,
+        popiii_luminosity_per_msun=popiii_luminosity_per_msun,
+        canonical_ssp_path=canonical_ssp_path,
+        topheavy_ssp_path=topheavy_ssp_path,
+        popiii_ssp_path=popiii_ssp_path,
+        topheavy_ssp_template_metallicity_zsun=(
+            topheavy_ssp_template_metallicity_zsun
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class HaloModeEvaluation:
+    imf_mode: str
+    uv_luminosity_erg_per_s_hz: np.ndarray
+    canonical_uv_luminosity_erg_per_s_hz: np.ndarray
+    topheavy_uv_luminosity_erg_per_s_hz: np.ndarray
+    popiii_uv_luminosity_erg_per_s_hz: np.ndarray
+    topheavy_source_grid: np.ndarray
+    candidate_topheavy_source_grid: np.ndarray
+    topheavy_light_fraction: np.ndarray
+    popiii_light_fraction: np.ndarray
+    topheavy_source_count: int
+    starforming_source_count: int
+    popiii_source_count: int
+    active_source_count: int
+    uv_convolution_seconds: float
+
+    def __post_init__(self) -> None:
+        mode = validate_imf_mode(self.imf_mode)
+        vectors: dict[str, np.ndarray] = {}
+        for name in (
+            "uv_luminosity_erg_per_s_hz",
+            "canonical_uv_luminosity_erg_per_s_hz",
+            "topheavy_uv_luminosity_erg_per_s_hz",
+            "popiii_uv_luminosity_erg_per_s_hz",
+            "topheavy_light_fraction",
+            "popiii_light_fraction",
+        ):
+            vector = _readonly_vector(name, getattr(self, name))
+            if not np.all(np.isfinite(vector)) or np.any(vector < 0.0):
+                raise ValueError(f"{name} must be finite and non-negative")
+            vectors[name] = vector
+        if len({vector.size for vector in vectors.values()}) != 1:
+            raise ValueError("all HaloModeEvaluation luminosity/fraction vectors must match")
+        total = vectors["uv_luminosity_erg_per_s_hz"]
+        canonical = vectors["canonical_uv_luminosity_erg_per_s_hz"]
+        topheavy = vectors["topheavy_uv_luminosity_erg_per_s_hz"]
+        popiii = vectors["popiii_uv_luminosity_erg_per_s_hz"]
+        if not np.array_equal(total, canonical + topheavy + popiii):
+            raise ValueError(
+                "total UV luminosity must exactly equal the sum of canonical, "
+                "top-heavy, and Pop III components"
+            )
+        positive = total > 0.0
+        expected_topheavy_fraction = np.zeros_like(total)
+        expected_popiii_fraction = np.zeros_like(total)
+        expected_topheavy_fraction[positive] = topheavy[positive] / total[positive]
+        expected_popiii_fraction[positive] = popiii[positive] / total[positive]
+        if not np.array_equal(
+            vectors["topheavy_light_fraction"],
+            expected_topheavy_fraction,
+        ):
+            raise ValueError(
+                "topheavy_light_fraction must exactly match top-heavy / total light"
+            )
+        if not np.array_equal(
+            vectors["popiii_light_fraction"],
+            expected_popiii_fraction,
+        ):
+            raise ValueError(
+                "popiii_light_fraction must exactly match Pop III / total light"
+            )
+        for name in ("topheavy_light_fraction", "popiii_light_fraction"):
+            if np.any(vectors[name] > 1.0):
+                raise ValueError(f"{name} must lie in [0, 1]")
+        grids: dict[str, np.ndarray] = {}
+        for name in ("topheavy_source_grid", "candidate_topheavy_source_grid"):
+            grid = _readonly_grid(name, getattr(self, name), boolean=True)
+            if grid.shape[0] != vectors["uv_luminosity_erg_per_s_hz"].size:
+                raise ValueError(f"{name} halo axis must match luminosity vectors")
+            grids[name] = grid
+        if grids["topheavy_source_grid"].shape != grids["candidate_topheavy_source_grid"].shape:
+            raise ValueError("topheavy source grids must have identical shapes")
+        if np.any(
+            grids["topheavy_source_grid"]
+            & ~grids["candidate_topheavy_source_grid"]
+        ):
+            raise ValueError("topheavy_source_grid must be a subset of candidate mask")
+        for name in (
+            "topheavy_source_count",
+            "starforming_source_count",
+            "popiii_source_count",
+            "active_source_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+                raise TypeError(f"{name} must be an integer non-boolean count")
+            if int(value) < 0:
+                raise ValueError(f"{name} must be non-negative")
+            object.__setattr__(self, name, int(value))
+        if self.topheavy_source_count != int(
+            np.count_nonzero(grids["topheavy_source_grid"])
+        ):
+            raise ValueError("topheavy_source_count must equal the source mask count")
+        cell_count = int(grids["topheavy_source_grid"].size)
+        if self.active_source_count > cell_count:
+            raise ValueError(
+                f"active_source_count ({self.active_source_count}) must not exceed "
+                f"the top-heavy grid cell count ({cell_count})"
+            )
+        if self.starforming_source_count > self.active_source_count:
+            raise ValueError(
+                f"starforming_source_count ({self.starforming_source_count}) must not "
+                f"exceed active_source_count ({self.active_source_count})"
+            )
+        candidate_count = int(
+            np.count_nonzero(grids["candidate_topheavy_source_grid"])
+        )
+        if candidate_count > self.starforming_source_count:
+            raise ValueError(
+                f"candidate source count ({candidate_count}) must not exceed "
+                f"starforming_source_count ({self.starforming_source_count})"
+            )
+        if self.topheavy_source_count > candidate_count:
+            raise ValueError(
+                f"topheavy_source_count ({self.topheavy_source_count}) must not exceed "
+                f"candidate source count ({candidate_count})"
+            )
+        if self.popiii_source_count > self.active_source_count:
+            raise ValueError("popiii_source_count must not exceed active_source_count")
+        if mode == IMF_MODE_CANONICAL and (
+            np.any(topheavy != 0.0)
+            or np.any(vectors["topheavy_light_fraction"] != 0.0)
+            or np.any(grids["topheavy_source_grid"])
+            or np.any(grids["candidate_topheavy_source_grid"])
+            or self.topheavy_source_count != 0
+        ):
+            raise ValueError(
+                "canonical mode requires all top-heavy components, fractions, masks, "
+                "candidate masks, and counts to be zero"
+            )
+        if isinstance(self.uv_convolution_seconds, (bool, np.bool_)) or not isinstance(
+            self.uv_convolution_seconds,
+            Real,
+        ):
+            raise TypeError("uv_convolution_seconds must be a real non-boolean value")
+        seconds = float(self.uv_convolution_seconds)
+        if not np.isfinite(seconds) or seconds < 0.0:
+            raise ValueError("uv_convolution_seconds must be finite and non-negative")
+        object.__setattr__(self, "imf_mode", mode)
+        object.__setattr__(self, "uv_convolution_seconds", seconds)
+        for name, value in vectors.items():
+            object.__setattr__(self, name, value)
+        for name, value in grids.items():
+            object.__setattr__(self, name, value)
+
+
 _UV_WORKER_STATE: dict[str, np.ndarray] = {}
 
 
@@ -101,6 +893,7 @@ def _build_astropy_cosmology(cosmology: Cosmology) -> FlatLambdaCDM:
 
 
 def _init_uv_worker(ssp_luv_grid: np.ndarray) -> None:
+    _reject_boolean_values("ssp_luv_grid", ssp_luv_grid)
     _UV_WORKER_STATE["ssp_luv_grid"] = np.asarray(ssp_luv_grid, dtype=float)
 
 
@@ -109,31 +902,44 @@ def _compute_uv_chunk(
 ) -> np.ndarray:
     t_grid, mh_chunk, sfr_chunk, active_chunk, ssp_age_grid, ssp_lookback_max_myr = args
     ssp_luv_grid = _UV_WORKER_STATE["ssp_luv_grid"]
+    for name, values in (
+        ("t_grid", t_grid),
+        ("mh_grid", mh_chunk),
+        ("sfr_grid", sfr_chunk),
+        ("ssp_age_grid", ssp_age_grid),
+        ("ssp_luv_grid", ssp_luv_grid),
+    ):
+        _reject_boolean_values(name, values)
+    _reject_boolean_scalar("ssp_lookback_max_myr", ssp_lookback_max_myr)
 
-    result = np.empty(mh_chunk.shape[0], dtype=float)
-    for row_index in range(mh_chunk.shape[0]):
-        active = np.asarray(active_chunk[row_index], dtype=bool)
-        if not np.any(active):
-            result[row_index] = 0.0
-            continue
+    time = np.asarray(t_grid, dtype=float)
+    halo_mass = np.asarray(mh_chunk, dtype=float)
+    sfr = np.asarray(sfr_chunk, dtype=float)
+    active = np.asarray(active_chunk)
+    if time.shape != sfr.shape or halo_mass.shape != sfr.shape or active.shape != sfr.shape:
+        raise ValueError("UV worker time, halo-mass, SFR, and active grids must have identical shapes")
+    if active.dtype != np.dtype(bool):
+        raise ValueError("UV worker active grid must have boolean dtype")
 
-        t_used = np.asarray(t_grid[active], dtype=float)
-        mh_used = np.asarray(mh_chunk[row_index][active], dtype=float)
-        sfr_used = np.asarray(sfr_chunk[row_index][active], dtype=float)
+    legacy_ssp_age_gyr = np.asarray(ssp_age_grid, dtype=float)
+    ssp_luv = np.asarray(ssp_luv_grid, dtype=float)
+    if legacy_ssp_age_gyr.ndim != 1 or ssp_luv.ndim != 1:
+        raise ValueError("legacy SSP age and luminosity grids must be 1D")
+    if legacy_ssp_age_gyr.size != ssp_luv.size:
+        raise ValueError("legacy SSP age and luminosity grids must have the same length")
+    order = np.argsort(legacy_ssp_age_gyr, kind="stable")
+    with np.errstate(over="ignore", invalid="ignore"):
+        ssp_age_myr = legacy_ssp_age_gyr[order] * 1.0e3
 
-        result[row_index] = compute_halo_uv_luminosity(
-            t_obs=float(t_used[-1]),
-            t_history=t_used,
-            mh_history=mh_used,
-            sfr_history=sfr_used,
-            ssp_age_grid=ssp_age_grid,
-            ssp_luv_grid=ssp_luv_grid,
-            M_min=0.0,
-            t_z50=float(t_used[0]),
-            time_unit_in_years=YEARS_PER_GYR,
-            ssp_lookback_max_myr=ssp_lookback_max_myr,
-        )
-    return result
+    return compute_final_ssp_observable_from_sfr_grid(
+        t_grid_gyr=time,
+        sfr_grid=sfr,
+        active_grid=active,
+        ssp_age_myr=ssp_age_myr,
+        ssp_observable_per_msun=ssp_luv[order],
+        lookback_max_myr=ssp_lookback_max_myr,
+        time_unit_in_years=YEARS_PER_GYR,
+    )
 
 
 def compute_uv_luminosities_parallel(
@@ -146,24 +952,75 @@ def compute_uv_luminosities_parallel(
     n_workers: int,
     ssp_lookback_max_myr: float,
 ) -> np.ndarray:
-    if n_workers <= 1:
-        _init_uv_worker(ssp_luv_grid)
-        return _compute_uv_chunk((t_grid, mh_grid, sfr_grid, active_grid, ssp_age_grid, ssp_lookback_max_myr))
+    for name, values in (
+        ("t_grid", t_grid),
+        ("mh_grid", mh_grid),
+        ("sfr_grid", sfr_grid),
+        ("ssp_age_grid", ssp_age_grid),
+        ("ssp_luv_grid", ssp_luv_grid),
+    ):
+        _reject_boolean_values(name, values)
+    _reject_boolean_scalar("ssp_lookback_max_myr", ssp_lookback_max_myr)
 
-    chunk_count = min(n_workers, mh_grid.shape[0])
-    mh_chunks = np.array_split(mh_grid, chunk_count, axis=0)
-    sfr_chunks = np.array_split(sfr_grid, chunk_count, axis=0)
-    active_chunks = np.array_split(active_grid, chunk_count, axis=0)
+    if isinstance(n_workers, (bool, np.bool_)) or not isinstance(
+        n_workers,
+        (int, np.integer),
+    ):
+        raise ValueError("n_workers must be a positive non-boolean integer")
+    if int(n_workers) <= 0:
+        raise ValueError("n_workers must be a positive non-boolean integer")
+    worker_count = int(n_workers)
+    time = np.asarray(t_grid, dtype=float)
+    halo_mass = np.asarray(mh_grid, dtype=float)
+    sfr = np.asarray(sfr_grid, dtype=float)
+    active = np.asarray(active_grid)
+    if sfr.ndim != 2 or sfr.size == 0:
+        raise ValueError("mh_grid, sfr_grid, and active_grid must be non-empty 2D arrays")
+    if halo_mass.shape != sfr.shape or active.shape != sfr.shape:
+        raise ValueError("mh_grid, sfr_grid, and active_grid must have identical shapes")
+    if active.dtype != np.dtype(bool):
+        raise ValueError("active_grid must have boolean dtype")
+    if time.ndim == 1 and time.size == sfr.shape[1]:
+        time_rows = np.broadcast_to(time, sfr.shape)
+    elif time.ndim == 2 and time.shape == sfr.shape:
+        time_rows = time
+    else:
+        raise ValueError("t_grid must be shared 1D or match the 2D SFR grid")
+    if not np.all(np.isfinite(time_rows)):
+        raise ValueError("t_grid must contain only finite values")
+    with np.errstate(over="ignore", invalid="ignore"):
+        time_deltas = np.diff(time_rows, axis=1)
+    if not np.all(np.isfinite(time_deltas)) or np.any(time_deltas <= 0.0):
+        raise ValueError("each shared or row t_grid must be strictly increasing")
+
+    if worker_count == 1:
+        _init_uv_worker(ssp_luv_grid)
+        return _compute_uv_chunk(
+            (time_rows, halo_mass, sfr, active, ssp_age_grid, ssp_lookback_max_myr)
+        )
+
+    chunk_count = min(worker_count, halo_mass.shape[0])
+    time_chunks = np.array_split(time_rows, chunk_count, axis=0)
+    mh_chunks = np.array_split(halo_mass, chunk_count, axis=0)
+    sfr_chunks = np.array_split(sfr, chunk_count, axis=0)
+    active_chunks = np.array_split(active, chunk_count, axis=0)
     tasks = [
-        (t_grid, mh_chunk, sfr_chunk, active_chunk, ssp_age_grid, ssp_lookback_max_myr)
-        for mh_chunk, sfr_chunk, active_chunk in zip(mh_chunks, sfr_chunks, active_chunks, strict=True)
+        (time_chunk, mh_chunk, sfr_chunk, active_chunk, ssp_age_grid, ssp_lookback_max_myr)
+        for time_chunk, mh_chunk, sfr_chunk, active_chunk in zip(
+            time_chunks,
+            mh_chunks,
+            sfr_chunks,
+            active_chunks,
+            strict=True,
+        )
     ]
 
     outputs: list[np.ndarray] = []
     with ProcessPoolExecutor(
-        max_workers=n_workers,
+        max_workers=worker_count,
         initializer=_init_uv_worker,
         initargs=(np.asarray(ssp_luv_grid, dtype=float),),
+        mp_context=multiprocessing.get_context("spawn"),
     ) as executor:
         for chunk_output in executor.map(_compute_uv_chunk, tasks):
             outputs.append(np.asarray(chunk_output, dtype=float))
@@ -203,16 +1060,30 @@ def _apply_burst_scatter_to_sfr_grid(
 ) -> tuple[np.ndarray, np.ndarray]:
     scatter_dex = float(scatter_dex)
     correlation_timescale_myr = float(correlation_timescale_myr)
+    if not np.isfinite(scatter_dex):
+        raise ValueError("burst_scatter_dex must be finite")
     if scatter_dex < 0.0:
         raise ValueError("burst_scatter_dex must be non-negative")
-    if correlation_timescale_myr <= 0.0:
-        raise ValueError("burst_scatter_timescale_myr must be positive")
+    if not np.isfinite(correlation_timescale_myr) or correlation_timescale_myr <= 0.0:
+        raise ValueError("burst_scatter_timescale_myr must be finite and positive")
 
     sfr = np.asarray(sfr_grid, dtype=float)
     active = np.asarray(active_grid, dtype=bool)
     time = np.asarray(t_grid, dtype=float)
     if sfr.shape != active.shape or sfr.shape != time.shape:
         raise ValueError("sfr_grid, active_grid, and t_grid must have the same shape")
+    if sfr.ndim != 2:
+        raise ValueError("sfr_grid, active_grid, and t_grid must be two-dimensional")
+    with np.errstate(over="ignore", invalid="ignore"):
+        time_deltas = np.diff(time, axis=1)
+    if (
+        not np.all(np.isfinite(time))
+        or not np.all(np.isfinite(time_deltas))
+        or np.any(time_deltas <= 0.0)
+    ):
+        raise ValueError("each t_grid row must be finite and strictly increasing")
+    if not np.all(np.isfinite(sfr)) or np.any(sfr < 0.0):
+        raise ValueError("sfr_grid values must be finite and non-negative")
 
     multiplier = np.ones_like(sfr, dtype=float)
     if scatter_dex == 0.0:
@@ -220,31 +1091,111 @@ def _apply_burst_scatter_to_sfr_grid(
 
     rng = np.random.default_rng(random_seed)
     correlation_gyr = correlation_timescale_myr / 1.0e3
+    if not np.isfinite(correlation_gyr) or correlation_gyr <= 0.0:
+        raise ValueError(
+            "burst_scatter_timescale_myr cannot be represented as a positive Gyr interval"
+        )
     burst_sfr = sfr.copy()
-    source_grid = active & np.isfinite(sfr) & (sfr > 0.0) & np.isfinite(time)
+    source_grid = active & (sfr > 0.0)
     for halo_index in range(sfr.shape[0]):
+        time_row = time[halo_index]
+        sfr_row = sfr[halo_index]
+        with np.errstate(over="ignore", invalid="ignore"):
+            original_mass = float(np.trapezoid(sfr_row, time_row))
+        if not np.isfinite(original_mass):
+            raise RuntimeError("original SFR integration must be finite")
+
         source = source_grid[halo_index]
         if not np.any(source):
+            with np.errstate(over="ignore", invalid="ignore"):
+                burst_mass = float(np.trapezoid(burst_sfr[halo_index], time_row))
+            if not np.isfinite(burst_mass):
+                raise RuntimeError("final burst SFR integration must be finite")
             continue
+
+        original_source_mass: float | None = None
+        if preserve_mean:
+            source_sfr_row = np.zeros_like(sfr_row)
+            source_sfr_row[source] = sfr_row[source]
+            with np.errstate(over="ignore", invalid="ignore"):
+                original_source_mass = float(np.trapezoid(source_sfr_row, time_row))
+            if not np.isfinite(original_source_mass):
+                raise RuntimeError("burst SFR source normalization integral must be finite")
+            if original_source_mass <= 0.0:
+                raise RuntimeError(
+                    "mass-conserving burst scatter requires positive full-grid integration support"
+                )
+
         first_time = float(time[halo_index, np.flatnonzero(source)[0]])
-        segment_ids = np.floor((time[halo_index, source] - first_time) / correlation_gyr).astype(np.int64)
-        row_multiplier = _draw_burst_multiplier_for_segments(
-            rng=rng,
-            segment_ids=segment_ids,
-            scatter_dex=scatter_dex,
-            preserve_mean=preserve_mean,
-        )
-        if preserve_mean and row_multiplier.size >= 2:
-            source_time = time[halo_index, source]
-            if np.any(np.diff(source_time) <= 0.0):
-                raise ValueError("t_grid values for active SFR bins must be strictly increasing")
-            original_mass = float(np.trapezoid(sfr[halo_index, source], source_time))
-            burst_mass = float(np.trapezoid(sfr[halo_index, source] * row_multiplier, source_time))
-            if burst_mass <= 0.0:
-                raise RuntimeError("burst SFR normalization integral must be positive")
-            row_multiplier = row_multiplier * (original_mass / burst_mass)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            segment_ratios = (time[halo_index, source] - first_time) / correlation_gyr
+            floored_segment_ratios = np.floor(segment_ratios)
+        int64_upper_exclusive = float(2**63)
+        if (
+            not np.all(np.isfinite(floored_segment_ratios))
+            or np.any(floored_segment_ratios < 0.0)
+            or np.any(floored_segment_ratios >= int64_upper_exclusive)
+        ):
+            raise ValueError(
+                "burst correlation segment ids cannot be represented as non-negative int64"
+            )
+        segment_ids = floored_segment_ratios.astype(np.int64)
+        with np.errstate(over="ignore", invalid="ignore"):
+            row_multiplier = _draw_burst_multiplier_for_segments(
+                rng=rng,
+                segment_ids=segment_ids,
+                scatter_dex=scatter_dex,
+                preserve_mean=preserve_mean,
+            )
+        if not np.all(np.isfinite(row_multiplier)) or np.any(row_multiplier <= 0.0):
+            raise RuntimeError("burst SFR multipliers must be finite and positive")
+
+        raw_burst_row = sfr_row.copy()
+        with np.errstate(over="ignore", invalid="ignore"):
+            raw_burst_row[source] = sfr_row[source] * row_multiplier
+            raw_burst_mass = float(np.trapezoid(raw_burst_row, time_row))
+        if not np.isfinite(raw_burst_mass):
+            raise RuntimeError("burst SFR normalization integral must be finite")
+        if original_mass > 0.0 and raw_burst_mass <= 0.0:
+            raise RuntimeError("positive original SFR mass requires positive burst SFR mass")
+
+        if preserve_mean:
+            if original_source_mass is None:
+                raise RuntimeError("missing burst SFR source normalization integral")
+            raw_burst_source_row = np.zeros_like(sfr_row)
+            with np.errstate(over="ignore", invalid="ignore"):
+                raw_burst_source_row[source] = sfr_row[source] * row_multiplier
+                raw_burst_source_mass = float(np.trapezoid(raw_burst_source_row, time_row))
+            if not np.isfinite(raw_burst_source_mass):
+                raise RuntimeError("burst SFR source normalization integral must be finite")
+            if raw_burst_source_mass <= 0.0:
+                raise RuntimeError("burst SFR source normalization integral must be positive")
+            with np.errstate(over="ignore", invalid="ignore"):
+                row_multiplier = row_multiplier * (
+                    original_source_mass / raw_burst_source_mass
+                )
+
+        if not np.all(np.isfinite(row_multiplier)) or np.any(row_multiplier <= 0.0):
+            raise RuntimeError("normalized burst SFR multipliers must be finite and positive")
+
         multiplier[halo_index, source] = row_multiplier
-        burst_sfr[halo_index, source] = sfr[halo_index, source] * row_multiplier
+        with np.errstate(over="ignore", invalid="ignore"):
+            burst_sfr[halo_index, source] = sfr[halo_index, source] * row_multiplier
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            burst_mass = float(np.trapezoid(burst_sfr[halo_index], time_row))
+        if not np.isfinite(burst_mass):
+            raise RuntimeError("final burst SFR integration must be finite")
+        if preserve_mean and not np.isclose(
+            burst_mass,
+            original_mass,
+            rtol=1.0e-12,
+            atol=0.0,
+        ):
+            raise RuntimeError("mass-conserving burst SFR normalization failed")
+
+    if not np.all(np.isfinite(burst_sfr)) or np.any(burst_sfr < 0.0):
+        raise RuntimeError("final burst SFR must be finite and non-negative")
 
     return burst_sfr, multiplier
 
@@ -260,82 +1211,6 @@ def _resolve_regular_time_grid(t_grid: np.ndarray) -> np.ndarray | None:
     return time_row
 
 
-def _integrate_final_uv_components_single_halo_regular_grid(
-    time_row: np.ndarray,
-    sfr_row: np.ndarray,
-    active_row: np.ndarray,
-    topheavy_source_flag_row: np.ndarray,
-    ssp_age_grid: np.ndarray,
-    ssp_luv_grid: np.ndarray,
-    topheavy_ssp_age_grid: np.ndarray | None,
-    topheavy_ssp_luv_grid: np.ndarray | None,
-    ssp_lookback_max_myr: float,
-) -> tuple[float, float]:
-    active = np.asarray(active_row, dtype=bool)
-    if not np.any(active):
-        return 0.0, 0.0
-
-    t_obs = float(time_row[-1])
-    max_lookback_gyr = float(ssp_lookback_max_myr) / 1.0e3
-    first_active = int(np.argmax(active))
-    lower = max(float(time_row[first_active]), t_obs - max_lookback_gyr)
-    if lower >= t_obs:
-        return 0.0, 0.0
-
-    start = int(np.searchsorted(time_row, lower, side="left"))
-    t_used = np.asarray(time_row[start:], dtype=float)
-    sfr_used = np.asarray(sfr_row[start:], dtype=float)
-    active_used = np.asarray(active[start:], dtype=bool)
-    topheavy_used = np.asarray(topheavy_source_flag_row[start:], dtype=bool)
-
-    if t_used.size == 0:
-        return 0.0, 0.0
-
-    if lower < float(t_used[0]):
-        left = start - 1
-        right = start
-        t_left = float(time_row[left])
-        t_right = float(time_row[right])
-        sfr_left = float(sfr_row[left])
-        sfr_right = float(sfr_row[right])
-        weight = 0.0 if t_right <= t_left else (lower - t_left) / (t_right - t_left)
-        sfr_lower = sfr_left + weight * (sfr_right - sfr_left)
-        t_used = np.concatenate((np.array([lower], dtype=float), t_used))
-        sfr_used = np.concatenate((np.array([sfr_lower], dtype=float), sfr_used))
-        active_used = np.concatenate((np.array([True], dtype=bool), active_used))
-        topheavy_lower = bool(topheavy_source_flag_row[left])
-        topheavy_used = np.concatenate((np.array([topheavy_lower], dtype=bool), topheavy_used))
-
-    if np.count_nonzero(active_used) < 2:
-        return 0.0, 0.0
-
-    age_used = np.maximum(t_obs - t_used, 0.0)
-    canonical_kernel = np.asarray(
-        interpolate_ssp_luminosity(age_used, ssp_age_grid=ssp_age_grid, ssp_luv_grid=ssp_luv_grid),
-        dtype=float,
-    )
-    if topheavy_ssp_age_grid is None or topheavy_ssp_luv_grid is None:
-        topheavy_used = np.zeros_like(active_used, dtype=bool)
-        topheavy_kernel = canonical_kernel
-    else:
-        topheavy_kernel = np.asarray(
-            interpolate_ssp_luminosity(
-                age_used,
-                ssp_age_grid=topheavy_ssp_age_grid,
-                ssp_luv_grid=topheavy_ssp_luv_grid,
-            ),
-            dtype=float,
-        )
-
-    source_rate = np.where(active_used, sfr_used, 0.0)
-    canonical_integrand = np.where(topheavy_used, 0.0, source_rate * canonical_kernel)
-    topheavy_integrand = np.where(topheavy_used, source_rate * topheavy_kernel, 0.0)
-    x_years = t_used * YEARS_PER_GYR
-    canonical_luv = float(np.trapezoid(canonical_integrand, x=x_years))
-    topheavy_luv = float(np.trapezoid(topheavy_integrand, x=x_years))
-    return canonical_luv, topheavy_luv
-
-
 def _compute_final_uv_luminosity_components_vectorized(
     t_grid: np.ndarray,
     sfr_grid: np.ndarray,
@@ -347,26 +1222,469 @@ def _compute_final_uv_luminosity_components_vectorized(
     topheavy_ssp_luv_grid: np.ndarray | None,
     ssp_lookback_max_myr: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    time_row = _resolve_regular_time_grid(t_grid)
+    """Convolve canonical and top-heavy source masks with SSP ages in Myr."""
+
+    for name, values in (
+        ("t_grid", t_grid),
+        ("sfr_grid", sfr_grid),
+        ("ssp_age_grid", ssp_age_grid),
+        ("ssp_luv_grid", ssp_luv_grid),
+    ):
+        _reject_boolean_values(name, values)
+    if topheavy_ssp_age_grid is not None:
+        _reject_boolean_values("topheavy_ssp_age_grid", topheavy_ssp_age_grid)
+    if topheavy_ssp_luv_grid is not None:
+        _reject_boolean_values("topheavy_ssp_luv_grid", topheavy_ssp_luv_grid)
+    _reject_boolean_scalar("ssp_lookback_max_myr", ssp_lookback_max_myr)
+
+    time = np.asarray(t_grid, dtype=float)
+    sfr = np.asarray(sfr_grid, dtype=float)
+    canonical_ssp_age = np.asarray(ssp_age_grid, dtype=float)
+    canonical_ssp_luv = np.asarray(ssp_luv_grid, dtype=float)
+    topheavy_ssp_age = (
+        None
+        if topheavy_ssp_age_grid is None
+        else np.asarray(topheavy_ssp_age_grid, dtype=float)
+    )
+    topheavy_ssp_luv = (
+        None
+        if topheavy_ssp_luv_grid is None
+        else np.asarray(topheavy_ssp_luv_grid, dtype=float)
+    )
+
+    time_row = _resolve_regular_time_grid(time)
     if time_row is None:
         raise ValueError("vectorized final UV convolution requires a shared regular time grid")
-    canonical_result = np.empty(sfr_grid.shape[0], dtype=float)
-    topheavy_result = np.empty(sfr_grid.shape[0], dtype=float)
-    for halo_index in range(sfr_grid.shape[0]):
-        canonical_luv, topheavy_luv = _integrate_final_uv_components_single_halo_regular_grid(
-            time_row=time_row,
-            sfr_row=np.asarray(sfr_grid[halo_index], dtype=float),
-            active_row=np.asarray(active_grid[halo_index], dtype=bool),
-            topheavy_source_flag_row=np.asarray(topheavy_source_flag_grid[halo_index], dtype=bool),
-            ssp_age_grid=ssp_age_grid,
-            ssp_luv_grid=ssp_luv_grid,
-            topheavy_ssp_age_grid=topheavy_ssp_age_grid,
-            topheavy_ssp_luv_grid=topheavy_ssp_luv_grid,
+    del time_row
+    active = np.asarray(active_grid)
+    topheavy_source = np.asarray(topheavy_source_flag_grid)
+    if active.dtype != np.dtype(bool) or topheavy_source.dtype != np.dtype(bool):
+        raise ValueError("active_grid and topheavy_source_flag_grid must have boolean dtype")
+    if time.shape != sfr.shape or time.shape != active.shape or time.shape != topheavy_source.shape:
+        raise ValueError(
+            "t_grid, sfr_grid, active_grid, and topheavy_source_flag_grid must have identical shapes"
+        )
+    if (topheavy_ssp_age is None) != (topheavy_ssp_luv is None):
+        raise ValueError("top-heavy SSP age and luminosity grids must be provided together")
+
+    if topheavy_ssp_age is None:
+        canonical_source = active
+    else:
+        canonical_source = active & ~topheavy_source
+    canonical_result = compute_final_ssp_observable_from_sfr_grid(
+        t_grid_gyr=time,
+        sfr_grid=sfr,
+        active_grid=canonical_source,
+        ssp_age_myr=canonical_ssp_age,
+        ssp_observable_per_msun=canonical_ssp_luv,
+        lookback_max_myr=ssp_lookback_max_myr,
+        time_unit_in_years=YEARS_PER_GYR,
+    )
+
+    if topheavy_ssp_age is None or topheavy_ssp_luv is None:
+        topheavy_result = np.zeros_like(canonical_result, dtype=float)
+    else:
+        topheavy_result = compute_final_ssp_observable_from_sfr_grid(
+            t_grid_gyr=time,
+            sfr_grid=sfr,
+            active_grid=active & topheavy_source,
+            ssp_age_myr=topheavy_ssp_age,
+            ssp_observable_per_msun=topheavy_ssp_luv,
+            lookback_max_myr=ssp_lookback_max_myr,
+            time_unit_in_years=YEARS_PER_GYR,
+        )
+    return canonical_result, topheavy_result
+
+
+def prepare_shared_halo_batch(
+    n_tracks: int,
+    z_final: float,
+    Mh_final: float,
+    *,
+    cosmology: Cosmology,
+    random_seeds: PipelineRandomSeeds,
+    mass_index: int = 0,
+    z_start_max: float = 50.0,
+    n_grid: int = 240,
+    enable_popiii: bool = False,
+    popiii_sfr_parameters: PopIIISFRParameters = DEFAULT_POPIII_SFR_PARAMETERS,
+    sampler: str = "mcbride",
+    mah_backend: str = MAH_BACKEND_MCBRIDE,
+    tng_mah_cache_path: str | Path | None = None,
+    tng_mass_bin_width_dex: float = 0.15,
+    tng_min_candidates: int = 5,
+    tng_smoothing_myr: float = 0.0,
+    tng_time_grid_mode: str = TNG_TIME_GRID_SNAPSHOT,
+    thesan_mah_cache_path: str | Path | None = None,
+    thesan_mass_bin_width_dex: float = 0.15,
+    thesan_min_candidates: int = 5,
+    thesan_smoothing_myr: float = 0.0,
+    thesan_time_grid_mode: str = THESAN_TIME_GRID_SNAPSHOT,
+    enable_time_delay: bool = False,
+    burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
+    sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
+    mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
+    regulator_metallicity_parameters: RegulatorMetallicityParameters | None = None,
+    burst_scatter_dex: float = 0.0,
+    burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
+    burst_scatter_preserve_mean: bool = True,
+    _mutable_result_sources: dict[str, object] | None = None,
+) -> SharedHaloBatch:
+    """Generate mode-independent MAH, SFR, Pop III, and metallicity grids once."""
+
+    del mass_index
+    mah_backend = validate_mah_backend(mah_backend)
+    if type(cosmology) is not Cosmology:
+        raise TypeError("cosmology must be exactly Cosmology")
+    if type(random_seeds) is not PipelineRandomSeeds:
+        raise TypeError("random_seeds must be exactly PipelineRandomSeeds")
+    if int(n_grid) < 2:
+        raise ValueError("n_grid must be at least 2")
+    source_count = sum(
+        source is not None
+        for source in (mzr_metallicity_parameters, regulator_metallicity_parameters)
+    )
+    if source_count > 1:
+        raise ValueError("provide only one birth metallicity source")
+    astro = _build_astropy_cosmology(cosmology)
+    t_start_gyr = float(astro.age(z_start_max).value)
+    t_end_gyr = float(astro.age(z_final).value)
+    dt_gyr = (t_end_gyr - t_start_gyr) / float(int(n_grid) - 1)
+
+    started = time.perf_counter()
+    if mah_backend == MAH_BACKEND_MCBRIDE:
+        mah_mass_floor = None
+        if enable_popiii:
+            mah_mass_floor = lambda redshift: compute_popiii_lw_minimum_mass_msun(
+                redshift,
+                lw_background_j21=float(popiii_sfr_parameters.lw_background_j21),
+            )
+        histories = generate_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            z_start_max=z_start_max,
+            M_min=mah_mass_floor,
+            cosmology=cosmology,
+            random_seed=random_seeds.mah,
+            time_grid_mode="uniform_in_t",
+            dt=dt_gyr,
+            store_inactive_history=True,
+            sampler=sampler,
+        )
+    elif mah_backend == MAH_BACKEND_TNG:
+        if tng_mah_cache_path is None:
+            raise ValueError("tng_mah_cache_path is required when mah_backend='tng'")
+        histories = generate_tng_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            cosmology=cosmology,
+            cache_path=tng_mah_cache_path,
+            z_start_max=z_start_max,
+            mass_bin_width_dex=tng_mass_bin_width_dex,
+            min_candidates=tng_min_candidates,
+            smoothing_myr=tng_smoothing_myr,
+            random_seed=random_seeds.mah,
+            time_grid_mode=tng_time_grid_mode,
+            target_n_grid=int(n_grid)
+            if str(tng_time_grid_mode).strip().lower() == TNG_TIME_GRID_UNIFORM_IN_T
+            else None,
+        )
+    elif mah_backend == MAH_BACKEND_THESAN:
+        if thesan_mah_cache_path is None:
+            raise ValueError("thesan_mah_cache_path is required when mah_backend='thesan'")
+        histories = generate_thesan_halo_histories(
+            n_tracks=n_tracks,
+            z_final=z_final,
+            Mh_final=Mh_final,
+            cosmology=cosmology,
+            cache_path=thesan_mah_cache_path,
+            z_start_max=z_start_max,
+            mass_bin_width_dex=thesan_mass_bin_width_dex,
+            min_candidates=thesan_min_candidates,
+            smoothing_myr=thesan_smoothing_myr,
+            random_seed=random_seeds.mah,
+            time_grid_mode=thesan_time_grid_mode,
+            target_n_grid=int(n_grid)
+            if str(thesan_time_grid_mode).strip().lower() == THESAN_TIME_GRID_UNIFORM_IN_T
+            else None,
+        )
+    else:  # pragma: no cover
+        raise RuntimeError(f"unsupported mah_backend after validation: {mah_backend}")
+    after_mah = time.perf_counter()
+
+    redshift_grid = np.unique(np.asarray(histories.tracks["z"], dtype=float))[::-1]
+    sfr_tracks = compute_sfr_from_tracks(
+        histories.tracks,
+        cosmology=cosmology,
+        enable_time_delay=enable_time_delay,
+        burst_lookback_max_myr=burst_lookback_max_myr,
+        model_parameters=sfr_model_parameters,
+    )
+    halo_ids = np.asarray(sfr_tracks["halo_id"], dtype=int)
+    n_halos = np.unique(halo_ids).size
+    steps_per_halo = redshift_grid.size
+    shape = (n_halos, steps_per_halo)
+    t_grid = np.asarray(sfr_tracks["t_gyr"], dtype=float).reshape(shape)
+    mh_grid = np.asarray(sfr_tracks["Mh"], dtype=float).reshape(shape)
+    dmhdt_sfr_grid = np.asarray(sfr_tracks["dMh_dt_sfr"], dtype=float).reshape(shape)
+    sfr_grid = np.asarray(sfr_tracks["SFR"], dtype=float).reshape(shape)
+    active_grid = np.asarray(sfr_tracks["active_flag"], dtype=bool).reshape(shape)
+    z_grid = np.asarray(sfr_tracks["z"], dtype=float).reshape(shape)
+    sfr_grid, burst_multiplier = _apply_burst_scatter_to_sfr_grid(
+        sfr_grid=sfr_grid,
+        active_grid=active_grid,
+        t_grid=t_grid,
+        scatter_dex=float(burst_scatter_dex),
+        correlation_timescale_myr=float(burst_scatter_timescale_myr),
+        random_seed=random_seeds.burst,
+        preserve_mean=bool(burst_scatter_preserve_mean),
+    )
+    sfr_tracks["SFR"] = sfr_grid.reshape(-1)
+
+    if enable_popiii:
+        popiii = compute_popiii_sfr_from_grids(
+            mh_grid=mh_grid,
+            dmhdt_sfr_grid=dmhdt_sfr_grid,
+            z_grid=z_grid,
+            active_grid=active_grid,
+            cosmology=cosmology,
+            parameters=popiii_sfr_parameters,
+        )
+        popiii_sfr = np.asarray(popiii.sfr_grid, dtype=float)
+        popiii_fstar = np.asarray(popiii.fstar_grid, dtype=float)
+        popiii_duty = np.asarray(popiii.duty_cycle_grid, dtype=float)
+        popiii_lower = np.asarray(popiii.lower_mass_msun_grid, dtype=float)
+        popiii_upper = np.asarray(popiii.upper_mass_msun_grid, dtype=float)
+        popiii_source = active_grid & np.isfinite(popiii_sfr) & (popiii_sfr > 0.0)
+    else:
+        popiii_sfr = np.zeros_like(sfr_grid)
+        popiii_source = np.zeros_like(active_grid)
+        popiii_fstar = np.zeros_like(sfr_grid)
+        popiii_duty = np.zeros_like(sfr_grid)
+        popiii_lower = np.full_like(sfr_grid, np.nan)
+        popiii_upper = np.full_like(sfr_grid, np.nan)
+    sfr_tracks["SFR_popiii"] = popiii_sfr.reshape(-1)
+    sfr_tracks["fstar_popiii"] = popiii_fstar.reshape(-1)
+    sfr_tracks["popiii_duty_cycle"] = popiii_duty.reshape(-1)
+    sfr_tracks["popiii_lower_mass_msun"] = popiii_lower.reshape(-1)
+    sfr_tracks["popiii_upper_mass_msun"] = popiii_upper.reshape(-1)
+    sfr_tracks["popiii_source_flag"] = popiii_source.reshape(-1)
+    starforming = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
+
+    birth_metallicity = None
+    gas_metallicity = None
+    metal_mass = None
+    gas_mass = None
+    metallicity_source = "none"
+    if mzr_metallicity_parameters is not None:
+        mzr = compute_mzr_birth_metallicity(
+            t_grid_gyr=t_grid,
+            z_grid=z_grid,
+            sfr_grid=sfr_grid,
+            active_grid=starforming,
+            parameters=mzr_metallicity_parameters,
+            random_seed=random_seeds.metallicity,
+        )
+        birth_metallicity = np.asarray(mzr.birth_metallicity_zsun_grid, dtype=float)
+        metallicity_source = "mzr"
+    elif regulator_metallicity_parameters is not None:
+        regulator = compute_regulator_metallicity(
+            t_grid_gyr=t_grid,
+            z_grid=z_grid,
+            mh_grid=mh_grid,
+            sfr_grid=sfr_grid,
+            active_grid=starforming,
+            cosmology=cosmology,
+            parameters=regulator_metallicity_parameters,
+            random_seed=random_seeds.metallicity,
+        )
+        birth_metallicity = np.asarray(regulator.birth_metallicity_zsun_grid, dtype=float)
+        gas_metallicity = np.asarray(regulator.gas_metallicity_zsun_grid, dtype=float)
+        metal_mass = np.asarray(regulator.metal_mass_grid, dtype=float)
+        gas_mass = np.asarray(regulator.gas_mass_grid, dtype=float)
+        metallicity_source = "regulator"
+
+    floor_mass = np.zeros_like(redshift_grid)
+    active_flat = active_grid.reshape(-1)
+    if np.any(active_flat):
+        active_mh = np.asarray(sfr_tracks["Mh"], dtype=float)[active_flat]
+        active_z = np.asarray(sfr_tracks["z"], dtype=float)[active_flat]
+        for index, z_value in enumerate(redshift_grid):
+            selection = np.isclose(active_z, z_value)
+            if np.any(selection):
+                floor_mass[index] = float(np.min(active_mh[selection]))
+    if not np.any(floor_mass > 0.0):
+        raise RuntimeError("could not infer an effective M_min(z) floor from active histories")
+    finished = time.perf_counter()
+    shared = SharedHaloBatch(
+        histories=histories,
+        sfr_tracks=sfr_tracks,
+        popiii_enabled=enable_popiii,
+        redshift_grid=redshift_grid,
+        floor_mass_msun=floor_mass,
+        time_gyr_grid=t_grid,
+        redshift_history_grid=z_grid,
+        halo_mass_msun_grid=mh_grid,
+        dmh_dt_sfr_msun_per_gyr_grid=dmhdt_sfr_grid,
+        sfr_msun_per_yr_grid=sfr_grid,
+        active_grid=active_grid,
+        starforming_grid=starforming,
+        popiii_sfr_msun_per_yr_grid=popiii_sfr,
+        popiii_source_grid=popiii_source,
+        popiii_fstar_grid=popiii_fstar,
+        popiii_duty_cycle_grid=popiii_duty,
+        popiii_lower_mass_msun_grid=popiii_lower,
+        popiii_upper_mass_msun_grid=popiii_upper,
+        burst_sfr_multiplier_grid=burst_multiplier,
+        birth_metallicity_zsun_grid=birth_metallicity,
+        gas_metallicity_zsun_grid=gas_metallicity,
+        metal_mass_msun_grid=metal_mass,
+        gas_mass_msun_grid=gas_mass,
+        metallicity_source=metallicity_source,
+        timing_mah_generation_seconds=after_mah - started,
+        timing_sfr_and_chemistry_seconds=finished - after_mah,
+        _freeze_arrays=_mutable_result_sources is None,
+    )
+    if _mutable_result_sources is not None:
+        if _mutable_result_sources:
+            raise ValueError("_mutable_result_sources must be empty")
+        _mutable_result_sources["histories"] = histories
+        _mutable_result_sources["sfr_tracks"] = sfr_tracks
+    return shared
+
+
+def load_ssp_kernels(
+    *,
+    ssp_file: str | Path,
+    imf_modes: tuple[str, ...],
+    topheavy_ssp_file: str | Path,
+    topheavy_ssp_metallicity: float | None,
+    enable_popiii: bool,
+    popiii_ssp_file: str | Path,
+) -> LoadedSSPKernels:
+    canonical_path = resolve_ssp_path(ssp_file)
+    topheavy_path = resolve_ssp_path(topheavy_ssp_file)
+    popiii_path = resolve_ssp_path(popiii_ssp_file)
+    canonical_age, canonical_luminosity = load_uv1600_table(canonical_path)
+    has_variant = any(validate_imf_mode(mode) != IMF_MODE_CANONICAL for mode in imf_modes)
+    if has_variant:
+        topheavy_age, topheavy_luminosity = load_uv1600_table(
+            topheavy_path,
+            metallicity=topheavy_ssp_metallicity,
+        )
+    else:
+        topheavy_age = None
+        topheavy_luminosity = None
+    if enable_popiii:
+        popiii_age, popiii_luminosity = load_popiii_uv_luminosity_table(popiii_path)
+    else:
+        popiii_age = None
+        popiii_luminosity = None
+    return LoadedSSPKernels(
+        canonical_age_myr=canonical_age,
+        canonical_luminosity_per_msun=canonical_luminosity,
+        topheavy_age_myr=topheavy_age,
+        topheavy_luminosity_per_msun=topheavy_luminosity,
+        popiii_age_myr=popiii_age,
+        popiii_luminosity_per_msun=popiii_luminosity,
+        canonical_ssp_path=canonical_path,
+        topheavy_ssp_path=topheavy_path,
+        popiii_ssp_path=popiii_path,
+        topheavy_ssp_template_metallicity_zsun=topheavy_ssp_metallicity,
+    )
+
+
+def evaluate_shared_halo_batch(
+    shared: SharedHaloBatch,
+    *,
+    imf_mode: str,
+    transition_parameters: IMFTransitionParameters,
+    kernels: LoadedSSPKernels,
+    ssp_lookback_max_myr: float,
+) -> HaloModeEvaluation:
+    """Evaluate one IMF mode without mutating mode-independent shared grids."""
+
+    if type(shared) is not SharedHaloBatch:
+        raise TypeError("shared must be exactly SharedHaloBatch")
+    if type(kernels) is not LoadedSSPKernels:
+        raise TypeError("kernels must be exactly LoadedSSPKernels")
+    mode = validate_imf_mode(imf_mode)
+    started = time.perf_counter()
+    candidate = compute_topheavy_source_flags(
+        imf_mode=mode,
+        z_grid=shared.redshift_history_grid,
+        mh_grid=shared.halo_mass_msun_grid,
+        dmhdt_sfr_grid=shared.dmh_dt_sfr_msun_per_gyr_grid,
+        active_grid=shared.starforming_grid,
+        transition_parameters=replace(
+            transition_parameters,
+            metallicity_topheavy_max_zsun=None,
+        ),
+    )
+    topheavy = compute_topheavy_source_flags(
+        imf_mode=mode,
+        z_grid=shared.redshift_history_grid,
+        mh_grid=shared.halo_mass_msun_grid,
+        dmhdt_sfr_grid=shared.dmh_dt_sfr_msun_per_gyr_grid,
+        active_grid=shared.starforming_grid,
+        birth_metallicity_zsun_grid=shared.birth_metallicity_zsun_grid,
+        transition_parameters=transition_parameters,
+    )
+    if mode != IMF_MODE_CANONICAL and kernels.topheavy_age_myr is None:
+        raise ValueError("top-heavy SSP kernels are required for non-canonical IMF modes")
+    canonical_uv, topheavy_uv = _compute_final_uv_luminosity_components_vectorized(
+        t_grid=shared.time_gyr_grid,
+        sfr_grid=shared.sfr_msun_per_yr_grid,
+        active_grid=shared.active_grid,
+        topheavy_source_flag_grid=topheavy,
+        ssp_age_grid=kernels.canonical_age_myr,
+        ssp_luv_grid=kernels.canonical_luminosity_per_msun,
+        topheavy_ssp_age_grid=kernels.topheavy_age_myr if mode != IMF_MODE_CANONICAL else None,
+        topheavy_ssp_luv_grid=(
+            kernels.topheavy_luminosity_per_msun if mode != IMF_MODE_CANONICAL else None
+        ),
+        ssp_lookback_max_myr=ssp_lookback_max_myr,
+    )
+    if np.any(shared.popiii_source_grid):
+        if kernels.popiii_age_myr is None or kernels.popiii_luminosity_per_msun is None:
+            raise ValueError("Pop III SSP kernels are required when Pop III sources are enabled")
+        popiii_uv, _ = _compute_final_uv_luminosity_components_vectorized(
+            t_grid=shared.time_gyr_grid,
+            sfr_grid=shared.popiii_sfr_msun_per_yr_grid,
+            active_grid=shared.popiii_source_grid,
+            topheavy_source_flag_grid=np.zeros_like(shared.popiii_source_grid),
+            ssp_age_grid=kernels.popiii_age_myr,
+            ssp_luv_grid=kernels.popiii_luminosity_per_msun,
+            topheavy_ssp_age_grid=None,
+            topheavy_ssp_luv_grid=None,
             ssp_lookback_max_myr=ssp_lookback_max_myr,
         )
-        canonical_result[halo_index] = canonical_luv
-        topheavy_result[halo_index] = topheavy_luv
-    return canonical_result, topheavy_result
+    else:
+        popiii_uv = np.zeros_like(canonical_uv)
+    total = canonical_uv + topheavy_uv + popiii_uv
+    positive = total > 0.0
+    top_fraction = np.zeros_like(total)
+    popiii_fraction = np.zeros_like(total)
+    top_fraction[positive] = topheavy_uv[positive] / total[positive]
+    popiii_fraction[positive] = popiii_uv[positive] / total[positive]
+    return HaloModeEvaluation(
+        imf_mode=mode,
+        uv_luminosity_erg_per_s_hz=total,
+        canonical_uv_luminosity_erg_per_s_hz=canonical_uv,
+        topheavy_uv_luminosity_erg_per_s_hz=topheavy_uv,
+        popiii_uv_luminosity_erg_per_s_hz=popiii_uv,
+        topheavy_source_grid=topheavy,
+        candidate_topheavy_source_grid=candidate,
+        topheavy_light_fraction=top_fraction,
+        popiii_light_fraction=popiii_fraction,
+        topheavy_source_count=int(np.count_nonzero(topheavy & shared.starforming_grid)),
+        starforming_source_count=int(np.count_nonzero(shared.starforming_grid)),
+        popiii_source_count=int(np.count_nonzero(shared.popiii_source_grid)),
+        active_source_count=int(np.count_nonzero(shared.active_grid)),
+        uv_convolution_seconds=time.perf_counter() - started,
+    )
 
 
 def run_halo_uv_pipeline(
@@ -374,6 +1692,8 @@ def run_halo_uv_pipeline(
     z_final: float,
     Mh_final: float,
     *,
+    cosmology: Cosmology,
+    random_seeds: PipelineRandomSeeds,
     z_start_max: float = 50.0,
     n_grid: int = 240,
     ssp_file: str | Path = DEFAULT_SSP_FILE,
@@ -384,8 +1704,6 @@ def run_halo_uv_pipeline(
     popiii_ssp_file: str | Path = DEFAULT_POPIII_SSP_FILE,
     imf_mode: str = "canonical",
     imf_transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
-    cosmology: Cosmology | None = None,
-    random_seed: int | None = 42,
     sampler: str = "mcbride",
     mah_backend: str = MAH_BACKEND_MCBRIDE,
     tng_mah_cache_path: str | Path | None = None,
@@ -405,431 +1723,235 @@ def run_halo_uv_pipeline(
     sfr_model_parameters: SFRModelParameters = DEFAULT_SFR_MODEL_PARAMETERS,
     mzr_metallicity_parameters: MZRBirthMetallicityParameters | None = None,
     regulator_metallicity_parameters: RegulatorMetallicityParameters | None = None,
-    metallicity_random_seed: int | None = None,
     burst_scatter_dex: float = 0.0,
     burst_scatter_timescale_myr: float = DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
-    burst_scatter_random_seed: int | None = None,
     burst_scatter_preserve_mean: bool = True,
 ) -> HaloUVPipelineResult:
-    """Run the main mah -> sfr -> UV pipeline and return per-halo UV luminosities."""
+    """Compatibility wrapper over shared preparation, SSP loading, and mode evaluation."""
 
-    imf_mode = validate_imf_mode(imf_mode)
-    mah_backend = validate_mah_backend(mah_backend)
-    cosmology = Cosmology() if cosmology is None else cosmology
-    workers = default_worker_count() if workers is None else int(workers)
-    if float(burst_scatter_dex) < 0.0:
-        raise ValueError("burst_scatter_dex must be non-negative")
-    if float(burst_scatter_timescale_myr) <= 0.0:
-        raise ValueError("burst_scatter_timescale_myr must be positive")
-    metallicity_topheavy_max_zsun = imf_transition_parameters.metallicity_topheavy_max_zsun
-    if metallicity_topheavy_max_zsun is not None and float(metallicity_topheavy_max_zsun) <= 0.0:
-        raise ValueError("metallicity_topheavy_max_zsun must be positive when provided")
-    source_count = sum(
-        source is not None
-        for source in (
-            mzr_metallicity_parameters,
-            regulator_metallicity_parameters,
-        )
-    )
-    if source_count > 1:
-        raise ValueError(
-            "provide only one birth metallicity source: "
-            "mzr_metallicity_parameters or regulator_metallicity_parameters"
-        )
-    birth_metallicity_source_enabled = source_count == 1
-    if imf_mode != IMF_MODE_CANONICAL and metallicity_topheavy_max_zsun is not None and not birth_metallicity_source_enabled:
+    mode = validate_imf_mode(imf_mode)
+    worker_count = default_worker_count() if workers is None else int(workers)
+    if worker_count <= 0:
+        raise ValueError("workers must be positive")
+    if (
+        mode != IMF_MODE_CANONICAL
+        and imf_transition_parameters.metallicity_topheavy_max_zsun is not None
+        and mzr_metallicity_parameters is None
+        and regulator_metallicity_parameters is None
+    ):
         raise ValueError(
             "a birth metallicity source must be provided when metallicity_topheavy_max_zsun is set"
         )
-    if int(n_grid) < 2:
-        raise ValueError("n_grid must be at least 2")
-    astro = _build_astropy_cosmology(cosmology)
-    t_start_gyr = float(astro.age(z_start_max).value)
-    t_end_gyr = float(astro.age(z_final).value)
-    dt_gyr = (t_end_gyr - t_start_gyr) / float(int(n_grid) - 1)
-
-    t0 = time.perf_counter()
-    if mah_backend == MAH_BACKEND_MCBRIDE:
-        mah_mass_floor = None
-        if enable_popiii:
-            mah_mass_floor = lambda redshift: compute_popiii_lw_minimum_mass_msun(
-                redshift,
-                lw_background_j21=float(popiii_sfr_parameters.lw_background_j21),
-            )
-        histories = generate_halo_histories(
-            n_tracks=n_tracks,
-            z_final=z_final,
-            Mh_final=Mh_final,
-            z_start_max=z_start_max,
-            M_min=mah_mass_floor,
-            cosmology=cosmology,
-            random_seed=random_seed,
-            time_grid_mode="uniform_in_t",
-            dt=dt_gyr,
-            store_inactive_history=True,
-            sampler=sampler,
-        )
-    elif mah_backend == MAH_BACKEND_TNG:
-        if tng_mah_cache_path is None:
-            raise ValueError("tng_mah_cache_path is required when mah_backend='tng'")
-        histories = generate_tng_halo_histories(
-            n_tracks=n_tracks,
-            z_final=z_final,
-            Mh_final=Mh_final,
-            cache_path=tng_mah_cache_path,
-            z_start_max=z_start_max,
-            mass_bin_width_dex=tng_mass_bin_width_dex,
-            min_candidates=tng_min_candidates,
-            smoothing_myr=tng_smoothing_myr,
-            random_seed=random_seed,
-            time_grid_mode=tng_time_grid_mode,
-            target_n_grid=int(n_grid)
-            if str(tng_time_grid_mode).strip().lower() == TNG_TIME_GRID_UNIFORM_IN_T
-            else None,
-        )
-    elif mah_backend == MAH_BACKEND_THESAN:
-        if thesan_mah_cache_path is None:
-            raise ValueError("thesan_mah_cache_path is required when mah_backend='thesan'")
-        histories = generate_thesan_halo_histories(
-            n_tracks=n_tracks,
-            z_final=z_final,
-            Mh_final=Mh_final,
-            cache_path=thesan_mah_cache_path,
-            z_start_max=z_start_max,
-            mass_bin_width_dex=thesan_mass_bin_width_dex,
-            min_candidates=thesan_min_candidates,
-            smoothing_myr=thesan_smoothing_myr,
-            random_seed=random_seed,
-            time_grid_mode=thesan_time_grid_mode,
-            target_n_grid=int(n_grid)
-            if str(thesan_time_grid_mode).strip().lower() == THESAN_TIME_GRID_UNIFORM_IN_T
-            else None,
-        )
-    else:  # pragma: no cover - guarded by validate_mah_backend
-        raise RuntimeError(f"unsupported mah_backend after validation: {mah_backend}")
-    t1 = time.perf_counter()
-    redshift_grid = np.unique(np.asarray(histories.tracks["z"], dtype=float))[::-1]
-
-    sfr_tracks = compute_sfr_from_tracks(
-        histories.tracks,
+    wrapper_started = time.perf_counter()
+    mutable_result_sources: dict[str, object] = {}
+    shared = prepare_shared_halo_batch(
+        n_tracks=n_tracks,
+        z_final=z_final,
+        Mh_final=Mh_final,
+        cosmology=cosmology,
+        random_seeds=random_seeds,
+        z_start_max=z_start_max,
+        n_grid=n_grid,
+        enable_popiii=enable_popiii,
+        popiii_sfr_parameters=popiii_sfr_parameters,
+        sampler=sampler,
+        mah_backend=mah_backend,
+        tng_mah_cache_path=tng_mah_cache_path,
+        tng_mass_bin_width_dex=tng_mass_bin_width_dex,
+        tng_min_candidates=tng_min_candidates,
+        tng_smoothing_myr=tng_smoothing_myr,
+        tng_time_grid_mode=tng_time_grid_mode,
+        thesan_mah_cache_path=thesan_mah_cache_path,
+        thesan_mass_bin_width_dex=thesan_mass_bin_width_dex,
+        thesan_min_candidates=thesan_min_candidates,
+        thesan_smoothing_myr=thesan_smoothing_myr,
+        thesan_time_grid_mode=thesan_time_grid_mode,
         enable_time_delay=enable_time_delay,
         burst_lookback_max_myr=burst_lookback_max_myr,
-        model_parameters=sfr_model_parameters,
+        sfr_model_parameters=sfr_model_parameters,
+        mzr_metallicity_parameters=mzr_metallicity_parameters,
+        regulator_metallicity_parameters=regulator_metallicity_parameters,
+        burst_scatter_dex=burst_scatter_dex,
+        burst_scatter_timescale_myr=burst_scatter_timescale_myr,
+        burst_scatter_preserve_mean=burst_scatter_preserve_mean,
+        _mutable_result_sources=mutable_result_sources,
     )
-    t2 = time.perf_counter()
-
-    canonical_ssp_path = resolve_ssp_path(ssp_file)
-    topheavy_ssp_path = resolve_ssp_path(topheavy_ssp_file)
-    popiii_ssp_path = resolve_ssp_path(popiii_ssp_file)
-    ages_myr, luv_per_msun = load_uv1600_table(canonical_ssp_path)
-    ssp_age_grid_gyr = ages_myr / 1.0e3
-    if requires_topheavy_ssp(imf_mode):
-        topheavy_ages_myr, topheavy_luv_per_msun = load_uv1600_table(
-            topheavy_ssp_path,
-            metallicity=topheavy_ssp_metallicity,
-        )
-        topheavy_ssp_age_grid_gyr = topheavy_ages_myr / 1.0e3
-    else:
-        topheavy_luv_per_msun = None
-        topheavy_ssp_age_grid_gyr = None
-    if enable_popiii:
-        popiii_ages_myr, popiii_luv_per_msun = load_popiii_uv_luminosity_table(popiii_ssp_path)
-        popiii_ssp_age_grid_gyr = popiii_ages_myr / 1.0e3
-    else:
-        popiii_luv_per_msun = None
-        popiii_ssp_age_grid_gyr = None
-
-    halo_ids = np.asarray(sfr_tracks["halo_id"], dtype=int)
-    n_halos = np.unique(halo_ids).size
-    steps_per_halo = redshift_grid.size
-    t_grid = np.asarray(sfr_tracks["t_gyr"], dtype=float).reshape(n_halos, steps_per_halo)
-    mh_grid = np.asarray(sfr_tracks["Mh"], dtype=float).reshape(n_halos, steps_per_halo)
-    dmhdt_grid = np.asarray(sfr_tracks["dMh_dt"], dtype=float).reshape(n_halos, steps_per_halo)
-    sfr_grid = np.asarray(sfr_tracks["SFR"], dtype=float).reshape(n_halos, steps_per_halo)
-    active_grid = np.asarray(sfr_tracks["active_flag"], dtype=bool).reshape(n_halos, steps_per_halo)
-    z_grid = np.asarray(sfr_tracks["z"], dtype=float).reshape(n_halos, steps_per_halo)
-    burst_scatter_seed_used = (
-        burst_scatter_random_seed
-        if burst_scatter_random_seed is not None
-        else random_seed
+    kernels = load_ssp_kernels(
+        ssp_file=ssp_file,
+        imf_modes=(mode,),
+        topheavy_ssp_file=topheavy_ssp_file,
+        topheavy_ssp_metallicity=topheavy_ssp_metallicity,
+        enable_popiii=enable_popiii,
+        popiii_ssp_file=popiii_ssp_file,
     )
-    sfr_grid, burst_sfr_multiplier_grid = _apply_burst_scatter_to_sfr_grid(
-        sfr_grid=sfr_grid,
-        active_grid=active_grid,
-        t_grid=t_grid,
-        scatter_dex=float(burst_scatter_dex),
-        correlation_timescale_myr=float(burst_scatter_timescale_myr),
-        random_seed=None if burst_scatter_seed_used is None else int(burst_scatter_seed_used),
-        preserve_mean=bool(burst_scatter_preserve_mean),
-    )
-    sfr_tracks["SFR"] = sfr_grid.reshape(-1)
-    if enable_popiii:
-        popiii_sfr_result = compute_popiii_sfr_from_grids(
-            mh_grid=mh_grid,
-            dmhdt_grid=dmhdt_grid,
-            z_grid=z_grid,
-            active_grid=active_grid,
-            baryon_fraction=cosmology.omega_b / cosmology.omega_m,
-            parameters=popiii_sfr_parameters,
-        )
-        sfr_popiii_grid = np.asarray(popiii_sfr_result.sfr_grid, dtype=float)
-        popiii_source_grid = np.asarray(popiii_sfr_result.starforming_grid, dtype=bool)
-        popiii_fstar_grid = np.asarray(popiii_sfr_result.fstar_grid, dtype=float)
-        popiii_duty_cycle_grid = np.asarray(popiii_sfr_result.duty_cycle_grid, dtype=float)
-        popiii_lower_mass_grid = np.asarray(popiii_sfr_result.lower_mass_msun_grid, dtype=float)
-        popiii_upper_mass_grid = np.asarray(popiii_sfr_result.upper_mass_msun_grid, dtype=float)
-    else:
-        sfr_popiii_grid = np.zeros_like(sfr_grid, dtype=float)
-        popiii_source_grid = np.zeros_like(active_grid, dtype=bool)
-        popiii_fstar_grid = np.zeros_like(sfr_grid, dtype=float)
-        popiii_duty_cycle_grid = np.zeros_like(sfr_grid, dtype=float)
-        popiii_lower_mass_grid = np.full_like(sfr_grid, np.nan, dtype=float)
-        popiii_upper_mass_grid = np.full_like(sfr_grid, np.nan, dtype=float)
-    sfr_tracks["SFR_popiii"] = sfr_popiii_grid.reshape(-1)
-    sfr_tracks["fstar_popiii"] = popiii_fstar_grid.reshape(-1)
-    sfr_tracks["popiii_duty_cycle"] = popiii_duty_cycle_grid.reshape(-1)
-    sfr_tracks["popiii_lower_mass_msun"] = popiii_lower_mass_grid.reshape(-1)
-    sfr_tracks["popiii_upper_mass_msun"] = popiii_upper_mass_grid.reshape(-1)
-    starforming_grid = active_grid & np.isfinite(sfr_grid) & (sfr_grid > 0.0)
-    candidate_transition_parameters = replace(imf_transition_parameters, metallicity_topheavy_max_zsun=None)
-    candidate_topheavy_source_grid = compute_topheavy_source_flags(
-        imf_mode=imf_mode,
-        z_grid=z_grid,
-        mh_grid=mh_grid,
-        dmhdt_grid=dmhdt_grid,
-        active_grid=starforming_grid,
-        transition_parameters=candidate_transition_parameters,
-    )
-    topheavy_source_grid = candidate_topheavy_source_grid
-
-    mzr_metallicity_result: MZRBirthMetallicityResult | None = None
-    regulator_metallicity_result: RegulatorMetallicityResult | None = None
-    birth_metallicity_zsun_grid: np.ndarray | None = None
-    gas_metallicity_zsun_grid: np.ndarray | None = None
-    metal_mass_grid: np.ndarray | None = None
-    gas_mass_grid: np.ndarray | None = None
-    metallicity_source = "none"
-    if mzr_metallicity_parameters is not None:
-        mzr_metallicity_result = compute_mzr_birth_metallicity(
-            t_grid_gyr=t_grid,
-            z_grid=z_grid,
-            sfr_grid=sfr_grid,
-            active_grid=starforming_grid,
-            parameters=mzr_metallicity_parameters,
-            random_seed=metallicity_random_seed,
-        )
-        birth_metallicity_zsun_grid = np.asarray(mzr_metallicity_result.birth_metallicity_zsun_grid, dtype=float)
-        topheavy_source_grid = compute_topheavy_source_flags(
-            imf_mode=imf_mode,
-            z_grid=z_grid,
-            mh_grid=mh_grid,
-            dmhdt_grid=dmhdt_grid,
-            active_grid=starforming_grid,
-            birth_metallicity_zsun_grid=birth_metallicity_zsun_grid,
-            transition_parameters=imf_transition_parameters,
-        )
-        metallicity_source = "mzr"
-    elif regulator_metallicity_parameters is not None:
-        regulator_metallicity_result = compute_regulator_metallicity(
-            t_grid_gyr=t_grid,
-            z_grid=z_grid,
-            mh_grid=mh_grid,
-            sfr_grid=sfr_grid,
-            active_grid=starforming_grid,
-            baryon_fraction=cosmology.omega_b / cosmology.omega_m,
-            parameters=regulator_metallicity_parameters,
-            random_seed=metallicity_random_seed,
-        )
-        birth_metallicity_zsun_grid = np.asarray(regulator_metallicity_result.birth_metallicity_zsun_grid, dtype=float)
-        gas_metallicity_zsun_grid = np.asarray(regulator_metallicity_result.gas_metallicity_zsun_grid, dtype=float)
-        metal_mass_grid = np.asarray(regulator_metallicity_result.metal_mass_grid, dtype=float)
-        gas_mass_grid = np.asarray(regulator_metallicity_result.gas_mass_grid, dtype=float)
-        topheavy_source_grid = compute_topheavy_source_flags(
-            imf_mode=imf_mode,
-            z_grid=z_grid,
-            mh_grid=mh_grid,
-            dmhdt_grid=dmhdt_grid,
-            active_grid=starforming_grid,
-            birth_metallicity_zsun_grid=birth_metallicity_zsun_grid,
-            transition_parameters=imf_transition_parameters,
-        )
-        metallicity_source = "regulator"
-
-    floor_mass = np.zeros_like(redshift_grid, dtype=float)
-    active_flat = active_grid.reshape(-1)
-    if np.any(active_flat):
-        active_mh = np.asarray(sfr_tracks["Mh"], dtype=float)[active_flat]
-        active_z = np.asarray(sfr_tracks["z"], dtype=float)[active_flat]
-        for index, z_value in enumerate(redshift_grid):
-            mask = np.isclose(active_z, z_value)
-            if np.any(mask):
-                floor_mass[index] = float(np.min(active_mh[mask]))
-    positive_floor = floor_mass[floor_mass > 0.0]
-    if positive_floor.size == 0:
-        raise RuntimeError("could not infer an effective M_min(z) floor from active histories")
-
-    time_row = _resolve_regular_time_grid(t_grid)
-    if time_row is None:
-        raise ValueError("run_halo_uv_pipeline requires histories on a shared regular time grid")
-    uv_luminosities_canonical, uv_luminosities_topheavy = _compute_final_uv_luminosity_components_vectorized(
-        t_grid=t_grid,
-        sfr_grid=sfr_grid,
-        active_grid=active_grid,
-        topheavy_source_flag_grid=topheavy_source_grid,
-        ssp_age_grid=ssp_age_grid_gyr,
-        ssp_luv_grid=luv_per_msun,
-        topheavy_ssp_age_grid=topheavy_ssp_age_grid_gyr,
-        topheavy_ssp_luv_grid=topheavy_luv_per_msun,
+    evaluation = evaluate_shared_halo_batch(
+        shared,
+        imf_mode=mode,
+        transition_parameters=imf_transition_parameters,
+        kernels=kernels,
         ssp_lookback_max_myr=ssp_lookback_max_myr,
     )
-    if enable_popiii:
-        if popiii_ssp_age_grid_gyr is None or popiii_luv_per_msun is None:
-            raise RuntimeError("Pop III SSP grid was not loaded despite enable_popiii=True")
-        uv_luminosities_popiii, _ = _compute_final_uv_luminosity_components_vectorized(
-            t_grid=t_grid,
-            sfr_grid=sfr_popiii_grid,
-            active_grid=popiii_source_grid,
-            topheavy_source_flag_grid=np.zeros_like(popiii_source_grid, dtype=bool),
-            ssp_age_grid=popiii_ssp_age_grid_gyr,
-            ssp_luv_grid=popiii_luv_per_msun,
-            topheavy_ssp_age_grid=None,
-            topheavy_ssp_luv_grid=None,
-            ssp_lookback_max_myr=ssp_lookback_max_myr,
-        )
-    else:
-        uv_luminosities_popiii = np.zeros_like(uv_luminosities_canonical, dtype=float)
-    uv_luminosities = uv_luminosities_canonical + uv_luminosities_topheavy + uv_luminosities_popiii
-    uv_convolution_method = "vectorized_final_time_variable_imf_with_optional_popiii"
-    t3 = time.perf_counter()
-    total_light = np.asarray(uv_luminosities, dtype=float)
-    positive_light = total_light > 0.0
-    topheavy_light_fraction = np.zeros_like(total_light, dtype=float)
-    topheavy_light_fraction[positive_light] = uv_luminosities_topheavy[positive_light] / total_light[positive_light]
-    popiii_light_fraction = np.zeros_like(total_light, dtype=float)
-    popiii_light_fraction[positive_light] = uv_luminosities_popiii[positive_light] / total_light[positive_light]
-
+    histories_metadata = shared.histories.metadata
+    starforming = shared.starforming_grid
+    positive_light = evaluation.uv_luminosity_erg_per_s_hz > 0.0
+    candidate_count = int(
+        np.count_nonzero(evaluation.candidate_topheavy_source_grid & starforming)
+    )
+    gas_metallicity = shared.gas_metallicity_zsun_grid
+    birth_metallicity = shared.birth_metallicity_zsun_grid
     metadata = {
-        "n_tracks": n_halos,
-        "steps_per_halo": steps_per_halo,
-        "workers": max(1, workers),
-        "ssp_file": str(canonical_ssp_path),
-        "canonical_ssp_file": str(canonical_ssp_path),
-        "topheavy_ssp_file": str(topheavy_ssp_path),
+        "n_tracks": shared.time_gyr_grid.shape[0],
+        "steps_per_halo": shared.time_gyr_grid.shape[1],
+        "workers": max(1, worker_count),
+        "ssp_file": str(kernels.canonical_ssp_path),
+        "canonical_ssp_file": str(kernels.canonical_ssp_path),
+        "topheavy_ssp_file": str(kernels.topheavy_ssp_path),
         "topheavy_ssp_metallicity": topheavy_ssp_metallicity,
         "popiii_enabled": bool(enable_popiii),
-        "popiii_ssp_file": str(popiii_ssp_path),
+        "popiii_ssp_file": str(kernels.popiii_ssp_path),
         "popiii_sfr_parameters": popiii_sfr_parameters.as_metadata(),
-        "imf_mode": imf_mode,
+        "imf_mode": mode,
         "imf_transition_parameters": {
             "z_topheavy_min": float(imf_transition_parameters.z_topheavy_min),
-            "source_redshift_gate_enabled": bool(imf_transition_parameters.source_redshift_gate_enabled),
-            "growth_time_threshold_myr": float(imf_transition_parameters.growth_time_threshold_myr),
-            "metallicity_topheavy_max_zsun": None
-            if imf_transition_parameters.metallicity_topheavy_max_zsun is None
-            else float(imf_transition_parameters.metallicity_topheavy_max_zsun),
+            "source_redshift_gate_enabled": bool(
+                imf_transition_parameters.source_redshift_gate_enabled
+            ),
+            "growth_time_threshold_myr": float(
+                imf_transition_parameters.growth_time_threshold_myr
+            ),
+            "metallicity_topheavy_max_zsun": (
+                None
+                if imf_transition_parameters.metallicity_topheavy_max_zsun is None
+                else float(imf_transition_parameters.metallicity_topheavy_max_zsun)
+            ),
         },
-        "metallicity_topheavy_gate_applied": imf_mode != IMF_MODE_CANONICAL and metallicity_topheavy_max_zsun is not None,
-        "topheavy_candidate_source_fraction": float(np.mean(candidate_topheavy_source_grid[starforming_grid]))
-        if np.any(starforming_grid)
-        else 0.0,
-        "topheavy_candidate_source_count": int(np.count_nonzero(candidate_topheavy_source_grid & starforming_grid)),
-        "topheavy_source_fraction": float(np.mean(topheavy_source_grid[starforming_grid]))
-        if np.any(starforming_grid)
-        else 0.0,
-        "topheavy_source_count": int(np.count_nonzero(topheavy_source_grid & starforming_grid)),
-        "starforming_source_count": int(np.count_nonzero(starforming_grid)),
-        "topheavy_light_fraction_median": float(np.median(topheavy_light_fraction[positive_light]))
-        if np.any(positive_light)
-        else 0.0,
-        "popiii_source_fraction": float(np.mean(popiii_source_grid[active_grid]))
-        if np.any(active_grid)
-        else 0.0,
-        "popiii_source_count": int(np.count_nonzero(popiii_source_grid)),
-        "active_source_count": int(np.count_nonzero(active_grid)),
-        "popiii_light_fraction_median": float(np.median(popiii_light_fraction[positive_light]))
-        if np.any(positive_light)
-        else 0.0,
-        "popiii_luminosity_median": float(np.median(uv_luminosities_popiii[np.isfinite(uv_luminosities_popiii)]))
-        if np.any(np.isfinite(uv_luminosities_popiii))
-        else 0.0,
-        "metallicity_source": metallicity_source,
-        "mah_backend": mah_backend,
+        "metallicity_topheavy_gate_applied": (
+            mode != IMF_MODE_CANONICAL
+            and imf_transition_parameters.metallicity_topheavy_max_zsun is not None
+        ),
+        "topheavy_candidate_source_fraction": (
+            float(np.mean(evaluation.candidate_topheavy_source_grid[starforming]))
+            if np.any(starforming)
+            else 0.0
+        ),
+        "topheavy_candidate_source_count": candidate_count,
+        "topheavy_source_fraction": (
+            evaluation.topheavy_source_count / evaluation.starforming_source_count
+            if evaluation.starforming_source_count > 0
+            else 0.0
+        ),
+        "topheavy_source_count": evaluation.topheavy_source_count,
+        "starforming_source_count": evaluation.starforming_source_count,
+        "topheavy_light_fraction_median": (
+            float(np.median(evaluation.topheavy_light_fraction[positive_light]))
+            if np.any(positive_light)
+            else 0.0
+        ),
+        "popiii_source_fraction": (
+            evaluation.popiii_source_count / evaluation.active_source_count
+            if evaluation.active_source_count > 0
+            else 0.0
+        ),
+        "popiii_source_count": evaluation.popiii_source_count,
+        "active_source_count": evaluation.active_source_count,
+        "popiii_light_fraction_median": (
+            float(np.median(evaluation.popiii_light_fraction[positive_light]))
+            if np.any(positive_light)
+            else 0.0
+        ),
+        "popiii_luminosity_median": float(
+            np.median(evaluation.popiii_uv_luminosity_erg_per_s_hz)
+        ),
+        "metallicity_source": shared.metallicity_source,
+        "mah_backend": validate_mah_backend(mah_backend),
         "sampler": sampler,
-        "tng_mah_cache_path": histories.metadata.get("tng_mah_cache_path"),
-        "tng_source_simulation": histories.metadata.get("source_simulation") if mah_backend == MAH_BACKEND_TNG else None,
-        "tng_mass_bin_width_dex": None if mah_backend != MAH_BACKEND_TNG else float(tng_mass_bin_width_dex),
+        "negative_dmhdt_clip_count": histories_metadata["negative_dmhdt_clip_count"],
+        "negative_dmhdt_total_count": histories_metadata["negative_dmhdt_total_count"],
+        "negative_dmhdt_clip_fraction": histories_metadata["negative_dmhdt_clip_fraction"],
+        "tng_mah_cache_path": histories_metadata.get("tng_mah_cache_path"),
+        "tng_source_simulation": histories_metadata.get("source_simulation")
+        if mah_backend == MAH_BACKEND_TNG
+        else None,
+        "tng_mass_bin_width_dex": None
+        if mah_backend != MAH_BACKEND_TNG
+        else float(tng_mass_bin_width_dex),
         "tng_min_candidates": None if mah_backend != MAH_BACKEND_TNG else int(tng_min_candidates),
-        "tng_candidate_count": histories.metadata.get("candidate_count") if mah_backend == MAH_BACKEND_TNG else None,
+        "tng_candidate_count": histories_metadata.get("candidate_count")
+        if mah_backend == MAH_BACKEND_TNG
+        else None,
         "tng_smoothing_myr": None if mah_backend != MAH_BACKEND_TNG else float(tng_smoothing_myr),
-        "tng_time_grid_mode": None if mah_backend != MAH_BACKEND_TNG else histories.metadata.get("tng_time_grid_mode"),
-        "tng_negative_dmhdt_clip_count": histories.metadata.get("negative_dmhdt_clip_count")
-        if mah_backend == MAH_BACKEND_TNG
-        else None,
-        "tng_negative_dmhdt_clip_fraction": histories.metadata.get("negative_dmhdt_clip_fraction")
-        if mah_backend == MAH_BACKEND_TNG
-        else None,
-        "thesan_mah_cache_path": histories.metadata.get("thesan_mah_cache_path"),
-        "thesan_source_simulation": histories.metadata.get("source_simulation")
+        "tng_time_grid_mode": None
+        if mah_backend != MAH_BACKEND_TNG
+        else histories_metadata.get("tng_time_grid_mode"),
+        "thesan_mah_cache_path": histories_metadata.get("thesan_mah_cache_path"),
+        "thesan_source_simulation": histories_metadata.get("source_simulation")
         if mah_backend == MAH_BACKEND_THESAN
         else None,
-        "thesan_source_tree": histories.metadata.get("source_tree") if mah_backend == MAH_BACKEND_THESAN else None,
+        "thesan_source_tree": histories_metadata.get("source_tree")
+        if mah_backend == MAH_BACKEND_THESAN
+        else None,
         "thesan_mass_bin_width_dex": None
         if mah_backend != MAH_BACKEND_THESAN
         else float(thesan_mass_bin_width_dex),
-        "thesan_min_candidates": None if mah_backend != MAH_BACKEND_THESAN else int(thesan_min_candidates),
-        "thesan_candidate_count": histories.metadata.get("candidate_count")
+        "thesan_min_candidates": None
+        if mah_backend != MAH_BACKEND_THESAN
+        else int(thesan_min_candidates),
+        "thesan_candidate_count": histories_metadata.get("candidate_count")
         if mah_backend == MAH_BACKEND_THESAN
         else None,
-        "thesan_smoothing_myr": None if mah_backend != MAH_BACKEND_THESAN else float(thesan_smoothing_myr),
+        "thesan_smoothing_myr": None
+        if mah_backend != MAH_BACKEND_THESAN
+        else float(thesan_smoothing_myr),
         "thesan_time_grid_mode": None
         if mah_backend != MAH_BACKEND_THESAN
-        else histories.metadata.get("thesan_time_grid_mode"),
-        "thesan_negative_dmhdt_clip_count": histories.metadata.get("negative_dmhdt_clip_count")
-        if mah_backend == MAH_BACKEND_THESAN
-        else None,
-        "thesan_negative_dmhdt_clip_fraction": histories.metadata.get("negative_dmhdt_clip_fraction")
-        if mah_backend == MAH_BACKEND_THESAN
-        else None,
-        "mzr_metallicity_enabled": mzr_metallicity_result is not None,
-        "regulator_metallicity_enabled": regulator_metallicity_result is not None,
-        "metallicity_random_seed": metallicity_random_seed,
-        "mzr_metallicity_parameters": mzr_metallicity_parameters.as_metadata()
-        if mzr_metallicity_parameters is not None
-        else None,
-        "regulator_metallicity_parameters": regulator_metallicity_parameters.as_metadata()
-        if regulator_metallicity_parameters is not None
-        else None,
-        "final_gas_metallicity_zsun_median": float(
-            np.nanmedian(gas_metallicity_zsun_grid[:, -1])
-        )
-        if gas_metallicity_zsun_grid is not None
-        else None,
-        "birth_metallicity_zsun_starforming_median": float(
-            np.nanmedian(birth_metallicity_zsun_grid[starforming_grid])
-        )
-        if birth_metallicity_zsun_grid is not None and np.any(starforming_grid)
-        else None,
+        else histories_metadata.get("thesan_time_grid_mode"),
+        "mzr_metallicity_enabled": mzr_metallicity_parameters is not None,
+        "regulator_metallicity_enabled": regulator_metallicity_parameters is not None,
+        "random_seeds": random_seeds.as_metadata(),
+        "mzr_metallicity_parameters": (
+            mzr_metallicity_parameters.as_metadata()
+            if mzr_metallicity_parameters is not None
+            else None
+        ),
+        "regulator_metallicity_parameters": (
+            regulator_metallicity_parameters.as_metadata()
+            if regulator_metallicity_parameters is not None
+            else None
+        ),
+        "final_gas_metallicity_zsun_median": (
+            float(np.nanmedian(gas_metallicity[:, -1]))
+            if gas_metallicity is not None
+            else None
+        ),
+        "birth_metallicity_zsun_starforming_median": (
+            float(np.nanmedian(birth_metallicity[starforming]))
+            if birth_metallicity is not None and np.any(starforming)
+            else None
+        ),
         "enable_time_delay": enable_time_delay,
-        "time_grid_mode": histories.metadata.get("time_grid_mode", "uniform_in_t"),
-        "dt_gyr": float(histories.metadata.get("dt_gyr_median", dt_gyr)),
+        "time_grid_mode": histories_metadata.get("time_grid_mode", "uniform_in_t"),
+        "dt_gyr": float(histories_metadata.get("dt_gyr_median", np.nan)),
         "burst_lookback_max_myr": float(burst_lookback_max_myr),
         "burst_scatter_enabled": float(burst_scatter_dex) > 0.0,
         "burst_scatter_dex": float(burst_scatter_dex),
         "burst_scatter_timescale_myr": float(burst_scatter_timescale_myr),
-        "burst_scatter_random_seed": None
-        if burst_scatter_seed_used is None
-        else int(burst_scatter_seed_used),
         "burst_scatter_preserve_mean": bool(burst_scatter_preserve_mean),
         "burst_scatter_mass_conserving": bool(burst_scatter_preserve_mean),
-        "burst_sfr_multiplier_median": float(np.median(burst_sfr_multiplier_grid[starforming_grid]))
-        if np.any(starforming_grid)
-        else 1.0,
-        "burst_sfr_multiplier_p16": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 16.0))
-        if np.any(starforming_grid)
-        else 1.0,
-        "burst_sfr_multiplier_p84": float(np.percentile(burst_sfr_multiplier_grid[starforming_grid], 84.0))
-        if np.any(starforming_grid)
-        else 1.0,
+        "burst_sfr_multiplier_median": (
+            float(np.median(shared.burst_sfr_multiplier_grid[starforming]))
+            if np.any(starforming)
+            else 1.0
+        ),
+        "burst_sfr_multiplier_p16": (
+            float(np.percentile(shared.burst_sfr_multiplier_grid[starforming], 16.0))
+            if np.any(starforming)
+            else 1.0
+        ),
+        "burst_sfr_multiplier_p84": (
+            float(np.percentile(shared.burst_sfr_multiplier_grid[starforming], 84.0))
+            if np.any(starforming)
+            else 1.0
+        ),
         "ssp_lookback_max_myr": float(ssp_lookback_max_myr),
         "sfr_model_parameters": {
             "epsilon_0": sfr_model_parameters.epsilon_0,
@@ -838,29 +1960,61 @@ def run_halo_uv_pipeline(
             "gamma_star": sfr_model_parameters.gamma_star,
         },
         "timing_seconds": {
-            "mah_generation": t1 - t0,
-            "sfr": t2 - t1,
-            "uv_convolution": t3 - t2,
-            "total_without_plotting": t3 - t0,
+            "mah_generation": shared.timing_mah_generation_seconds,
+            "sfr": shared.timing_sfr_and_chemistry_seconds,
+            "uv_convolution": evaluation.uv_convolution_seconds,
+            "total_without_plotting": time.perf_counter() - wrapper_started,
         },
-        "uv_convolution_method": uv_convolution_method,
+        "uv_convolution_method": "shared_prepared_batch_final_ssp_observable_v2",
     }
-
+    mutable_histories = mutable_result_sources.pop("histories", None)
+    mutable_sfr_tracks = mutable_result_sources.pop("sfr_tracks", None)
+    if mutable_result_sources:
+        raise RuntimeError("unexpected mutable pipeline result sources")
+    if type(mutable_histories) is not HaloHistoryResult:
+        raise RuntimeError("missing mutable halo history result")
+    if type(mutable_sfr_tracks) is not dict:
+        raise RuntimeError("missing mutable SFR track result")
     return HaloUVPipelineResult(
-        histories=histories,
-        sfr_tracks=sfr_tracks,
-        uv_luminosities=np.asarray(uv_luminosities, dtype=float),
-        uv_luminosities_canonical=np.asarray(uv_luminosities_canonical, dtype=float),
-        uv_luminosities_topheavy=np.asarray(uv_luminosities_topheavy, dtype=float),
-        uv_luminosities_popiii=np.asarray(uv_luminosities_popiii, dtype=float),
-        redshift_grid=redshift_grid,
-        floor_mass=floor_mass,
-        active_grid=active_grid,
-        imf_topheavy_source_grid=topheavy_source_grid,
-        popiii_source_grid=popiii_source_grid,
+        histories=mutable_histories,
+        sfr_tracks=mutable_sfr_tracks,
+        uv_luminosities=np.array(evaluation.uv_luminosity_erg_per_s_hz, copy=True),
+        uv_luminosities_canonical=np.array(
+            evaluation.canonical_uv_luminosity_erg_per_s_hz,
+            copy=True,
+        ),
+        uv_luminosities_topheavy=np.array(
+            evaluation.topheavy_uv_luminosity_erg_per_s_hz,
+            copy=True,
+        ),
+        uv_luminosities_popiii=np.array(
+            evaluation.popiii_uv_luminosity_erg_per_s_hz,
+            copy=True,
+        ),
+        redshift_grid=np.array(shared.redshift_grid, copy=True),
+        floor_mass=np.array(shared.floor_mass_msun, copy=True),
+        active_grid=np.array(shared.active_grid, copy=True),
+        imf_topheavy_source_grid=np.array(evaluation.topheavy_source_grid, copy=True),
+        popiii_source_grid=np.array(shared.popiii_source_grid, copy=True),
         metadata=metadata,
-        gas_metallicity_zsun_grid=gas_metallicity_zsun_grid,
-        birth_metallicity_zsun_grid=None if birth_metallicity_zsun_grid is None else birth_metallicity_zsun_grid,
-        metal_mass_grid=metal_mass_grid,
-        gas_mass_grid=gas_mass_grid,
+        gas_metallicity_zsun_grid=(
+            None
+            if shared.gas_metallicity_zsun_grid is None
+            else np.array(shared.gas_metallicity_zsun_grid, copy=True)
+        ),
+        birth_metallicity_zsun_grid=(
+            None
+            if shared.birth_metallicity_zsun_grid is None
+            else np.array(shared.birth_metallicity_zsun_grid, copy=True)
+        ),
+        metal_mass_grid=(
+            None
+            if shared.metal_mass_msun_grid is None
+            else np.array(shared.metal_mass_msun_grid, copy=True)
+        ),
+        gas_mass_grid=(
+            None
+            if shared.gas_mass_msun_grid is None
+            else np.array(shared.gas_mass_msun_grid, copy=True)
+        ),
     )

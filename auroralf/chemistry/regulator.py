@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from auroralf.mah.models import Cosmology
+
 
 SOLAR_METALLICITY_MASS_FRACTION = 0.0142
 
@@ -145,7 +147,7 @@ def compute_regulator_metallicity(
     mh_grid: np.ndarray,
     sfr_grid: np.ndarray,
     active_grid: np.ndarray,
-    baryon_fraction: float,
+    cosmology: Cosmology,
     parameters: RegulatorMetallicityParameters | None = None,
     random_seed: int | None = None,
 ) -> RegulatorMetallicityResult:
@@ -156,10 +158,11 @@ def compute_regulator_metallicity(
     term to assign source-time gas metallicity without feeding back on SFR.
     """
 
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
     params = RegulatorMetallicityParameters() if parameters is None else parameters
     _validate_parameters(params)
-    if not 0.0 < float(baryon_fraction) <= 1.0:
-        raise ValueError("baryon_fraction must lie in (0, 1]")
+    baryon_fraction = cosmology.omega_b / cosmology.omega_m
 
     t_grid = np.asarray(t_grid_gyr, dtype=float)
     if t_grid.ndim != 2:
@@ -192,7 +195,7 @@ def compute_regulator_metallicity(
     stellar_mass = (1.0 - float(params.returned_fraction)) * np.cumsum(formed_stellar_mass, axis=1)
 
     gas_fraction = _gas_fraction_grid(mh, z, params)
-    gas_mass = gas_fraction * float(baryon_fraction) * mh
+    gas_mass = gas_fraction * baryon_fraction * mh
     metal_loading = _metal_loading_grid(mh, z, params)
 
     denominator_stellar_mass = stellar_mass

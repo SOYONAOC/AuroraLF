@@ -12,6 +12,8 @@ outputs/
 data_save/
 temp_data/
 cosm/
+third_party/
+runs/
 jupyter.err
 kernel/jupyter.err
 

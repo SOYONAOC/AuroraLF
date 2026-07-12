@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from colossus.cosmology import cosmology
+from colossus.cosmology import cosmology as colossus_cosmology
 from colossus.lss import mass_function as colossus_mass_function
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -19,11 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from auroralf.uvlf import compute_reed07_halo_mass_function_dndm
+from auroralf.mah import Cosmology
 from auroralf.uvlf.hmf_sampling import (
-    MASS_FUNCTION_H,
     MASS_FUNCTION_NS,
-    MASS_FUNCTION_OMEGA_B_H2,
-    MASS_FUNCTION_OMEGA_M,
     MASS_FUNCTION_SIGMA8,
 )
 
@@ -52,22 +50,27 @@ def _resolve_project_path(path_text: str) -> Path:
     return path.resolve()
 
 
-def _set_colossus_cosmology() -> None:
-    h = MASS_FUNCTION_H
+def _set_colossus_cosmology(cosmology: Cosmology) -> None:
+    h = cosmology.h0_km_s_mpc / 100.0
     params = {
         "flat": True,
-        "H0": 100.0 * h,
-        "Om0": MASS_FUNCTION_OMEGA_M,
-        "Ob0": MASS_FUNCTION_OMEGA_B_H2 / h**2,
+        "H0": cosmology.h0_km_s_mpc,
+        "Om0": cosmology.omega_m,
+        "Ob0": cosmology.omega_b,
         "sigma8": MASS_FUNCTION_SIGMA8,
         "ns": MASS_FUNCTION_NS,
     }
-    cosmology.addCosmology("AuroraLF_hmf_compare", params)
-    cosmology.setCosmology("AuroraLF_hmf_compare")
+    colossus_cosmology.addCosmology("AuroraLF_hmf_compare", params)
+    colossus_cosmology.setCosmology("AuroraLF_hmf_compare")
 
 
-def _colossus_yung24_dndm_physical(halo_mass_msun: np.ndarray, z_obs: float) -> np.ndarray:
-    h = MASS_FUNCTION_H
+def _colossus_yung24_dndm_physical(
+    halo_mass_msun: np.ndarray,
+    z_obs: float,
+    *,
+    cosmology: Cosmology,
+) -> np.ndarray:
+    h = cosmology.h0_km_s_mpc / 100.0
     halo_mass_msun_over_h = np.asarray(halo_mass_msun, dtype=float) * h
     dndlnm_h3_mpc3 = np.asarray(
         colossus_mass_function.massFunction(
@@ -99,12 +102,13 @@ def _set_ratio_ylim(ax: plt.Axes, values: list[np.ndarray]) -> None:
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     if args.n_mass < 2:
         raise ValueError("n-mass must be at least 2")
     if args.logM_max <= args.logM_min:
         raise ValueError("logM-max must be larger than logM-min")
 
-    _set_colossus_cosmology()
+    _set_colossus_cosmology(cosmology)
 
     output_prefix = _resolve_project_path(args.output_prefix)
     csv_path = _resolve_project_path(args.csv_path)
@@ -121,7 +125,8 @@ def main() -> None:
     summary_lines = [
         "models: hmf Reed07 FoF, Colossus Yung24 vir",
         "units: dn/dM in physical Mpc^-3 Msun^-1; input halo mass in physical Msun",
-        f"cosmology: h={MASS_FUNCTION_H}, Om0={MASS_FUNCTION_OMEGA_M}, Obh2={MASS_FUNCTION_OMEGA_B_H2}, "
+        f"cosmology: h={cosmology.h0_km_s_mpc / 100.0}, Om0={cosmology.omega_m}, "
+        f"Ob0={cosmology.omega_b}, "
         f"sigma8={MASS_FUNCTION_SIGMA8}, ns={MASS_FUNCTION_NS}",
         "",
     ]
@@ -131,10 +136,15 @@ def main() -> None:
             compute_reed07_halo_mass_function_dndm(
                 halo_mass,
                 z_obs,
+                cosmology=cosmology,
             ),
             dtype=float,
         )
-        yung24 = _colossus_yung24_dndm_physical(halo_mass, z_obs)
+        yung24 = _colossus_yung24_dndm_physical(
+            halo_mass,
+            z_obs,
+            cosmology=cosmology,
+        )
         if not np.all(np.isfinite(yung24)) or np.any(yung24 <= 0.0):
             raise RuntimeError(f"Colossus Yung24 returned non-positive or non-finite values at z={z_obs:g}")
 
@@ -155,10 +165,15 @@ def main() -> None:
             compute_reed07_halo_mass_function_dndm(
                 BENCHMARK_MASSES,
                 z_obs,
+                cosmology=cosmology,
             ),
             dtype=float,
         )
-        benchmark_yung24 = _colossus_yung24_dndm_physical(BENCHMARK_MASSES, z_obs)
+        benchmark_yung24 = _colossus_yung24_dndm_physical(
+            BENCHMARK_MASSES,
+            z_obs,
+            cosmology=cosmology,
+        )
         benchmark_ratio = benchmark_yung24 / benchmark_reed07
         summary_lines.append(f"z={z_obs:g}")
         summary_lines.append(

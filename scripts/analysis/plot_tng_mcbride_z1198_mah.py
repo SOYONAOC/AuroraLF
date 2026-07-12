@@ -9,7 +9,8 @@ import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
 
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 from auroralf.mah.tng import (
     _load_tng_cache,
     _regrid_mass_ratio_uniform_in_t,
@@ -27,7 +28,7 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "tng_z1198_mah_compare"
 def _tracks_to_grid(result: Any, n_tracks: int) -> dict[str, np.ndarray]:
     n_steps = int(result.metadata["grid_size"])
     grids: dict[str, np.ndarray] = {}
-    for key in ("z", "t_gyr", "Mh", "dMh_dt", "active_flag"):
+    for key in ("z", "t_gyr", "Mh", "dMh_dt_raw", "active_flag"):
         array = np.asarray(result.tracks[key])
         if array.size != int(n_tracks) * n_steps:
             raise ValueError(f"track column {key!r} cannot be reshaped to ({n_tracks}, {n_steps})")
@@ -100,6 +101,7 @@ def _load_all_tng_candidates(
 
 def _build_pair(
     *,
+    cosmology: Cosmology,
     logm_final: float,
     min_candidates: int,
     mass_bin_width_dex: float,
@@ -120,6 +122,7 @@ def _build_pair(
         n_tracks=n_tracks,
         z_final=float(tng["uniform_z"][-1]),
         Mh_final=mh_final,
+        cosmology=cosmology,
         z_start_max=float(tng["uniform_z"][0]),
         M_min=0.0,
         random_seed=seed + 10_000,
@@ -290,12 +293,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     if not TNG_CACHE.exists():
         raise FileNotFoundError(f"TNG MAH cache not found: {TNG_CACHE}")
     samples = [
         _build_pair(
+            cosmology=cosmology,
             logm_final=logm,
             min_candidates=int(args.min_candidates),
             mass_bin_width_dex=float(args.mass_bin_width_dex),

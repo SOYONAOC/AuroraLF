@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import h5py
+import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +29,7 @@ TREE_MASS_FIELD_CANDIDATES = (
     "SubhaloMassInRadType",
     "Mass",
 )
+INTEGRITY_MANIFEST_SCHEMA_VERSION = "auroralf.thesan_download_integrity.v1"
 
 
 def _tag_from_float(value: float, *, precision: int = 3) -> str:
@@ -401,6 +404,99 @@ def _require_file(path: Path) -> None:
         raise ValueError(f"required THESAN path is not a file: {path}")
 
 
+def _unique_json_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError(f"integrity manifest contains duplicate key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"integrity manifest contains non-finite JSON token: {value}")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_integrity_manifest(
+    *,
+    root: Path,
+    manifest_path: Path,
+    required_paths: tuple[Path, ...],
+) -> dict[str, str]:
+    _require_file(manifest_path)
+    payload = json.loads(
+        manifest_path.read_text(encoding="utf-8"),
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_reject_nonfinite_json,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("integrity manifest root must be an object")
+    if payload.get("schema_version") != INTEGRITY_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            "integrity manifest schema_version must be "
+            f"{INTEGRITY_MANIFEST_SCHEMA_VERSION!r}"
+        )
+    if payload.get("simulation") != "Thesan-Dark-1":
+        raise ValueError("integrity manifest simulation must be 'Thesan-Dark-1'")
+    files = payload.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("integrity manifest files must be an object")
+
+    root_resolved = root.resolve(strict=True)
+    methods: dict[str, str] = {}
+    for path in required_paths:
+        _require_file(path)
+        try:
+            relative = path.resolve(strict=True).relative_to(root_resolved).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"smoke file is outside the THESAN root: {path}") from exc
+        if relative not in files:
+            raise KeyError(f"integrity manifest is missing required file: {relative}")
+        record = files[relative]
+        if not isinstance(record, dict):
+            raise ValueError(f"integrity record for {relative} must be an object")
+        expected_size = record.get("size_bytes")
+        expected_sha = record.get("sha256")
+        if expected_size is None and expected_sha is None:
+            raise ValueError(
+                f"integrity record for {relative} requires size_bytes and/or sha256"
+            )
+        checked: list[str] = []
+        if expected_size is not None:
+            if isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size <= 0:
+                raise ValueError(f"integrity size_bytes for {relative} must be a positive integer")
+            actual_size = path.stat().st_size
+            if actual_size != expected_size:
+                raise ValueError(
+                    f"integrity size mismatch for {relative}: expected {expected_size}, got {actual_size}"
+                )
+            checked.append("size_bytes")
+        if expected_sha is not None:
+            if not isinstance(expected_sha, str):
+                raise ValueError(f"integrity sha256 for {relative} must be text")
+            normalized_sha = expected_sha.strip().lower()
+            if len(normalized_sha) != 64 or any(
+                character not in "0123456789abcdef" for character in normalized_sha
+            ):
+                raise ValueError(f"integrity sha256 for {relative} must be 64 hexadecimal characters")
+            actual_sha = _sha256_file(path)
+            if actual_sha != normalized_sha:
+                raise ValueError(
+                    f"integrity SHA-256 mismatch for {relative}: expected {normalized_sha}, got {actual_sha}"
+                )
+            checked.append("sha256")
+        methods[relative] = "+".join(checked)
+    return methods
+
+
 def _dataset_leaf_names(handle: h5py.File) -> list[str]:
     names: list[str] = []
 
@@ -457,6 +553,62 @@ def _find_tree_mass_field(path: Path) -> tuple[bool, str]:
     return found_snapnum, found_mass
 
 
+def _validate_tree_structure(path: Path) -> dict[str, Any]:
+    required_branch_fields = {
+        "SnapNum",
+        "FirstProgenitor",
+        "FirstHaloInFOFGroup",
+        "SubhaloGrNr",
+    }
+    mass_fields: set[str] = set()
+    with h5py.File(path, "r") as handle:
+        if "Header/Redshifts" not in handle:
+            raise KeyError(f"THESAN tree file is missing Header/Redshifts: {path}")
+        redshifts = np.asarray(handle["Header/Redshifts"], dtype=float)
+        if redshifts.ndim != 1 or redshifts.size < 2 or not np.all(np.isfinite(redshifts)):
+            raise ValueError(
+                f"THESAN tree Header/Redshifts must be finite 1D with at least two entries: {path}"
+            )
+        tree_names = sorted(
+            name
+            for name, value in handle.items()
+            if name.startswith("Tree") and isinstance(value, h5py.Group)
+        )
+        if not tree_names:
+            raise KeyError(f"THESAN tree file contains no Tree groups: {path}")
+        for tree_name in tree_names:
+            tree = handle[tree_name]
+            missing = sorted(required_branch_fields.difference(tree.keys()))
+            if missing:
+                raise KeyError(f"{path}:{tree_name} is missing required datasets: {missing}")
+            available_mass = [name for name in TREE_MASS_FIELD_CANDIDATES if name in tree]
+            if not available_mass:
+                raise KeyError(
+                    f"{path}:{tree_name} has no supported mass dataset; "
+                    f"expected one of {TREE_MASS_FIELD_CANDIDATES}"
+                )
+            mass_field = available_mass[0]
+            mass_fields.add(mass_field)
+            snap = tree["SnapNum"]
+            if snap.ndim != 1 or snap.dtype.kind not in "iu":
+                raise ValueError(f"{path}:{tree_name}/SnapNum must be a 1D integer dataset")
+            expected_shape = snap.shape
+            for name in (*sorted(required_branch_fields - {"SnapNum"}), mass_field):
+                dataset = tree[name]
+                if dataset.ndim != 1 or dataset.shape != expected_shape:
+                    raise ValueError(
+                        f"{path}:{tree_name}/{name} must be 1D and match SnapNum shape"
+                    )
+            for name in ("FirstProgenitor", "FirstHaloInFOFGroup", "SubhaloGrNr"):
+                if tree[name].dtype.kind not in "iu":
+                    raise ValueError(f"{path}:{tree_name}/{name} must contain integers")
+    return {
+        "tree_group_count": len(tree_names),
+        "tree_mass_fields": sorted(mass_fields),
+        "tree_redshift_count": int(redshifts.size),
+    }
+
+
 def _read_sub_desc_summary(path: Path) -> dict[str, Any]:
     _require_file(path)
     size = path.stat().st_size
@@ -476,14 +628,29 @@ def _read_sub_desc_summary(path: Path) -> dict[str, Any]:
     }
 
 
-def _validate_smoke_files(*, root: Path, snapshot: int, tree_chunk: int) -> dict[str, Any]:
+def _validate_smoke_files(
+    *,
+    root: Path,
+    snapshot: int,
+    tree_chunk: int,
+    integrity_manifest: Path,
+) -> dict[str, Any]:
     snap = f"{int(snapshot):03d}"
-    del tree_chunk
     groupcat_path = root / "output" / f"groups_{snap}" / f"fof_subhalo_tab_{snap}.0.hdf5"
     offset_path = root / "postprocessing" / "offsets" / f"offsets_{snap}.hdf5"
     sub_desc_path = root / "postprocessing" / "trees" / "LHaloTree" / "sub_desc_sf1_080"
-    for path in (groupcat_path, offset_path, sub_desc_path):
-        _require_file(path)
+    tree_path = (
+        root
+        / "postprocessing"
+        / "trees"
+        / "LHaloTree"
+        / f"trees_sf1_190.{int(tree_chunk)}.hdf5"
+    )
+    integrity_methods = _validate_integrity_manifest(
+        root=root,
+        manifest_path=integrity_manifest,
+        required_paths=(groupcat_path, offset_path, sub_desc_path, tree_path),
+    )
 
     with h5py.File(groupcat_path, "r") as handle:
         has_header = "Header" in handle
@@ -496,6 +663,7 @@ def _validate_smoke_files(*, root: Path, snapshot: int, tree_chunk: int) -> dict
     if mapping_count == 0:
         raise KeyError(f"offset file has no tree-mapping datasets: {offset_path}")
     sub_desc_summary = _read_sub_desc_summary(sub_desc_path)
+    tree_summary = _validate_tree_structure(tree_path)
 
     report = {
         "root": str(root),
@@ -506,8 +674,13 @@ def _validate_smoke_files(*, root: Path, snapshot: int, tree_chunk: int) -> dict
         "groupcat_has_group": has_group,
         "groupcat_has_subhalo": has_subhalo,
         "offset_mapping_dataset_count": mapping_count,
+        "tree_path": str(tree_path),
+        "integrity_manifest": str(integrity_manifest.resolve(strict=True)),
+        "integrity_verified_file_count": len(integrity_methods),
+        "integrity_methods": integrity_methods,
     }
     report.update(sub_desc_summary)
+    report.update(tree_summary)
     return report
 
 
@@ -528,6 +701,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--validate-smoke", action="store_true")
     parser.add_argument("--smoke-snapshot", type=int, default=None)
     parser.add_argument("--smoke-tree-chunk", type=int, default=0)
+    parser.add_argument("--smoke-integrity-manifest", type=str, default=None)
     return parser.parse_args()
 
 
@@ -558,6 +732,8 @@ def main() -> None:
         print(f"saved_{key}={path}")
 
     if args.validate_smoke:
+        if args.smoke_integrity_manifest is None:
+            raise ValueError("--validate-smoke requires --smoke-integrity-manifest")
         if args.smoke_snapshot is None:
             if snapshot_redshift is None:
                 raise ValueError("--validate-smoke requires --smoke-snapshot or --snapshot-redshift-file")
@@ -568,6 +744,7 @@ def main() -> None:
             root=local_root,
             snapshot=smoke_snapshot,
             tree_chunk=int(args.smoke_tree_chunk),
+            integrity_manifest=_resolve_path(args.smoke_integrity_manifest),
         )
         report_path = output_dir / f"thesan-dark-1_smoke_snapshot_{smoke_snapshot:03d}_validation.json"
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

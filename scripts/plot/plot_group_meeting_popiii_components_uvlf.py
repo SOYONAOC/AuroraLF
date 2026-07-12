@@ -10,6 +10,8 @@ import numpy as np
 from numpy.polynomial.hermite import hermgauss
 
 from auroralf.cooling import compute_atomic_cooling_mass_msun, compute_popiii_lw_minimum_mass_msun
+from auroralf.mah import Cosmology
+from auroralf.sfr import PopIIISFRParameters
 from auroralf.uvlf import sample_uvlf_from_hmf, uv_luminosity_to_muv
 
 
@@ -260,6 +262,7 @@ def _plot_column(phi: np.ndarray, centers: np.ndarray, plot_mask: np.ndarray, pl
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     if args.N_mass <= 0:
         raise ValueError("--N-mass must be positive")
     if args.n_tracks <= 0:
@@ -291,10 +294,18 @@ def main() -> None:
         raise FileNotFoundError(f"Pop III SSP file not found: {popiii_ssp_file}")
 
     z_obs = float(args.z)
-    popiii_minimum_mass_msun = float(
-        compute_popiii_lw_minimum_mass_msun(z_obs, lw_background_j21=float(args.lw_background_j21))
+    popiii_sfr_parameters = PopIIISFRParameters(
+        lw_background_j21=float(args.lw_background_j21),
     )
-    atomic_mass_msun = float(compute_atomic_cooling_mass_msun(z_obs))
+    popiii_minimum_mass_msun = float(
+        compute_popiii_lw_minimum_mass_msun(
+            z_obs,
+            lw_background_j21=float(popiii_sfr_parameters.lw_background_j21),
+        )
+    )
+    atomic_mass_msun = float(
+        compute_atomic_cooling_mass_msun(z_obs, cosmology=cosmology)
+    )
     logm_min = float(np.log10(popiii_minimum_mass_msun))
     if args.logM_max <= logm_min:
         raise ValueError("--logM-max must be larger than log10(M_popIII_min)")
@@ -306,9 +317,10 @@ def main() -> None:
 
     result = sample_uvlf_from_hmf(
         z_obs=z_obs,
+        cosmology=cosmology,
         N_mass=int(args.N_mass),
         n_tracks=int(args.n_tracks),
-        random_seed=int(args.random_seed),
+        base_seed=int(args.random_seed),
         quantity="Muv",
         bins=bin_edges,
         logM_min=logm_min,
@@ -319,9 +331,9 @@ def main() -> None:
         enable_time_delay=True,
         pipeline_workers=int(args.workers),
         enable_popiii=True,
+        popiii_sfr_parameters=popiii_sfr_parameters,
         popiii_ssp_file=str(popiii_ssp_file),
         imf_mode="canonical",
-        lw_background_j21=float(args.lw_background_j21),
     )
 
     total_luminosity = np.asarray(result.samples["luminosity"], dtype=float)
@@ -464,7 +476,7 @@ def main() -> None:
         N_mass=np.asarray([args.N_mass], dtype=int),
         n_tracks=np.asarray([args.n_tracks], dtype=int),
         n_grid=np.asarray([args.n_grid], dtype=int),
-        random_seed=np.asarray([args.random_seed], dtype=int),
+        base_seed=np.asarray([args.random_seed], dtype=np.uint64),
         smooth_sigma_mag=np.asarray([args.smooth_sigma_mag], dtype=float),
         popiii_burst_sigma_mag=np.asarray([args.popiii_burst_sigma_mag], dtype=float),
         popiii_burst_quadrature_order=np.asarray([args.popiii_burst_quadrature_order], dtype=int),

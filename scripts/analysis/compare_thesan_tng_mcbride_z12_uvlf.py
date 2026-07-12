@@ -14,6 +14,9 @@ Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
 
+from auroralf.mah import Cosmology
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
+from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf, uv_luminosity_to_muv
 from auroralf.uvlf.pipeline import run_halo_uv_pipeline
 
@@ -130,7 +133,7 @@ def _pipeline_kwargs(spec: BackendSpec) -> dict[str, Any]:
     raise RuntimeError(f"unsupported backend spec: {spec.backend}")
 
 
-def run_fixed_mass_scan() -> list[dict[str, Any]]:
+def run_fixed_mass_scan(*, cosmology: Cosmology) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for sim_index, sim_spec in enumerate((THESAN, TNG)):
         mc_spec = BackendSpec(
@@ -141,16 +144,21 @@ def run_fixed_mass_scan() -> list[dict[str, Any]]:
             color="#0072B2",
             marker="^",
         )
-        for logm in LOGM_GRID:
+        for mass_index, logm in enumerate(LOGM_GRID):
             mh_final = float(10.0**float(logm))
             for spec in (mc_spec, sim_spec):
                 result = run_halo_uv_pipeline(
                     n_tracks=FIXED_N_TRACKS,
                     z_final=spec.z_final,
                     Mh_final=mh_final,
+                    cosmology=cosmology,
+                    random_seeds=derive_pipeline_random_seeds(
+                        101_000 + 1000 * sim_index,
+                        redshift=spec.z_final,
+                        mass_index=mass_index,
+                    ),
                     z_start_max=Z_START_MAX,
                     n_grid=N_GRID,
-                    random_seed=101_000 + 1000 * sim_index + int(round(float(logm) * 100.0)) + (0 if spec.backend == "mcbride" else 500),
                     enable_time_delay=True,
                     workers=1,
                     **_pipeline_kwargs(spec),
@@ -172,13 +180,14 @@ def run_fixed_mass_scan() -> list[dict[str, Any]]:
     return rows
 
 
-def _run_hmf_for_spec(spec: BackendSpec, *, seed: int) -> Any:
+def _run_hmf_for_spec(spec: BackendSpec, *, seed: int, cosmology: Cosmology) -> Any:
     bins = np.arange(-22.0, -13.0 + 0.5, 0.5)
     return sample_uvlf_from_hmf(
         z_obs=spec.z_final,
+        cosmology=cosmology,
         N_mass=HMF_N_MASS,
         n_tracks=HMF_N_TRACKS,
-        random_seed=seed,
+        base_seed=seed,
         bins=bins,
         logM_min=HMF_LOGM_MIN,
         logM_max=HMF_LOGM_MAX,
@@ -190,7 +199,10 @@ def _run_hmf_for_spec(spec: BackendSpec, *, seed: int) -> Any:
     )
 
 
-def run_hmf_uvlf() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def run_hmf_uvlf(
+    *,
+    cosmology: Cosmology,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     integrated_rows: list[dict[str, Any]] = []
     bin_rows: list[dict[str, Any]] = []
     results: dict[str, Any] = {}
@@ -205,7 +217,11 @@ def run_hmf_uvlf() -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str
         )
         for backend_index, spec in enumerate((mc_spec, sim_spec)):
             key = f"{sim_spec.backend}_{spec.backend}"
-            result = _run_hmf_for_spec(spec, seed=111_000 + 1000 * sim_index + 500 * backend_index)
+            result = _run_hmf_for_spec(
+                spec,
+                seed=111_000 + 1000 * sim_index + 500 * backend_index,
+                cosmology=cosmology,
+            )
             results[key] = result
             samples_muv = np.asarray(result.samples["Muv"], dtype=float)
             sample_weight = np.asarray(result.samples["sample_weight"], dtype=float)
@@ -342,9 +358,15 @@ def make_plot(fixed_rows: list[dict[str, Any]], bin_rows: list[dict[str, Any]], 
 
 
 def main() -> None:
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    fixed_rows = run_fixed_mass_scan()
-    integrated_rows, bin_rows, _ = run_hmf_uvlf()
+    fixed_rows = run_fixed_mass_scan(cosmology=cosmology)
+    integrated_rows, bin_rows, _ = run_hmf_uvlf(cosmology=cosmology)
     ratio_rows = build_ratio_rows(bin_rows)
     fixed_path = OUTPUT_DIR / "fixed_mass_muv_summary.csv"
     integrated_path = OUTPUT_DIR / "uvlf_integrated_summary.csv"

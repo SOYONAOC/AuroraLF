@@ -37,6 +37,10 @@ M_{\min}=10^9,M_\odot,\qquad M_{\max}=10^{16},M_\odot
 2. 第二层对每个抽到的 (M_{\rm h}) 调用 `run_halo_uv_pipeline()`，得到该质量下的一组 luminosity realization
 3. 最后结合 halo mass function 的权重，对所有 luminosity 样本做加权统计，得到 UVLF
 
+所有公开科学入口都要求 keyword-only `cosmology=Cosmology(...)`。调用方在 CLI/main
+边界构造一次，并将同一对象传给 HMF、MAH、SFR 和每个 pipeline worker；library
+内部不创建隐藏默认宇宙学。
+
 ---
 
 ## 固定参数
@@ -95,7 +99,14 @@ M_{{\rm h},i}=10^{\log_{10} M_{{\rm h},i}}
 对每个抽到的 (M_{{\rm h},i})，直接调用：
 
 ```python
-run_halo_uv_pipeline(Mh_final=Mh_i, z_final=z_obs, n_tracks=1000, ...)
+run_halo_uv_pipeline(
+    Mh_final=Mh_i,
+    z_final=z_obs,
+    n_tracks=1000,
+    cosmology=cosmology,
+    random_seeds=derive_pipeline_random_seeds(base_seed, redshift=z_obs, mass_index=mass_index),
+    ...,
+)
 ```
 
 把这个函数视为一个黑箱条件采样器，即：
@@ -166,9 +177,10 @@ w_{ij}=\frac{w_i}{1000}
 ```python
 sample_uvlf_from_hmf(
     z_obs,
+    cosmology=cosmology,
     N_mass=3000,
     n_tracks=1000,
-    random_seed=42,
+    base_seed=42,
     ...
 )
 ```
@@ -183,7 +195,8 @@ sample_uvlf_from_hmf(
 1. 在 ([9,16]) 上均匀抽取 3000 个 `logMh`
 2. 转成 `Mh`
 3. 计算每个 `Mh` 对应的 halo mass function 权重
-4. 对每个 `Mh` 调用 `run_halo_uv_pipeline(Mh_final=Mh_i, z_final=z_obs, n_tracks=1000, ...)`
+4. 对每个 `Mh` 调用
+   `run_halo_uv_pipeline(Mh_final=Mh_i, z_final=z_obs, n_tracks=1000, cosmology=cosmology, ...)`
 5. 从返回结果中提取 luminosity 或 UV magnitude 样本
 6. 为每个 realization 分配对应权重
 7. 汇总全部样本
@@ -246,6 +259,12 @@ PopIII SFR 使用：
 `alpha_star=beta_star=0`、`lw_background_j21=0`、
 `upper_mass_mode="atomic"`。`upper_mass_mode="fixed"` 和
 `upper_mass_msun` 可用于测试 Venditti Heavy/Bursty 式上限。
+
+HMF orchestration 只从 `popiii_sfr_parameters.lw_background_j21` 读取 LW
+background，并用同一参数对象计算 molecular-cooling 下限、stellar-channel
+分类、每个 worker 的 Pop III SFR 和 metadata。`sample_uvlf_from_hmf()` 不再接受
+独立的 `lw_background_j21` 参数；生产 CLI 的 `--lw-background-j21` 只在入口构造
+一次 `PopIIISFRParameters`。
 
 PopIII duty cycle 的低质量端使用 Cruz/Venditti 的 molecular-cooling
 阈值：

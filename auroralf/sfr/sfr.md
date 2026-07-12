@@ -55,13 +55,17 @@ SFR 计算函数不直接输入单点形式的 `(t, z, Mh, cosmology)`，而是�
 - `z`
 - `t_gyr`
 - `Mh`
-- `dMh_dt`
+- `dMh_dt_raw`
+- `dMh_dt_sfr`
+- `dMh_dt_clipped`
 
 其中：
 
 - `t_gyr` 为宇宙时间，单位 `Gyr`
 - `Mh` 为 halo mass
-- `dMh_dt` 为 halo mass accretion rate
+- `dMh_dt_raw` 为原始 halo mass 导数，单位 `Msun/Gyr`，允许为负并用于 MAH 诊断
+- `dMh_dt_sfr = maximum(dMh_dt_raw, 0)`，单位 `Msun/Gyr`，只用于 SFR/IMF 路径
+- `dMh_dt_clipped = (dMh_dt_raw < 0)` 记录发生裁剪的位置
 
 实际计算时应当：
 
@@ -73,26 +77,29 @@ SFR 计算函数不直接输入单点形式的 `(t, z, Mh, cosmology)`，而是�
 
 ## 3. 宇宙学参数来源
 
-宇宙学常数不作为函数接口传入，而是直接使用项目中的 `CosmologySet`。
+宇宙学对象必须由调用方通过 keyword-only 参数显式传入。MAH、SFR、Pop III 与
+chemistry 路径应复用同一个 `Cosmology` 对象，避免各阶段静默回到不同默认值。
 
-推荐在函数内部直接实例化：
+推荐在 pipeline 入口解析一次：
 
 ```python
-cosmo = CosmologySet()
-````
+from auroralf.mah import Cosmology
+
+cosmology = Cosmology()
+```
 
 并使用其中的：
 
-* `omegam`
-* `omegab`
-* `omegalam`
-* `H0u`
+* `omega_m`
+* `omega_b`
+* `omega_lambda`
+* `h0_km_s_mpc`
 * `rhocrit`
 
 重子比例定义为
 
 [
-f_b=\frac{\texttt{cosmo.omegab}}{\texttt{cosmo.omegam}}
+f_b=\frac{\texttt{cosmology.omega_b}}{\texttt{cosmology.omega_m}}
 ]
 
 ---
@@ -282,14 +289,16 @@ f_*!\bigl(M_h(t_i-\tau_{\rm del,i})\bigr),
 * `z`
 * `t_gyr`
 * `Mh`
-* `dMh_dt`
+* `dMh_dt_raw`
+* `dMh_dt_sfr`
+* `dMh_dt_clipped`
 * `r_vir`
 * `V_c`
 * `T_vir`
 * `tau_del`
 * `t_src`
 * `Mh_src`
-* `dMh_dt_src`
+* `dMh_dt_sfr_src`
 * `fstar_src`
 * `SFR`
 
@@ -302,33 +311,31 @@ f_*!\bigl(M_h(t_i-\tau_{\rm del,i})\bigr),
 建议实现形式为：
 
 ```python
-compute_sfr_from_tracks(tracks)
+compute_sfr_from_tracks(tracks, cosmology=cosmology)
 ```
 
 如需保留 source-time 延迟，也可以扩展为：
 
 ```python
-compute_sfr_from_tracks(tracks, enable_time_delay=True)
+compute_sfr_from_tracks(
+    tracks,
+    cosmology=cosmology,
+    enable_time_delay=True,
+)
 ```
 
 其中 `enable_time_delay=False` 可作为默认行为，表示直接用当前时刻的
-`Mh` 和 `dMh_dt` 计算 SFR；只有在显式开启时才使用
+`Mh` 和 `dMh_dt_sfr` 计算 SFR；只有在显式开启时才使用
 基于 `g(t-t') \propto (t-t') \exp[-(t-t')/(\kappa t_d)]` 的
 extended-burst 延迟核，对
 \(f_\star[M_h(t')]\,\dot M_h(t')\)
 做时间卷积。
 
-而不是：
-
-```python
-compute_sfr(t, z, Mh, cosmology)
-```
-
 原因如下：
 
 1. 项目标准输入已经是 `HaloHistoryResult.tracks`
-2. 宇宙学参数由 `CosmologySet` 内部提供，不需要作为函数参数传入
-3. 该形式更容易直接集成到 `realUVLF` 主目录及其子目录中
+2. keyword-only 的必填宇宙学对象使科学上下文显式且不可被内部默认值覆盖
+3. MAH 与 SFR 可通过对象 identity 复用同一组参数
 
 ---
 
@@ -337,11 +344,12 @@ compute_sfr(t, z, Mh, cosmology)
 请在 `realUVLF` 主目录或其子目录中实现 SFR 计算函数，要求如下：
 
 * 输入为 `HaloHistoryResult.tracks` 风格的扁平数组字典
-* 宇宙学参数不作为函数接口传入，直接使用 `CosmologySet`
+* `cosmology` 是 keyword-only 必填参数，且必须是 `Cosmology` 或其子类
+* 禁止在 SFR calculator 内部构造默认宇宙学或对错误对象做 duck-typing fallback
 * 按 `halo_id` 分组逐条轨道计算
-* 使用 `tracks` 中已有的 `t_gyr, z, Mh, dMh_dt`
+* 使用 `tracks` 中已有的 `t_gyr, z, Mh, dMh_dt_raw, dMh_dt_sfr, dMh_dt_clipped`
 * 计算 `r_vir, V_c, T_vir, tau_del`
-* 用线性插值计算 `Mh(t-\tau_del)` 和 `dMh_dt(t-\tau_del)`
+* 用线性插值计算 `Mh(t-\tau_del)` 和 `dMh_dt_sfr(t-\tau_del)`
 * 若 `T_vir < 1e4 K`，则 `SFR = 0`
 * 若源时间超出历史范围，则 `SFR = 0`
 * 返回扁平表格风格结果
@@ -364,7 +372,7 @@ f_b\,f_{*,{\rm III}}(M_h)\,f_{{\rm duty},{\rm III}}(M_h,z,J_{\rm LW})\,
 \dot M_h / 10^9
 ]
 
-其中 `dMh_dt` 的单位仍是 `Msun/Gyr`，因此除以 `10^9` 后得到
+其中 `dMh_dt_sfr` 的单位是 `Msun/Gyr`，因此除以 `10^9` 后得到
 `Msun/yr`。
 
 默认 PopIII SFE 为 Cruz fiducial：
@@ -405,12 +413,48 @@ fixed upper mass 复现 Venditti 的 Bursty/Heavy 试验。
 ```python
 PopIIISFRParameters(...)
 compute_popiii_star_formation_efficiency(...)
-compute_popiii_duty_cycle(...)
-compute_popiii_sfr_from_grids(...)
+compute_popiii_duty_cycle(..., cosmology=cosmology)
+compute_popiii_sfr_from_grids(..., cosmology=cosmology)
 ```
 
 `compute_popiii_sfr_from_grids` 返回 `SFR_popiii`、`fstar_popiii`、
 `popiii_duty_cycle`、PopIII lower/upper mass grids 和 source mask。当前
 pipeline 不让 PopIII SFR 进入 PopII metallicity regulator 或 PopII IMF gate。
+
+### 13.1 Visbal+2015 PopIII SFH 诊断公式
+
+Visbal, Haiman & Bryan (2015) Eq. 10 可作为单独的诊断型 PopIII SFH
+口径使用：
+
+[
+{\rm SFR}_{III}^{\rm V15} =
+f_{\star,III}\frac{\Omega_b}{\Omega_m}
+\frac{M_h}{\eta_{\rm duty}t_H(z)}
+]
+
+其中 `t_H(z)=1/H(z)`，代码里 `H(z)` 的单位为 `Gyr^-1`，因此输出
+`Msun/yr` 时需要除以 `1e9`。`eta_duty` 是 burst 持续时间占 Hubble
+time 的比例，所以单条 halo history 上的瞬时 SFR 按
+`eta_duty^-1` 缩放；它不是本节上面的
+`exp(-M_mol/M_h) exp(-M_h/M_up)` PopIII occupation/duty weight。
+
+该文的 atomic-cooling mass 使用原文近似：
+
+[
+M_{\rm cool}^{\rm V15} =
+3\times10^7\left(\frac{1+z}{11}\right)^{1.5}M_\odot
+]
+
+并假定 PopIII 主要在 `M_h = (1-2) M_cool` 的 halo 中形成。公开诊断
+接口为：
+
+```python
+compute_visbal2015_atomic_cooling_mass_msun(...)
+compute_popiii_sfr_visbal2015_from_grids(..., cosmology=cosmology)
+```
+
+后者返回 `sfr_grid`、`mcool_msun_grid`、`mh_over_mcool_grid` 和
+`atomic_window_grid`。该接口不替换默认 PopIII SFR prescription，也不参与
+UV/HeII 卷积；需要 HMF 积分时应在调用端显式处理。
 
 ```

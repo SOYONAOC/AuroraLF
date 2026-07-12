@@ -146,7 +146,6 @@ def _summarize_by_step(
 
 def _compute_summaries(args: argparse.Namespace, parameters: RegulatorMetallicityParameters) -> list[RedshiftSummary]:
     cosmology = Cosmology()
-    baryon_fraction = cosmology.omega_b / cosmology.omega_m
     dt_gyr = _dt_from_grid(cosmology, float(args.z_final), float(args.z_start_max), int(args.n_grid))
     summaries: list[RedshiftSummary] = []
     for mass_index, logmh in enumerate(args.log_masses):
@@ -163,6 +162,7 @@ def _compute_summaries(args: argparse.Namespace, parameters: RegulatorMetallicit
         )
         sfr_tracks = compute_sfr_from_tracks(
             histories.tracks,
+            cosmology=cosmology,
             enable_time_delay=bool(args.enable_time_delay),
         )
         n_halos = int(args.n_tracks)
@@ -179,7 +179,7 @@ def _compute_summaries(args: argparse.Namespace, parameters: RegulatorMetallicit
             mh_grid=mh_grid,
             sfr_grid=sfr_grid,
             active_grid=starforming_grid,
-            baryon_fraction=baryon_fraction,
+            cosmology=cosmology,
             parameters=parameters,
             random_seed=int(args.metallicity_random_seed + 1000 * mass_index),
         )

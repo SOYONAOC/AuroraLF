@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from auroralf.uvlf import compute_dust_attenuated_uvlf
+from auroralf.io.analysis import load_uvlf_result, select_mode_result
+from auroralf.results import UVLFRunResult
 from auroralf.uvlf.imf import IMF_MODE_CANONICAL
 
 
@@ -63,21 +64,21 @@ OBS_FILES = {
 }
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Plot UVLF comparisons for canonical and mild top-heavy Pop II IMF modes."
     )
     parser.add_argument(
-        "--npz-path",
+        "--hdf5-path",
         type=str,
-        default="data_save/uvlf_imf_mode_compare_allz_latest.npz",
+        default="data_save/uvlf_imf_mode_compare_allz_latest.h5",
     )
     parser.add_argument(
         "--output-prefix",
         type=str,
         default="outputs/uvlf_imf_mode_compare_allz_latest",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_project_path(path_text: str) -> Path:
@@ -85,10 +86,6 @@ def _resolve_project_path(path_text: str) -> Path:
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path.resolve()
-
-
-def _z_tag(z_value: float) -> str:
-    return f"z{str(float(z_value)).replace('.', 'p')}"
 
 
 def _obs_paths_from_z(z_value: float) -> tuple[Path, ...]:
@@ -153,37 +150,29 @@ def _set_ratio_ylim_from_values(ax: plt.Axes, values: list[np.ndarray]) -> None:
 
 
 def _mode_phi_for_plot(
-    data: np.lib.npyio.NpzFile,
+    result: UVLFRunResult,
     *,
-    tag: str,
     mode: str,
     z_obs: float,
-    apply_dust: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
-    archived_phi = np.asarray(data[f"{tag}_{mode}_phi"], dtype=float)
-    if not apply_dust:
-        return archived_phi, archived_phi
+    series = select_mode_result(result, redshift=z_obs, mode=mode)
+    return (
+        series.phi_intrinsic_per_mpc3_per_mag,
+        series.phi_observed_per_mpc3_per_mag,
+    )
 
-    intrinsic_phi = np.asarray(data[f"{tag}_{mode}_intrinsic_phi"], dtype=float)
-    centers = np.asarray(data[f"{tag}_bin_centers"], dtype=float)
-    dust = compute_dust_attenuated_uvlf(centers, intrinsic_phi, float(z_obs))
-    computed_phi = np.asarray(dust["phi_obs"], dtype=float)
-    if not np.allclose(archived_phi, computed_phi, rtol=1.0e-12, atol=1.0e-30, equal_nan=True):
-        max_abs = float(np.nanmax(np.abs(archived_phi - computed_phi)))
-        raise RuntimeError(
-            f"Archived dust phi differs from POPIII-style dust recomputation for {tag}/{mode}; "
-            f"max_abs_diff={max_abs:.6e}. Regenerate the NPZ before plotting."
-        )
-    return intrinsic_phi, computed_phi
+
+def _load_model_result(path: Path) -> UVLFRunResult:
+    return load_uvlf_result(path)
 
 
 def main() -> None:
     args = _parse_args()
-    npz_path = _resolve_project_path(args.npz_path)
+    hdf5_path = _resolve_project_path(args.hdf5_path)
     output_prefix = _resolve_project_path(args.output_prefix)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    data = np.load(npz_path)
+    result = _load_model_result(hdf5_path)
     plt.style.use("apj")
     plt.rcParams.update(
         {
@@ -194,13 +183,15 @@ def main() -> None:
             "legend.fontsize": 7.2,
         }
     )
-    z_values = [float(z) for z in np.asarray(data["z_values"], dtype=float)]
-    mode_names = [str(mode) for mode in np.asarray(data["mode_names"])]
+    z_values = list(result.config.redshifts)
+    mode_names = list(result.config.stellar_population.imf_modes)
     variant_modes = [mode for mode in mode_names if mode != IMF_MODE_CANONICAL]
-    canonical_ssp_file = str(np.asarray(data["canonical_ssp_file"])[0])
-    topheavy_ssp_file = str(np.asarray(data["topheavy_ssp_file"])[0])
-    topheavy_ssp_metallicity = float(np.asarray(data["topheavy_ssp_metallicity"])[0])
-    apply_dust = bool(np.asarray(data["apply_dust"])[0])
+    canonical_ssp_file = result.config.stellar_population.canonical_ssp_path
+    topheavy_ssp_file = result.config.stellar_population.topheavy_ssp_path
+    topheavy_ssp_metallicity = (
+        result.config.stellar_population.topheavy_ssp_template_metallicity_zsun
+    )
+    apply_dust = result.config.sampling.apply_dust
     phi_label = (
         r"$\phi_{\rm dust}(M_{\rm UV})$ [mag$^{-1}$ Mpc$^{-3}$]"
         if apply_dust
@@ -220,12 +211,12 @@ def main() -> None:
         axes = np.asarray(axes).reshape(2, 1)
 
     summary_lines = [
-        f"npz_path: {npz_path}",
-        f"mass_function_model: {str(np.asarray(data['mass_function_model'])[0]) if 'mass_function_model' in data.files else 'unknown'}",
-        f"epsilon_0: {float(np.asarray(data['epsilon_0'])[0]) if 'epsilon_0' in data.files else float('nan'):.12g}",
+        f"hdf5_path: {hdf5_path}",
+        f"mass_function_model: {result.config.sampling.mass_function_model}",
+        f"epsilon_0: {result.config.star_formation.efficiency_normalization:.12g}",
         f"canonical_ssp_file: {canonical_ssp_file}",
         f"topheavy_ssp_file: {topheavy_ssp_file}",
-        f"topheavy_ssp_metallicity: {topheavy_ssp_metallicity:g}",
+        f"topheavy_ssp_metallicity: {topheavy_ssp_metallicity}",
         f"apply_dust: {apply_dust}",
         f"mode_names: {' '.join(mode_names)}",
         f"ratio_display_range: {OBS_MUV_MIN:g} <= Muv <= {OBS_MUV_MAX:g}",
@@ -234,14 +225,16 @@ def main() -> None:
     obs_markers = ["o", "s", "^", "D", "P", "X"]
 
     for column, z_obs in enumerate(z_values):
-        tag = _z_tag(z_obs)
-        centers = np.asarray(data[f"{tag}_bin_centers"], dtype=float)
+        canonical_series = select_mode_result(
+            result,
+            redshift=z_obs,
+            mode=IMF_MODE_CANONICAL,
+        )
+        centers = canonical_series.bin_centers_muv
         _, phi_canonical = _mode_phi_for_plot(
-            data,
-            tag=tag,
+            result,
             mode=IMF_MODE_CANONICAL,
             z_obs=z_obs,
-            apply_dust=apply_dust,
         )
 
         ax_top = axes[0, column]
@@ -250,11 +243,9 @@ def main() -> None:
         top_ylim_values.append(phi_canonical[valid_canonical])
         for mode in variant_modes:
             _, phi_mode = _mode_phi_for_plot(
-                data,
-                tag=tag,
+                result,
                 mode=mode,
                 z_obs=z_obs,
-                apply_dust=apply_dust,
             )
             valid = np.isfinite(phi_mode) & (phi_mode > 0.0)
             top_ylim_values.append(phi_mode[valid])
@@ -321,11 +312,9 @@ def main() -> None:
         ax_bottom.axvspan(OBS_MUV_MAX, -15.0, color="0.94", zorder=-10)
         for mode in variant_modes:
             _, phi_mode = _mode_phi_for_plot(
-                data,
-                tag=tag,
+                result,
                 mode=mode,
                 z_obs=z_obs,
-                apply_dust=apply_dust,
             )
             ratio = np.divide(
                 phi_mode,
@@ -353,11 +342,9 @@ def main() -> None:
         summary_lines.append(f"z={z_obs:g}")
         for mode in variant_modes:
             _, phi_mode = _mode_phi_for_plot(
-                data,
-                tag=tag,
+                result,
                 mode=mode,
                 z_obs=z_obs,
-                apply_dust=apply_dust,
             )
             ratio = np.divide(
                 phi_mode,

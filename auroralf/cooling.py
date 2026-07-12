@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from auroralf.mah.models import Cosmology
+
 
 ATOMIC_COOLING_TEMPERATURE_K = 1.0e4
 ATOMIC_COOLING_MU = 0.61
@@ -23,10 +25,14 @@ STELLAR_CHANNELS = (
 def compute_atomic_cooling_mass_msun(
     z_obs: np.ndarray | float,
     *,
+    cosmology: Cosmology,
     virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
     mu: float = ATOMIC_COOLING_MU,
 ) -> np.ndarray | float:
     """Return the halo mass corresponding to a virial temperature threshold."""
+
+    if not isinstance(cosmology, Cosmology):
+        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
 
     if float(virial_temperature_k) <= 0.0:
         raise ValueError("virial_temperature_k must be positive")
@@ -45,7 +51,10 @@ def compute_atomic_cooling_mass_msun(
         raise ImportError("atomic cooling mass requires the optional dependency massfunc") from exc
 
     threshold = np.asarray(
-        mf.SFRD().M_vir(float(mu), float(virial_temperature_k), redshift),
+        mf.SFRD(
+            h=cosmology.h0_km_s_mpc / 100.0,
+            omegam=cosmology.omega_m,
+        ).M_vir(float(mu), float(virial_temperature_k), redshift),
         dtype=float,
     )
     if threshold.shape != redshift.shape:
@@ -107,6 +116,7 @@ def compute_popiii_lw_minimum_mass_msun(
 def classify_halo_stellar_channels(
     halo_mass_msun: np.ndarray | float,
     *,
+    cosmology: Cosmology,
     z_obs: np.ndarray | float,
     lw_background_j21: np.ndarray | float = DEFAULT_LW_BACKGROUND_J21,
     virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
@@ -123,6 +133,7 @@ def classify_halo_stellar_channels(
     threshold = np.asarray(
         compute_atomic_cooling_mass_msun(
             z_obs,
+            cosmology=cosmology,
             virial_temperature_k=virial_temperature_k,
             mu=mu,
         ),

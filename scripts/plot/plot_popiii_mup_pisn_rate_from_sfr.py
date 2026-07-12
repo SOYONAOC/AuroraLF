@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from auroralf.cooling import compute_popiii_lw_minimum_mass_msun
+from auroralf.mah import Cosmology
 from auroralf.sfr import POPIII_UPPER_MASS_MODE_ATOMIC, POPIII_UPPER_MASS_MODE_FIXED, PopIIISFRParameters
 from auroralf.uvlf import sample_uvlf_from_hmf
 from scripts.plot.plot_group_meeting_popiii_components_uvlf import DEFAULT_EXTREME_POPIII_SSP_FILE, PROJECT_ROOT
@@ -131,6 +132,7 @@ def _scenarios(args: argparse.Namespace) -> tuple[Scenario, Scenario]:
 
 def _run_point(
     *,
+    cosmology: Cosmology,
     args: argparse.Namespace,
     z: float,
     scenario: Scenario,
@@ -153,9 +155,10 @@ def _run_point(
     )
     result = sample_uvlf_from_hmf(
         z_obs=float(z),
+        cosmology=cosmology,
         N_mass=int(args.N_mass),
         n_tracks=int(args.n_tracks),
-        random_seed=int(args.random_seed),
+        base_seed=int(args.random_seed),
         quantity="Muv",
         bins=bin_edges,
         logM_min=logm_min,
@@ -169,7 +172,6 @@ def _run_point(
         popiii_sfr_parameters=params,
         popiii_ssp_file=str(popiii_ssp_file),
         imf_mode="canonical",
-        lw_background_j21=float(args.lw_background_j21),
     )
     popiii_sfr = np.asarray(result.samples["popiii_sfr"], dtype=float)
     sample_weight = np.asarray(result.samples["sample_weight"], dtype=float)
@@ -375,6 +377,7 @@ def _draw_figure(
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     _validate_args(args)
     if args.input_csv is None:
         popiii_ssp_file = _resolve_path(args.popiii_ssp_file)
@@ -391,6 +394,7 @@ def main() -> None:
         for z in sorted(float(value) for value in args.z_values):
             for scenario in _scenarios(args):
                 point = _run_point(
+                    cosmology=cosmology,
                     args=args,
                     z=z,
                     scenario=scenario,

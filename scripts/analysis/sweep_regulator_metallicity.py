@@ -160,6 +160,7 @@ def _prepare_tracks(args: argparse.Namespace, cosmology: Cosmology) -> list[Trac
         )
         sfr_tracks = compute_sfr_from_tracks(
             histories.tracks,
+            cosmology=cosmology,
             enable_time_delay=bool(args.enable_time_delay),
         )
         n_halos = int(args.n_tracks)
@@ -223,7 +224,7 @@ def _evaluate_parameters(
     *,
     bundles: list[TrackBundle],
     parameters: RegulatorMetallicityParameters,
-    baryon_fraction: float,
+    cosmology: Cosmology,
     metallicity_random_seed: int,
     score_jades_weight: float,
     score_ghz2_weight: float,
@@ -240,7 +241,7 @@ def _evaluate_parameters(
             mh_grid=bundle.mh_grid,
             sfr_grid=bundle.sfr_grid,
             active_grid=bundle.active_grid,
-            baryon_fraction=baryon_fraction,
+            cosmology=cosmology,
             parameters=parameters,
             random_seed=int(metallicity_random_seed + 1000 * mass_index),
         )
@@ -476,7 +477,6 @@ def main() -> None:
     data_prefix.parent.mkdir(parents=True, exist_ok=True)
 
     cosmology = Cosmology()
-    baryon_fraction = cosmology.omega_b / cosmology.omega_m
     t0 = time.perf_counter()
     bundles = _prepare_tracks(args, cosmology)
     total, parameter_iter = _iter_parameter_grid(args)
@@ -503,7 +503,7 @@ def main() -> None:
         metrics = _evaluate_parameters(
             bundles=bundles,
             parameters=params,
-            baryon_fraction=baryon_fraction,
+            cosmology=cosmology,
             metallicity_random_seed=int(args.metallicity_random_seed),
             score_jades_weight=float(args.score_jades_weight),
             score_ghz2_weight=float(args.score_ghz2_weight),

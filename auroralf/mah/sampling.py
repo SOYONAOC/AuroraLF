@@ -5,6 +5,22 @@ import numpy as np
 from .models import GaussianApproximation, POWER_LAW_FRACTION
 
 
+PARAMETER_SAMPLER_MCBRIDE = "mcbride"
+PARAMETER_SAMPLER_GAUSSIAN_APPROXIMATION = "gaussian_approximation"
+SUPPORTED_PARAMETER_SAMPLERS = (
+    PARAMETER_SAMPLER_MCBRIDE,
+    PARAMETER_SAMPLER_GAUSSIAN_APPROXIMATION,
+)
+
+
+def validate_parameter_sampler(sampler: str) -> str:
+    canonical_sampler = str(sampler).strip().lower()
+    if canonical_sampler not in SUPPORTED_PARAMETER_SAMPLERS:
+        choices = ", ".join(SUPPORTED_PARAMETER_SAMPLERS)
+        raise ValueError(f"Unknown parameter sampler {sampler!r}; choose one of: {choices}")
+    return canonical_sampler
+
+
 def mass_ratio_m12(mass_ref: float) -> float:
     return mass_ref / 1.0e12
 
@@ -116,9 +132,13 @@ def sample_parameters(
     rng: np.random.Generator,
     pilot_samples: int,
 ) -> tuple[np.ndarray, GaussianApproximation | None]:
-    if sampler == "mcbride":
+    sampler = validate_parameter_sampler(sampler)
+    if sampler == PARAMETER_SAMPLER_MCBRIDE:
         return sample_mcbride_appendix_a(mass_ref, size, rng), None
 
-    approximation = estimate_gaussian_approximation(mass_ref, rng, pilot_samples)
-    draws = rng.multivariate_normal(approximation.mean, approximation.covariance, size=size)
-    return draws, approximation
+    if sampler == PARAMETER_SAMPLER_GAUSSIAN_APPROXIMATION:
+        approximation = estimate_gaussian_approximation(mass_ref, rng, pilot_samples)
+        draws = rng.multivariate_normal(approximation.mean, approximation.covariance, size=size)
+        return draws, approximation
+
+    raise RuntimeError(f"Validated parameter sampler {sampler!r} has no implementation")

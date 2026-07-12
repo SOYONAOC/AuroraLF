@@ -1,15 +1,34 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
 
 import h5py
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "data" / "prepare_thesan_dark1_download.py"
+
+
+def _write_integrity_manifest(root: Path, paths: list[Path], destination: Path) -> Path:
+    payload = {
+        "schema_version": "auroralf.thesan_download_integrity.v1",
+        "simulation": "Thesan-Dark-1",
+        "files": {
+            str(path.relative_to(root)): {
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in paths
+        },
+    }
+    destination.write_text(json.dumps(payload), encoding="utf-8")
+    return destination
 
 
 def _load_module():
@@ -120,8 +139,32 @@ def test_validate_smoke_files_checks_required_hdf5_schema(tmp_path: Path) -> Non
 
     desc_path = root / "postprocessing" / "trees" / "LHaloTree" / "sub_desc_sf1_080"
     desc_path.write_bytes((3).to_bytes(4, "little", signed=True) + b"\x00" * 12)
+    tree_path = root / "postprocessing" / "trees" / "LHaloTree" / "trees_sf1_190.0.hdf5"
+    with h5py.File(tree_path, "w") as handle:
+        handle.create_group("Header").create_dataset("Redshifts", data=[12.5, 11.96])
+        tree = handle.create_group("Tree0")
+        tree.create_dataset("SnapNum", data=[32, 31])
+        tree.create_dataset("FirstProgenitor", data=[1, -1])
+        tree.create_dataset("FirstHaloInFOFGroup", data=[0, 1])
+        tree.create_dataset("SubhaloGrNr", data=[0, 0])
+        tree.create_dataset("Group_M_Crit200", data=[1.0, 0.5])
+    integrity_manifest = _write_integrity_manifest(
+        root,
+        [
+            root / "output" / "groups_032" / "fof_subhalo_tab_032.0.hdf5",
+            root / "postprocessing" / "offsets" / "offsets_032.hdf5",
+            desc_path,
+            tree_path,
+        ],
+        tmp_path / "integrity.json",
+    )
 
-    report = module._validate_smoke_files(root=root, snapshot=32, tree_chunk=0)
+    report = module._validate_smoke_files(
+        root=root,
+        snapshot=32,
+        tree_chunk=0,
+        integrity_manifest=integrity_manifest,
+    )
 
     assert report["groupcat_has_header"] is True
     assert report["groupcat_has_group"] is True
@@ -129,6 +172,84 @@ def test_validate_smoke_files_checks_required_hdf5_schema(tmp_path: Path) -> Non
     assert report["offset_mapping_dataset_count"] >= 3
     assert report["sub_desc_entry_count"] == 3
     assert report["sub_desc_dtype"] == "int32"
+    assert report["tree_group_count"] == 1
+    assert report["tree_mass_fields"] == ["Group_M_Crit200"]
+    assert report["integrity_verified_file_count"] == 4
+
+
+def test_validate_smoke_files_rejects_tree_missing_required_dataset(tmp_path: Path) -> None:
+    module = _load_module()
+    root = tmp_path / "thesan-dark-1"
+    groupcat = root / "output" / "groups_032" / "fof_subhalo_tab_032.0.hdf5"
+    offset = root / "postprocessing" / "offsets" / "offsets_032.hdf5"
+    tree_dir = root / "postprocessing" / "trees" / "LHaloTree"
+    groupcat.parent.mkdir(parents=True)
+    offset.parent.mkdir(parents=True)
+    tree_dir.mkdir(parents=True)
+    with h5py.File(groupcat, "w") as handle:
+        handle.create_group("Header")
+        handle.create_group("Group")
+        handle.create_group("Subhalo")
+    with h5py.File(offset, "w") as handle:
+        lhalo = handle.create_group("Subhalo/LHaloTree")
+        lhalo.create_dataset("File", data=[0])
+        lhalo.create_dataset("Num", data=[0])
+        lhalo.create_dataset("Index", data=[0])
+    sub_desc = tree_dir / "sub_desc_sf1_080"
+    sub_desc.write_bytes((1).to_bytes(4, "little", signed=True))
+    tree_path = tree_dir / "trees_sf1_190.0.hdf5"
+    with h5py.File(tree_path, "w") as handle:
+        handle.create_group("Header").create_dataset("Redshifts", data=[12.5, 11.96])
+        tree = handle.create_group("Tree0")
+        tree.create_dataset("SnapNum", data=[32])
+        tree.create_dataset("Group_M_Crit200", data=[1.0])
+    manifest = _write_integrity_manifest(
+        root,
+        [groupcat, offset, sub_desc, tree_path],
+        tmp_path / "integrity.json",
+    )
+
+    with pytest.raises(KeyError, match="FirstProgenitor"):
+        module._validate_smoke_files(
+            root=root,
+            snapshot=32,
+            tree_chunk=0,
+            integrity_manifest=manifest,
+        )
+
+
+def test_validate_smoke_files_rejects_integrity_mismatch(tmp_path: Path) -> None:
+    module = _load_module()
+    root = tmp_path / "thesan-dark-1"
+    required = {
+        "output/groups_032/fof_subhalo_tab_032.0.hdf5": {"size_bytes": 123},
+        "postprocessing/offsets/offsets_032.hdf5": {"size_bytes": 123},
+        "postprocessing/trees/LHaloTree/sub_desc_sf1_080": {"size_bytes": 123},
+        "postprocessing/trees/LHaloTree/trees_sf1_190.0.hdf5": {"size_bytes": 123},
+    }
+    manifest = tmp_path / "integrity.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "auroralf.thesan_download_integrity.v1",
+                "simulation": "Thesan-Dark-1",
+                "files": required,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for relative_path in required:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not-the-authoritative-size")
+
+    with pytest.raises(ValueError, match="size mismatch"):
+        module._validate_smoke_files(
+            root=root,
+            snapshot=32,
+            tree_chunk=0,
+            integrity_manifest=manifest,
+        )
 
 
 def test_prepare_thesan_download_help_exposes_stage_arguments() -> None:
@@ -145,3 +266,4 @@ def test_prepare_thesan_download_help_exposes_stage_arguments() -> None:
     assert "--source-root" in completed.stdout
     assert "--write-globus-batch" in completed.stdout
     assert "--validate-smoke" in completed.stdout
+    assert "--smoke-integrity-manifest" in completed.stdout

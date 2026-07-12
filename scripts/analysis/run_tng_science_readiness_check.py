@@ -10,8 +10,10 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
-from auroralf.mah import generate_halo_histories
+from auroralf.mah import Cosmology, generate_halo_histories
+from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 from auroralf.mah.tng import generate_tng_halo_histories
+from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf, uv_luminosity_to_muv
 from auroralf.uvlf.pipeline import run_halo_uv_pipeline
 
@@ -96,11 +98,10 @@ def _candidate_count(cache_path: Path, logm_final: float, width_dex: float) -> i
 
 def _summarize_history_grid(grid: dict[str, np.ndarray], mh_final: float) -> dict[str, float]:
     mh = np.asarray(grid["Mh"], dtype=float)
-    dmhdt = np.asarray(grid["dMh_dt"], dtype=float)
+    dmhdt_raw = np.asarray(grid["dMh_dt_raw"], dtype=float)
     active = np.asarray(grid["active_flag"], dtype=bool)
-    # AuroraLF MAH histories store dMh_dt in Msun/Gyr; SFR conversion divides
-    # by 1e9 downstream when producing Msun/yr.
-    smar_gyr = dmhdt / float(mh_final)
+    # The raw MAH derivative is retained in Msun/Gyr for assembly diagnostics.
+    smar_gyr = dmhdt_raw / float(mh_final)
     positive = active & np.isfinite(smar_gyr) & (smar_gyr > 0.0)
     peak_smar = np.full(mh.shape[0], np.nan, dtype=float)
     rows_with_positive = np.any(positive, axis=1)
@@ -168,6 +169,7 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 def run_mah_shape_check(
     specs: tuple[CacheSpec, ...],
     *,
+    cosmology: Cosmology,
     logm_values: tuple[float, ...],
     n_tracks: int,
     tng_time_grid_mode: str,
@@ -177,7 +179,7 @@ def run_mah_shape_check(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for spec_index, spec in enumerate(specs):
-        for logm in logm_values:
+        for mass_index, logm in enumerate(logm_values):
             mh_final = float(10.0**logm)
             candidates = _candidate_count(spec.cache_path, logm, mass_bin_width_dex)
             if candidates < min_candidates:
@@ -190,6 +192,7 @@ def run_mah_shape_check(
                 n_tracks=n_tracks,
                 z_final=spec.z_final,
                 Mh_final=mh_final,
+                cosmology=cosmology,
                 cache_path=spec.cache_path,
                 z_start_max=20.1,
                 mass_bin_width_dex=mass_bin_width_dex,
@@ -204,6 +207,7 @@ def run_mah_shape_check(
                 n_tracks=n_tracks,
                 z_final=float(z_grid[-1]),
                 Mh_final=mh_final,
+                cosmology=cosmology,
                 z_start_max=float(z_grid[0]),
                 M_min=0.0,
                 random_seed=20_000 + 100 * spec_index + int(round(logm * 10.0)),
@@ -229,7 +233,7 @@ def run_mah_shape_check(
                     "grid_size": int(z_grid.size),
                     "tng_time_grid_mode": tng_time_grid_mode if backend == "tng" else "",
                     "candidate_count": candidates if backend == "tng" else "",
-                    "negative_dmhdt_clip_fraction": result.metadata.get("negative_dmhdt_clip_fraction", ""),
+                    "negative_dmhdt_clip_fraction": result.metadata["negative_dmhdt_clip_fraction"],
                     "unresolved_step_fraction": result.metadata.get("unresolved_step_fraction", ""),
                 }
                 row.update(_summarize_history_grid(grid, mh_final))
@@ -241,6 +245,7 @@ def run_mah_shape_check(
 def run_fixed_mass_uv_check(
     specs: tuple[CacheSpec, ...],
     *,
+    cosmology: Cosmology,
     logm_values: tuple[float, ...],
     n_tracks: int,
     tng_time_grid_mode: str,
@@ -262,6 +267,12 @@ def run_fixed_mass_uv_check(
                     n_tracks=n_tracks,
                     z_final=spec.z_final,
                     Mh_final=mh_final,
+                    cosmology=cosmology,
+                    random_seeds=derive_pipeline_random_seeds(
+                        30_000 + 1000 * spec_index,
+                        redshift=spec.z_final,
+                        mass_index=mass_index,
+                    ),
                     z_start_max=20.1,
                     n_grid=240,
                     mah_backend=backend,
@@ -269,7 +280,6 @@ def run_fixed_mass_uv_check(
                     tng_mass_bin_width_dex=mass_bin_width_dex,
                     tng_min_candidates=min_candidates,
                     tng_time_grid_mode=tng_time_grid_mode,
-                    random_seed=30_000 + 1000 * spec_index + int(round(logm * 10.0)) + (0 if backend == "mcbride" else 500),
                     enable_time_delay=True,
                     workers=1,
                 )
@@ -283,7 +293,7 @@ def run_fixed_mass_uv_check(
                     "n_tracks": n_tracks,
                     "candidate_count": candidates if backend == "tng" else "",
                     "time_grid_mode": result.metadata["time_grid_mode"],
-                    "tng_negative_dmhdt_clip_fraction": result.metadata.get("tng_negative_dmhdt_clip_fraction", ""),
+                    "negative_dmhdt_clip_fraction": result.metadata["negative_dmhdt_clip_fraction"],
                     "tng_candidate_count": result.metadata.get("tng_candidate_count", ""),
                 }
                 row.update(_summarize_uv_pipeline(result, mh_final))
@@ -295,6 +305,7 @@ def run_fixed_mass_uv_check(
 def run_hmf_uvlf_smoke(
     specs: tuple[CacheSpec, ...],
     *,
+    cosmology: Cosmology,
     n_mass: int,
     n_tracks: int,
     tng_time_grid_mode: str,
@@ -307,9 +318,10 @@ def run_hmf_uvlf_smoke(
         for backend in ("mcbride", "tng"):
             result = sample_uvlf_from_hmf(
                 z_obs=spec.z_final,
+                cosmology=cosmology,
                 N_mass=n_mass,
                 n_tracks=n_tracks,
-                random_seed=40_000 + 1000 * spec_index + (0 if backend == "mcbride" else 500),
+                base_seed=40_000 + 1000 * spec_index,
                 bins=bins,
                 logM_min=spec.hmf_logm_min,
                 logM_max=spec.hmf_logm_max,
@@ -448,6 +460,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    cosmology = Cosmology(
+        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
+        omega_m=0.3089,
+        omega_b=0.0486,
+        omega_lambda=0.6911,
+    )
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     event_summary_path = args.event_summary.expanduser().resolve()
@@ -460,6 +478,7 @@ def main() -> None:
     logm_values = (9.5, 10.0)
     mah_rows = run_mah_shape_check(
         DEFAULT_CACHE_SPECS,
+        cosmology=cosmology,
         logm_values=logm_values,
         n_tracks=int(args.n_tracks_mah),
         tng_time_grid_mode=str(args.tng_time_grid_mode),
@@ -469,6 +488,7 @@ def main() -> None:
     )
     fixed_uv_rows = run_fixed_mass_uv_check(
         DEFAULT_CACHE_SPECS,
+        cosmology=cosmology,
         logm_values=logm_values,
         n_tracks=int(args.n_tracks_fixed_uv),
         tng_time_grid_mode=str(args.tng_time_grid_mode),
@@ -477,6 +497,7 @@ def main() -> None:
     )
     hmf_rows = run_hmf_uvlf_smoke(
         DEFAULT_CACHE_SPECS,
+        cosmology=cosmology,
         n_mass=int(args.hmf_n_mass),
         n_tracks=int(args.hmf_n_tracks),
         tng_time_grid_mode=str(args.tng_time_grid_mode),

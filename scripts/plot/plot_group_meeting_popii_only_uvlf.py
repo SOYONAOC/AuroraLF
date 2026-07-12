@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from auroralf.cooling import compute_atomic_cooling_mass_msun
+from auroralf.mah import Cosmology
 from auroralf.uvlf import sample_uvlf_from_hmf
 
 
@@ -193,6 +194,7 @@ def _write_observation_csv(path: Path, observations: list[dict[str, np.ndarray |
 
 def main() -> None:
     args = _parse_args()
+    cosmology = Cosmology()
     if args.N_mass <= 0:
         raise ValueError("--N-mass must be positive")
     if args.n_tracks <= 0:
@@ -215,7 +217,9 @@ def main() -> None:
         raise ValueError("--observation-paths must contain at least one file")
 
     z_obs = float(args.z)
-    atomic_mass_msun = float(compute_atomic_cooling_mass_msun(z_obs))
+    atomic_mass_msun = float(
+        compute_atomic_cooling_mass_msun(z_obs, cosmology=cosmology)
+    )
     logm_min = float(np.log10(atomic_mass_msun))
     if args.logM_max <= logm_min:
         raise ValueError("--logM-max must be larger than log10(M_atom)")
@@ -226,9 +230,10 @@ def main() -> None:
 
     result = sample_uvlf_from_hmf(
         z_obs=z_obs,
+        cosmology=cosmology,
         N_mass=int(args.N_mass),
         n_tracks=int(args.n_tracks),
-        random_seed=int(args.random_seed),
+        base_seed=int(args.random_seed),
         quantity="Muv",
         bins=bin_edges,
         logM_min=logm_min,

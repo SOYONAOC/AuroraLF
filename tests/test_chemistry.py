@@ -7,6 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from auroralf.mah import Cosmology
+from auroralf.seeding import derive_pipeline_random_seeds
+
 from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
     RegulatorMetallicityParameters,
@@ -27,7 +30,7 @@ def _toy_history() -> dict[str, np.ndarray]:
         "t_grid_gyr": np.array([[0.1, 0.2, 0.3, 0.4]], dtype=float),
         "z_grid": np.array([[14.0, 12.0, 10.0, 8.0]], dtype=float),
         "mh_grid": np.array([[1.0e9, 2.0e9, 4.0e9, 8.0e9]], dtype=float),
-        "dmhdt_grid": np.array([[0.0, 1.0e10, 2.0e10, 4.0e10]], dtype=float),
+        "dmhdt_sfr_grid": np.array([[0.0, 1.0e10, 2.0e10, 4.0e10]], dtype=float),
         "sfr_grid": np.array([[0.0, 0.02, 0.04, 0.08]], dtype=float),
         "active_grid": np.array([[False, True, True, True]], dtype=bool),
     }
@@ -79,7 +82,7 @@ def test_regulator_metallicity_uses_cumulative_stellar_and_halo_gas_mass() -> No
 
     result = compute_regulator_metallicity(
         **history,
-        baryon_fraction=0.1,
+        cosmology=Cosmology(omega_m=0.4, omega_b=0.04, omega_lambda=0.6),
         parameters=params,
         random_seed=1,
     )
@@ -106,7 +109,7 @@ def test_regulator_metallicity_rejects_unphysical_gas_fraction() -> None:
             mh_grid=history["mh_grid"],
             sfr_grid=history["sfr_grid"],
             active_grid=history["active_grid"],
-            baryon_fraction=0.157,
+            cosmology=Cosmology(),
             parameters=RegulatorMetallicityParameters(gas_fraction_norm=1.2),
             random_seed=1,
         )
@@ -118,9 +121,10 @@ def test_pipeline_requires_metallicity_when_topheavy_metallicity_gate_is_enabled
             n_tracks=1,
             z_final=6.0,
             Mh_final=1.0e10,
+            cosmology=Cosmology(),
             z_start_max=10.0,
             n_grid=4,
-            random_seed=101,
+            random_seeds=derive_pipeline_random_seeds(101, redshift=6.0, mass_index=0),
             workers=1,
             imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
             imf_transition_parameters=IMFTransitionParameters(metallicity_topheavy_max_zsun=0.05),
@@ -132,9 +136,10 @@ def test_canonical_pipeline_metadata_does_not_report_topheavy_metallicity_gate()
         n_tracks=1,
         z_final=6.0,
         Mh_final=1.0e10,
+        cosmology=Cosmology(),
         z_start_max=10.0,
         n_grid=4,
-        random_seed=101,
+        random_seeds=derive_pipeline_random_seeds(101, redshift=6.0, mass_index=0),
         workers=1,
         imf_mode="canonical",
     )
@@ -147,9 +152,10 @@ def test_pipeline_applies_topheavy_metallicity_gate_to_birth_metallicity() -> No
         n_tracks=2,
         z_final=6.0,
         Mh_final=1.0e10,
+        cosmology=Cosmology(),
         z_start_max=12.0,
         n_grid=8,
-        random_seed=101,
+        random_seeds=derive_pipeline_random_seeds(101, redshift=6.0, mass_index=0),
         workers=1,
         imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
         imf_transition_parameters=IMFTransitionParameters(
@@ -162,7 +168,6 @@ def test_pipeline_applies_topheavy_metallicity_gate_to_birth_metallicity() -> No
             metal_loading_mass_slope=0.0,
             metallicity_scatter_dex=0.0,
         ),
-        metallicity_random_seed=202,
     )
 
     assert result.birth_metallicity_zsun_grid is not None
@@ -176,9 +181,10 @@ def test_pipeline_applies_mzr_birth_metallicity_gate() -> None:
         n_tracks=2,
         z_final=6.0,
         Mh_final=1.0e10,
+        cosmology=Cosmology(),
         z_start_max=12.0,
         n_grid=8,
-        random_seed=101,
+        random_seeds=derive_pipeline_random_seeds(101, redshift=6.0, mass_index=0),
         workers=1,
         imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
         imf_transition_parameters=IMFTransitionParameters(
@@ -190,7 +196,6 @@ def test_pipeline_applies_mzr_birth_metallicity_gate() -> None:
             scatter_dex=0.0,
             stellar_mass_floor_msun=1.0e6,
         ),
-        metallicity_random_seed=202,
     )
 
     assert result.birth_metallicity_zsun_grid is not None
@@ -206,9 +211,10 @@ def test_pipeline_applies_regulator_birth_metallicity_gate() -> None:
         n_tracks=2,
         z_final=6.0,
         Mh_final=1.0e10,
+        cosmology=Cosmology(),
         z_start_max=12.0,
         n_grid=8,
-        random_seed=101,
+        random_seeds=derive_pipeline_random_seeds(101, redshift=6.0, mass_index=0),
         workers=1,
         imf_mode=IMF_MODE_Z_GATED_MILD_TOPHEAVY,
         imf_transition_parameters=IMFTransitionParameters(
@@ -221,7 +227,6 @@ def test_pipeline_applies_regulator_birth_metallicity_gate() -> None:
             metal_loading_mass_slope=0.0,
             metallicity_scatter_dex=0.0,
         ),
-        metallicity_random_seed=202,
     )
 
     assert result.birth_metallicity_zsun_grid is not None
@@ -236,9 +241,10 @@ def test_pipeline_applies_regulator_birth_metallicity_gate() -> None:
 def test_hmf_sampling_records_regulator_metallicity_metadata_when_enabled() -> None:
     result = sample_uvlf_from_hmf(
         z_obs=6.0,
+        cosmology=Cosmology(),
         N_mass=1,
         n_tracks=2,
-        random_seed=303,
+        base_seed=303,
         bins=np.array([-25.0, -15.0]),
         logM_min=9.0,
         logM_max=9.2,
@@ -250,7 +256,6 @@ def test_hmf_sampling_records_regulator_metallicity_metadata_when_enabled() -> N
             metal_loading_norm=3.0,
             metal_loading_mass_slope=0.0,
         ),
-        metallicity_random_seed=404,
     )
 
     assert result.metadata["regulator_metallicity_enabled"] is True
@@ -263,9 +268,10 @@ def test_hmf_sampling_requires_metallicity_for_metallicity_gated_topheavy() -> N
     with pytest.raises(ValueError, match="birth metallicity source"):
         sample_uvlf_from_hmf(
             z_obs=6.0,
+            cosmology=Cosmology(),
             N_mass=1,
             n_tracks=1,
-            random_seed=303,
+            base_seed=303,
             bins=np.array([-25.0, -15.0]),
             logM_min=9.0,
             logM_max=9.2,
@@ -277,23 +283,15 @@ def test_hmf_sampling_requires_metallicity_for_metallicity_gated_topheavy() -> N
         )
 
 
-def test_run_script_help_exposes_regulator_metallicity_options() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/run/run_uvlf_compare_imf_no_delay_all_z.py",
-            "--help",
-        ],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+def test_production_config_exposes_regulator_metallicity_without_legacy_flags() -> None:
+    from auroralf import UVLFRunConfig
 
-    assert "--metallicity-source" in completed.stdout
-    assert "--mzr-relation" in completed.stdout
-    assert "--regulator-gas-fraction-norm" in completed.stdout
-    assert "--regulator-metal-loading-norm" in completed.stdout
-    assert "--metallicity-topheavy-max-zsun" in completed.stdout
-    assert "--metal-topheavy-yield-multiplier" not in completed.stdout
-    assert "--enable-stochastic-metallicity" not in completed.stdout
+    config = UVLFRunConfig.from_toml(
+        PROJECT_ROOT / "configs" / "uvlf" / "production.toml"
+    )
+    regulator = config.star_formation.regulator
+    assert config.star_formation.metallicity_source == "regulator"
+    assert regulator is not None
+    assert regulator.gas_fraction_norm == pytest.approx(0.02)
+    assert regulator.metal_loading_norm == pytest.approx(20.0)
+    assert config.stellar_population.birth_metallicity_topheavy_max_zsun == pytest.approx(0.05)

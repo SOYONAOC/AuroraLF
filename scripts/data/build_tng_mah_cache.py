@@ -17,6 +17,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.file_version import (
+    SourceFileProvenance,
+    capture_source_file_provenance,
+    verify_source_file_provenance,
+)
+from auroralf.io.atomic_publish import publish_hdf5_atomic
 from auroralf.mah.tng import TNG_MAH_CACHE_SCHEMA_VERSION
 
 
@@ -27,6 +33,7 @@ DEFAULT_OMEGA_M = 0.3089
 DEFAULT_OMEGA_B = 0.0486
 DEFAULT_MASS_FIELD = "Group_M_Crit200"
 DEFAULT_MISSING_MASS_RATIO_FLOOR = 1.0e-6
+TNG_CACHE_CREATOR_VERSION = "auroralf.build_tng_mah_cache.v2"
 
 
 def _tag_from_z(z_value: float) -> str:
@@ -352,6 +359,75 @@ def _build_cache_arrays(
     }
 
 
+def _write_cache_file(
+    output: Path,
+    arrays: dict[str, np.ndarray],
+    *,
+    source_simulation: str,
+    snapshot: int,
+    z_final: float,
+    mass_field: str,
+    hubble: float,
+    omega_m: float,
+    omega_b: float,
+    drop_invalid_mpb: bool,
+    snapshot_grid: str,
+    missing_mass_ratio_floor: float,
+    selection_description: str,
+    source_provenance: list[SourceFileProvenance],
+    overwrite: bool,
+) -> None:
+    normalized_selection = str(selection_description).strip()
+    if not normalized_selection:
+        raise ValueError("selection_description must be non-empty")
+    if not all(isinstance(item, SourceFileProvenance) for item in source_provenance):
+        raise TypeError("source_provenance must contain SourceFileProvenance records")
+    if len(source_provenance) != int(arrays["source_subhalo_id"].size):
+        raise ValueError("source_provenance must match retained source_subhalo_id rows")
+    identifiers = [item.identifier for item in source_provenance]
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("each retained TNG halo row must have a unique source file")
+    for item in source_provenance:
+        verify_source_file_provenance(item)
+    source_identifiers = np.asarray(
+        identifiers,
+        dtype=h5py.string_dtype(encoding="utf-8"),
+    )
+    source_checksums = np.asarray(
+        [item.sha256 for item in source_provenance],
+        dtype=h5py.string_dtype(encoding="ascii", length=64),
+    )
+
+    def write_cache(handle: h5py.File) -> None:
+        handle.attrs["schema_version"] = TNG_MAH_CACHE_SCHEMA_VERSION
+        handle.attrs["source_simulation"] = str(source_simulation)
+        handle.attrs["mass_unit"] = "Msun"
+        handle.attrs["time_unit"] = "Gyr"
+        handle.attrs["redshift_unit"] = "dimensionless"
+        handle.attrs["mass_ratio_unit"] = "dimensionless"
+        handle.attrs["selection_description"] = normalized_selection
+        handle.attrs["creator_version"] = TNG_CACHE_CREATOR_VERSION
+        handle.attrs["source_mass_field"] = str(mass_field)
+        handle.attrs["source_tree"] = "SubLink/mpb"
+        handle.attrs["z_final"] = float(z_final)
+        handle.attrs["snapshot"] = int(snapshot)
+        handle.attrs["hubble"] = float(hubble)
+        handle.attrs["omega_m"] = float(omega_m)
+        handle.attrs["omega_b"] = float(omega_b)
+        handle.attrs["drop_invalid_mpb"] = bool(drop_invalid_mpb)
+        handle.attrs["dropped_mpb_count"] = int(arrays["dropped_source_subhalo_id"].size)
+        handle.attrs["snapshot_grid"] = str(snapshot_grid)
+        handle.attrs["missing_mass_ratio_floor"] = float(missing_mass_ratio_floor)
+        for name, values in arrays.items():
+            handle.create_dataset(name, data=values)
+        handle.create_dataset("source_file_identifier", data=source_identifiers)
+        handle.create_dataset("source_file_sha256", data=source_checksums)
+        for item in source_provenance:
+            verify_source_file_provenance(item)
+
+    publish_hdf5_atomic(output, write_cache, overwrite=overwrite)
+
+
 def main() -> None:
     args = _parse_args()
     api_key = _require_api_key()
@@ -380,9 +456,6 @@ def main() -> None:
         output = (PROJECT_ROOT / output).resolve()
     else:
         output = output.resolve()
-    if output.exists() and not args.force_output:
-        raise FileExistsError(f"output cache already exists: {output}; pass --force-output to overwrite")
-
     snapshot_redshift = _snapshot_redshift_map(args.api_base, args.simulation, api_key)
     if int(args.snapshot) not in snapshot_redshift:
         raise KeyError(f"snapshot {args.snapshot} is not present in TNG API snapshot list")
@@ -410,6 +483,10 @@ def main() -> None:
         workers=int(args.download_workers),
         retries=int(args.download_retries),
     )
+    source_provenance_by_path = {
+        raw_path.resolve(strict=True): capture_source_file_provenance(raw_path)
+        for raw_path in raw_paths
+    }
 
     cosmology = FlatLambdaCDM(
         H0=100.0 * float(args.hubble),
@@ -428,27 +505,38 @@ def main() -> None:
         snapshot_grid=str(args.snapshot_grid),
         missing_mass_ratio_floor=float(args.missing_mass_ratio_floor),
     )
+    for provenance in source_provenance_by_path.values():
+        verify_source_file_provenance(provenance)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output.with_suffix(output.suffix + ".tmp")
-    with h5py.File(tmp, "w") as handle:
-        handle.attrs["schema_version"] = TNG_MAH_CACHE_SCHEMA_VERSION
-        handle.attrs["source_simulation"] = str(args.simulation)
-        handle.attrs["mass_unit"] = "Msun"
-        handle.attrs["source_mass_field"] = str(args.mass_field)
-        handle.attrs["source_tree"] = "SubLink/mpb"
-        handle.attrs["z_final"] = float(args.z_final)
-        handle.attrs["snapshot"] = int(args.snapshot)
-        handle.attrs["hubble"] = float(args.hubble)
-        handle.attrs["omega_m"] = float(args.omega_m)
-        handle.attrs["omega_b"] = float(args.omega_b)
-        handle.attrs["drop_invalid_mpb"] = bool(args.drop_invalid_mpb)
-        handle.attrs["dropped_mpb_count"] = int(arrays["dropped_source_subhalo_id"].size)
-        handle.attrs["snapshot_grid"] = str(args.snapshot_grid)
-        handle.attrs["missing_mass_ratio_floor"] = float(args.missing_mass_ratio_floor)
-        for name, values in arrays.items():
-            handle.create_dataset(name, data=values)
-    tmp.replace(output)
+    raw_path_by_subhalo_id = {
+        int(subhalo_id): raw_path
+        for subhalo_id, raw_path in zip(subhalo_ids, raw_paths, strict=True)
+    }
+    retained_source_provenance = [
+        source_provenance_by_path[raw_path_by_subhalo_id[int(subhalo_id)].resolve(strict=True)]
+        for subhalo_id in np.asarray(arrays["source_subhalo_id"], dtype=np.int64)
+    ]
+    selection_description = (
+        f"Explicit TNG API SubLink MPB selection of {len(retained_source_provenance)} subhalos "
+        f"at snapshot {int(args.snapshot)} using snapshot_grid={args.snapshot_grid}"
+    )
+    _write_cache_file(
+        output,
+        arrays,
+        source_simulation=str(args.simulation),
+        snapshot=int(args.snapshot),
+        z_final=float(args.z_final),
+        mass_field=str(args.mass_field),
+        hubble=float(args.hubble),
+        omega_m=float(args.omega_m),
+        omega_b=float(args.omega_b),
+        drop_invalid_mpb=bool(args.drop_invalid_mpb),
+        snapshot_grid=str(args.snapshot_grid),
+        missing_mass_ratio_floor=float(args.missing_mass_ratio_floor),
+        selection_description=selection_description,
+        source_provenance=retained_source_provenance,
+        overwrite=bool(args.force_output),
+    )
 
     print(f"saved_tng_mah_cache={output}", flush=True)
     print(f"n_halos={arrays['source_subhalo_id'].size}", flush=True)

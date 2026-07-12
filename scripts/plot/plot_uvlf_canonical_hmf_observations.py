@@ -18,6 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from auroralf.uvlf import MASS_FUNCTION_MODEL_HMF_REED07
 from auroralf.uvlf.imf import IMF_MODE_CANONICAL
+from auroralf.io.analysis import load_uvlf_result, select_mode_result
+from auroralf.results import UVLFRunResult
 
 
 DEFAULT_Z_VALUES = (6.0, 12.5, 14.5)
@@ -49,20 +51,16 @@ OBS_FILES = {
 }
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot the canonical Reed07 UVLF against observations.")
-    parser.add_argument("--reed07-npz", required=True)
+    parser.add_argument("--reed07-hdf5", required=True)
     parser.add_argument("--z-values", nargs="+", type=float, default=list(DEFAULT_Z_VALUES))
     parser.add_argument(
         "--output-prefix",
         type=str,
         default="outputs/uvlf_reed07_canonical_vs_observations_z6_z12p5_z14p5",
     )
-    return parser.parse_args()
-
-
-def _z_tag(z_value: float) -> str:
-    return f"z{str(float(z_value)).replace('.', 'p')}"
+    return parser.parse_args(argv)
 
 
 def _resolve_path(path_text: str) -> Path:
@@ -103,23 +101,17 @@ def _load_observational_uvlf(z_value: float) -> list[dict[str, np.ndarray | str]
     return datasets
 
 
-def _require_array(npz: np.lib.npyio.NpzFile, key: str) -> np.ndarray:
-    if key not in npz.files:
-        raise KeyError(f"NPZ is missing required key: {key}")
-    return np.asarray(npz[key])
+def _load_model_result(path: Path) -> UVLFRunResult:
+    return load_uvlf_result(path)
 
 
 def _load_model_series(
-    npz: np.lib.npyio.NpzFile,
+    result: UVLFRunResult,
     *,
     z_obs: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    tag = _z_tag(z_obs)
-    centers = np.asarray(_require_array(npz, f"{tag}_bin_centers"), dtype=float)
-    phi = np.asarray(_require_array(npz, f"{tag}_{IMF_MODE_CANONICAL}_phi"), dtype=float)
-    if centers.shape != phi.shape:
-        raise ValueError(f"bin centers and canonical phi shapes differ for z={z_obs:g}")
-    return centers, phi
+    series = select_mode_result(result, redshift=z_obs, mode=IMF_MODE_CANONICAL)
+    return series.bin_centers_muv, series.phi_observed_per_mpc3_per_mag
 
 
 def _interp_model_at_obs(centers: np.ndarray, phi: np.ndarray, obs_muv: np.ndarray) -> np.ndarray:
@@ -147,7 +139,7 @@ def _set_log_ylim(ax: plt.Axes, values: list[np.ndarray]) -> None:
 def main() -> None:
     args = _parse_args()
     model_paths = {
-        MASS_FUNCTION_MODEL_HMF_REED07: _resolve_path(args.reed07_npz),
+        MASS_FUNCTION_MODEL_HMF_REED07: _resolve_path(args.reed07_hdf5),
     }
     z_values = [float(z) for z in args.z_values]
     output_prefix = Path(args.output_prefix).expanduser()
@@ -157,16 +149,16 @@ def main() -> None:
     summary_path = output_prefix.with_name(f"{output_prefix.name}_summary.txt")
 
     model_data = {
-        model: np.load(path, allow_pickle=False)
+        model: _load_model_result(path)
         for model, path in model_paths.items()
     }
     try:
         apply_dust_values = {
-            bool(np.asarray(_require_array(data, "apply_dust"))[0])
+            data.config.sampling.apply_dust
             for data in model_data.values()
         }
         if len(apply_dust_values) != 1:
-            raise ValueError("model NPZ files do not agree on apply_dust")
+            raise ValueError("model HDF5 artifacts do not agree on apply_dust")
         apply_dust = apply_dust_values.pop()
 
         plt.style.use("apj")
@@ -189,7 +181,7 @@ def main() -> None:
         axes = np.atleast_1d(axes)
         obs_markers = ["o", "s", "^", "D", "P", "X"]
         summary_lines = [
-            f"reed07_npz: {model_paths[MASS_FUNCTION_MODEL_HMF_REED07]}",
+            f"reed07_hdf5: {model_paths[MASS_FUNCTION_MODEL_HMF_REED07]}",
             f"apply_dust: {apply_dust}",
             "",
         ]
@@ -330,8 +322,7 @@ def main() -> None:
         fig.savefig(output_prefix.with_suffix(".pdf"), dpi=500)
         summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     finally:
-        for data in model_data.values():
-            data.close()
+        del model_data
 
     print(f"saved_png={output_prefix.with_suffix('.png')}", flush=True)
     print(f"saved_pdf={output_prefix.with_suffix('.pdf')}", flush=True)

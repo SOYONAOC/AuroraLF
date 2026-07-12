@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import massfunc as mf
+from auroralf.mah import Cosmology
 from auroralf.uvlf import (
     DEFAULT_LW_BACKGROUND_J21,
     compute_atomic_cooling_mass_msun,
@@ -52,6 +53,7 @@ def _require_positive_finite(name: str, values: np.ndarray) -> None:
 
 def main() -> None:
     args = parse_args()
+    cosmology = Cosmology()
     if args.z_min < 0.0 or args.z_max <= args.z_min:
         raise ValueError("--z-min must be non-negative and --z-max must be larger than --z-min")
     if args.n_z < 2:
@@ -60,7 +62,10 @@ def main() -> None:
         raise ValueError("--lw-background-j21 must be non-negative")
 
     z_grid = np.linspace(args.z_min, args.z_max, args.n_z)
-    sfrd = mf.SFRD()
+    sfrd = mf.SFRD(
+        h=cosmology.h0_km_s_mpc / 100.0,
+        omegam=cosmology.omega_m,
+    )
     jeans_mass = np.asarray(sfrd.M_Jeans(z_grid), dtype=float)
     popiii_minimum_mass = np.asarray(
         compute_popiii_lw_minimum_mass_msun(
@@ -69,7 +74,10 @@ def main() -> None:
         ),
         dtype=float,
     )
-    atomic_cooling_mass = np.asarray(compute_atomic_cooling_mass_msun(z_grid), dtype=float)
+    atomic_cooling_mass = np.asarray(
+        compute_atomic_cooling_mass_msun(z_grid, cosmology=cosmology),
+        dtype=float,
+    )
 
     _require_positive_finite("massfunc.SFRD().M_Jeans", jeans_mass)
     _require_positive_finite("Pop III LW minimum mass", popiii_minimum_mass)
@@ -124,7 +132,9 @@ def main() -> None:
             compute_popiii_lw_minimum_mass_msun(z_ref, lw_background_j21=args.lw_background_j21)
         )
         jeans_ref = float(sfrd.M_Jeans(z_ref))
-        atomic_ref = float(compute_atomic_cooling_mass_msun(z_ref))
+        atomic_ref = float(
+            compute_atomic_cooling_mass_msun(z_ref, cosmology=cosmology)
+        )
         summary_lines.extend(
             [
                 f"z={z_ref:g}",

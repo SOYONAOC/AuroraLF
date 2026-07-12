@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 from astropy import units as u
 
+from auroralf.file_version import FileVersion
+
 try:
     import h5py
 except ModuleNotFoundError:  # pragma: no cover - exercised only when h5py is absent
@@ -184,11 +186,14 @@ def _load_uv1600_table_from_hdf5(
 
 @lru_cache(maxsize=None)
 def _load_uv1600_table_cached(
-    file_path: str,
+    version: FileVersion,
     wavelength_a: float,
     metallicity: float | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    suffix = Path(file_path).suffix.lower()
+    if type(version) is not FileVersion:
+        raise TypeError("version must be exactly FileVersion")
+    file_path = version.path
+    suffix = file_path.suffix.lower()
     if suffix in {".hdf5", ".h5"}:
         return _load_uv1600_table_from_hdf5(file_path=file_path, wavelength_a=wavelength_a, metallicity=metallicity)
     if suffix == ".npz":
@@ -202,12 +207,14 @@ def _load_uv1600_table_cached(
 
 @lru_cache(maxsize=None)
 def _load_popiii_uv_luminosity_table_cached(
-    file_path: str,
+    version: FileVersion,
     uv_column: str,
     wavelength_a: float,
 ) -> tuple[np.ndarray, np.ndarray]:
+    if type(version) is not FileVersion:
+        raise TypeError("version must be exactly FileVersion")
     return _load_popiii_uv_luminosity_table_from_schaerer(
-        file_path=file_path,
+        file_path=version.path,
         uv_column=uv_column,
         wavelength_a=wavelength_a,
     )
@@ -224,9 +231,9 @@ def load_uv1600_table(
     exactly match one of the discrete metallicity bins stored in the file.
     """
 
-    resolved = str(Path(file_path).expanduser().resolve())
+    version = FileVersion.from_path(file_path)
     ages_myr, luminosity_per_msun = _load_uv1600_table_cached(
-        resolved,
+        version,
         float(wavelength_a),
         None if metallicity is None else float(metallicity),
     )
@@ -247,9 +254,9 @@ def load_popiii_uv_luminosity_table(
     convolution code.
     """
 
-    resolved = str(Path(file_path).expanduser().resolve())
+    version = FileVersion.from_path(file_path)
     ages_myr, luminosity_per_msun = _load_popiii_uv_luminosity_table_cached(
-        resolved,
+        version,
         str(uv_column),
         float(wavelength_a),
     )
