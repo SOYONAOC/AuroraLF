@@ -96,7 +96,8 @@ from auroralf.mah import Cosmology, generate_halo_histories
   回溯的最高红移，默认 `50.0`
 - `M_min`
   最低质量阈值；默认 `None` 时使用
-  `massfunc.SFRD(h=cosmology.H0/100, omegam=cosmology.omega_m).M_vir(mu=0.61, Tvir=1e4, z)`；
+  `auroralf.cooling.compute_atomic_cooling_mass_msun()` 在项目内求解
+  `mu=0.61, Tvir=1e4 K` 的 Barkana--Loeb virial-temperature 关系；
   也可以传标量、与红移网格同长度的数组，或 `M_min(z)` 形式的可调用对象
 - `cosmology`
   keyword-only 必填的 `auroralf.mah.Cosmology`；生成 MAH、SFR、HMF 与 UVLF
@@ -754,8 +755,9 @@ from auroralf.uvlf import sample_uvlf_from_hmf
   (1 + 2.0 * popiii_sfr_parameters.lw_background_j21**0.6)`。
   默认 `popiii_sfr_parameters.lw_background_j21=0.0` 时，该式退化到无 LW
   feedback 的 H2 cooling floor。
-  `atomic_cooling_mass_msun` 使用
-  `massfunc.SFRD(h=cosmology.H0/100, omegam=cosmology.omega_m).M_vir(0.61, 1e4, z_obs)`。
+  `atomic_cooling_mass_msun` 由项目内的 Barkana--Loeb virial-temperature
+  反解和 Bryan--Norman collapse-overdensity fit 直接计算，不调用外部
+  `massfunc` package。
   `samples["stellar_channel"]` 和 `metadata["stellar_channel_by_mass"]`
   把 `Mh < M_PopIII,min` 标记为 `below_popiii_min`，
   `M_PopIII,min <= Mh < M_atomic` 标记为 `popiii`，

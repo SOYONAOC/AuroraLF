@@ -355,7 +355,8 @@ extended-burst 延迟核，对
 * 返回扁平表格风格结果
 * 代码使用 `numpy`
 * 代码包含注释
-* 若合适，可调用 `massfunc` 中已有宇宙学与阈值相关函数以减少重复实现
+* 原子冷却阈值统一调用 `auroralf.cooling.compute_atomic_cooling_mass_msun`，
+  不在 SFR 路径中引入外部 mass-function package
 
 ---
 

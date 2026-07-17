@@ -514,40 +514,71 @@ def test_hmf_reed07_scalar_input_returns_float() -> None:
     assert value > 0.0
 
 
-def test_atomic_cooling_mass_matches_massfunc_mvir() -> None:
-    import massfunc as mf
-
-    z_obs = 10.0
+def test_atomic_cooling_mass_matches_frozen_massfunc_v0p2p2_reference() -> None:
+    z_obs = np.array([0.0, 6.0, 10.0, 12.5, 20.0, 40.0, 50.0])
+    expected = np.array(
+        [
+            2.1555409198655934e9,
+            1.5777348254316154e8,
+            8.019352909179857e7,
+            5.899500408755787e7,
+            3.0413245854815666e7,
+            1.114909690469442e7,
+            8.036408113253607e6,
+        ]
+    )
     cosmology = Cosmology()
-    expected = mf.SFRD(
-        h=cosmology.h0_km_s_mpc / 100.0,
-        omegam=cosmology.omega_m,
-    ).M_vir(0.61, 1.0e4, z_obs)
 
     threshold = compute_atomic_cooling_mass_msun(z_obs, cosmology=cosmology)
 
-    assert threshold == pytest.approx(expected)
+    np.testing.assert_allclose(threshold, expected, rtol=1.0e-14, atol=0.0)
 
 
 def test_atomic_cooling_mass_uses_custom_cosmology() -> None:
-    import massfunc as mf
-
     custom = Cosmology(
         h0=2.0 * Cosmology().h0,
         omega_m=0.4,
         omega_b=0.08,
         omega_lambda=0.6,
     )
-    expected = mf.SFRD(
-        h=custom.h0_km_s_mpc / 100.0,
-        omegam=custom.omega_m,
-    ).M_vir(0.61, 1.0e4, 10.0)
+    expected = 3.558719511990472e7
 
     actual = compute_atomic_cooling_mass_msun(10.0, cosmology=custom)
     default = compute_atomic_cooling_mass_msun(10.0, cosmology=Cosmology())
 
     assert actual == pytest.approx(expected)
     assert actual != pytest.approx(default)
+
+
+def test_atomic_cooling_mass_preserves_scalar_and_array_shapes() -> None:
+    cosmology = Cosmology()
+
+    scalar = compute_atomic_cooling_mass_msun(10.0, cosmology=cosmology)
+    array = compute_atomic_cooling_mass_msun(
+        np.array([[6.0, 10.0], [20.0, 50.0]]),
+        cosmology=cosmology,
+    )
+
+    assert type(scalar) is float
+    assert array.shape == (2, 2)
+    assert np.all(np.isfinite(array))
+    assert np.all(array > 0.0)
+
+
+@pytest.mark.parametrize("name", ["virial_temperature_k", "mu"])
+@pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf])
+def test_atomic_cooling_mass_rejects_invalid_physical_parameters(
+    name: str,
+    value: float,
+) -> None:
+    kwargs = {name: value}
+
+    with pytest.raises(ValueError, match=name):
+        compute_atomic_cooling_mass_msun(
+            10.0,
+            cosmology=Cosmology(),
+            **kwargs,
+        )
 
 
 def test_atomic_cooling_public_apis_require_cosmology() -> None:

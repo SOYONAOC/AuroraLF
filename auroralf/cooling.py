@@ -7,6 +7,12 @@ from auroralf.mah.models import Cosmology
 
 ATOMIC_COOLING_TEMPERATURE_K = 1.0e4
 ATOMIC_COOLING_MU = 0.61
+VIRIAL_TEMPERATURE_NORMALIZATION_K = 1.98e4
+VIRIAL_MASS_NORMALIZATION_MSUN = 1.0e8
+VIRIAL_MU_NORMALIZATION = 0.6
+VIRIAL_REDSHIFT_NORMALIZATION = 10.0
+BRYAN_NORMAN_OVERDENSITY_LINEAR = 82.0
+BRYAN_NORMAN_OVERDENSITY_QUADRATIC = -39.0
 POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN = 3.3e7
 POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT = -1.5
 POPIII_LW_FEEDBACK_COEFFICIENT = 2.0
@@ -29,15 +35,23 @@ def compute_atomic_cooling_mass_msun(
     virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
     mu: float = ATOMIC_COOLING_MU,
 ) -> np.ndarray | float:
-    """Return the halo mass corresponding to a virial temperature threshold."""
+    """Return the halo mass corresponding to a virial-temperature threshold.
+
+    This is the algebraic inverse of the Barkana & Loeb (2001) virial
+    temperature relation, using the Bryan & Norman spherical-collapse
+    overdensity fit.  ``virial_temperature_k`` is in K and the returned mass
+    is in ``Msun``.
+    """
 
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
 
-    if float(virial_temperature_k) <= 0.0:
-        raise ValueError("virial_temperature_k must be positive")
-    if float(mu) <= 0.0:
-        raise ValueError("mu must be positive")
+    temperature_k = float(virial_temperature_k)
+    mean_molecular_weight = float(mu)
+    if not np.isfinite(temperature_k) or temperature_k <= 0.0:
+        raise ValueError("virial_temperature_k must be finite and positive")
+    if not np.isfinite(mean_molecular_weight) or mean_molecular_weight <= 0.0:
+        raise ValueError("mu must be finite and positive")
 
     redshift = np.asarray(z_obs, dtype=float)
     if not np.all(np.isfinite(redshift)):
@@ -45,27 +59,44 @@ def compute_atomic_cooling_mass_msun(
     if np.any(redshift < 0.0):
         raise ValueError("z_obs must be non-negative")
 
-    try:
-        import massfunc as mf
-    except ImportError as exc:
-        raise ImportError("atomic cooling mass requires the optional dependency massfunc") from exc
-
-    threshold = np.asarray(
-        mf.SFRD(
-            h=cosmology.h0_km_s_mpc / 100.0,
-            omegam=cosmology.omega_m,
-        ).M_vir(float(mu), float(virial_temperature_k), redshift),
-        dtype=float,
-    )
-    if threshold.shape != redshift.shape:
-        threshold = np.broadcast_to(threshold, redshift.shape).copy()
+    h = cosmology.h0_km_s_mpc / 100.0
+    one_plus_redshift = 1.0 + redshift
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        expansion_squared = (
+            cosmology.omega_m * one_plus_redshift**3
+            + cosmology.omega_lambda
+        )
+        omega_m_at_redshift = (
+            cosmology.omega_m * one_plus_redshift**3 / expansion_squared
+        )
+        density_offset = omega_m_at_redshift - 1.0
+        reference_overdensity = 18.0 * np.pi**2
+        collapse_overdensity = (
+            reference_overdensity
+            + BRYAN_NORMAN_OVERDENSITY_LINEAR * density_offset
+            + BRYAN_NORMAN_OVERDENSITY_QUADRATIC * density_offset**2
+        )
+        virial_correction = (
+            cosmology.omega_m
+            / omega_m_at_redshift
+            * collapse_overdensity
+            / reference_overdensity
+        )
+        threshold = (
+            VIRIAL_MASS_NORMALIZATION_MSUN
+            / h
+            * (temperature_k / VIRIAL_TEMPERATURE_NORMALIZATION_K) ** 1.5
+            * (mean_molecular_weight / VIRIAL_MU_NORMALIZATION) ** -1.5
+            * virial_correction**-0.5
+            * (one_plus_redshift / VIRIAL_REDSHIFT_NORMALIZATION) ** -1.5
+        )
     if not np.all(np.isfinite(threshold)):
-        raise RuntimeError("massfunc.SFRD().M_vir returned non-finite atomic cooling masses")
+        raise RuntimeError("atomic cooling mass calculation returned non-finite masses")
     if np.any(threshold <= 0.0):
-        raise RuntimeError("massfunc.SFRD().M_vir returned non-positive atomic cooling masses")
+        raise RuntimeError("atomic cooling mass calculation returned non-positive masses")
     if np.ndim(z_obs) == 0:
         return float(threshold)
-    return threshold
+    return np.asarray(threshold, dtype=float)
 
 
 def compute_popiii_lw_minimum_mass_msun(

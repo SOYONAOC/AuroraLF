@@ -245,7 +245,11 @@ def generate_halo_histories(
         "grid_size": redshift.size,
         "sampler": sampler,
         "store_inactive_history": store_inactive_history,
-        "M_min_mode": "massfunc.SFRD().M_vir(mu=0.61, Tvir=1e4, z)" if M_min is None else "user_provided",
+        "M_min_mode": (
+            "internal_virial_temperature(mu=0.61,Tvir=1e4K)"
+            if M_min is None
+            else "user_provided"
+        ),
         "random_seed": random_seed,
         "negative_dmhdt_clip_count": negative_dmhdt_count,
         "negative_dmhdt_total_count": total_dmhdt_count,

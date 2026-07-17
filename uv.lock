@@ -42,7 +42,6 @@ dependencies = [
     { name = "astropy" },
     { name = "h5py" },
     { name = "hmf" },
-    { name = "massfunc" },
     { name = "numpy" },
     { name = "scipy" },
 ]
@@ -51,6 +50,7 @@ dependencies = [
 analysis = [
     { name = "certifi" },
     { name = "colossus" },
+    { name = "massfunc" },
     { name = "matplotlib" },
     { name = "psutil" },
     { name = "requests" },
@@ -67,7 +67,6 @@ requires-dist = [
     { name = "astropy", specifier = "==7.2.0" },
     { name = "h5py", specifier = "==3.16.0" },
     { name = "hmf", specifier = "==3.6.0" },
-    { name = "massfunc", specifier = "==0.2.2" },
     { name = "numpy", specifier = "==2.4.2" },
     { name = "scipy", specifier = "==1.17.1" },
 ]
@@ -76,6 +75,7 @@ requires-dist = [
 analysis = [
     { name = "certifi", specifier = "==2026.2.25" },
     { name = "colossus", specifier = "==1.3.17" },
+    { name = "massfunc", specifier = "==0.2.2" },
     { name = "matplotlib", specifier = "==3.10.8" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "requests", specifier = "==2.32.5" },
