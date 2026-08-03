@@ -422,40 +422,51 @@ compute_popiii_sfr_from_grids(..., cosmology=cosmology)
 `popiii_duty_cycle`、PopIII lower/upper mass grids 和 source mask。当前
 pipeline 不让 PopIII SFR 进入 PopII metallicity regulator 或 PopII IMF gate。
 
-### 13.1 Visbal+2015 PopIII SFH 诊断公式
+### 13.1 Visbal+2015 公式勘误
 
-Visbal, Haiman & Bryan (2015) Eq. 10 可作为单独的诊断型 PopIII SFH
-口径使用：
+Visbal, Haiman & Bryan (2015) 的 Pop III 量是由 HMF 坍缩分数导数得到的
+全局 SFRD，而不是逐晕的
+`fstar (Omega_b/Omega_m) Mh H(z) / eta_duty`。旧版 AuroraLF 曾把后一个
+toy scaling 误标为该文 Eq. 10；`compute_popiii_sfr_visbal2015_from_grids`
+现在会显式报错，避免把它继续作为文献复现使用。若要复现该文，必须同时
+计算 `dF_coll/dt`、电离体积分数和自洽 LW 积分。
 
-[
-{\rm SFR}_{III}^{\rm V15} =
-f_{\star,III}\frac{\Omega_b}{\Omega_m}
-\frac{M_h}{\eta_{\rm duty}t_H(z)}
-]
-
-其中 `t_H(z)=1/H(z)`，代码里 `H(z)` 的单位为 `Gyr^-1`，因此输出
-`Msun/yr` 时需要除以 `1e9`。`eta_duty` 是 burst 持续时间占 Hubble
-time 的比例，所以单条 halo history 上的瞬时 SFR 按
-`eta_duty^-1` 缩放；它不是本节上面的
-`exp(-M_mol/M_h) exp(-M_h/M_up)` PopIII occupation/duty weight。
-
-该文的 atomic-cooling mass 使用原文近似：
+保留并校正的原文质量尺度为：
 
 [
-M_{\rm cool}^{\rm V15} =
-3\times10^7\left(\frac{1+z}{11}\right)^{1.5}M_\odot
+M_{\rm a}=5.4\times10^7\left(\frac{1+z}{11}\right)^{-1.5}M_\odot
 ]
 
-并假定 PopIII 主要在 `M_h = (1-2) M_cool` 的 halo 中形成。公开诊断
-接口为：
+以及
+
+[
+M_{\rm m}=2.5\times10^5\left(\frac{1+z}{26}\right)^{-1.5}
+\left[1+6.96(4\pi J_{\rm LW})^{0.47}\right]M_\odot .
+]
+
+对应接口是 `compute_visbal2015_atomic_cooling_mass_msun` 和
+`compute_visbal2015_minihalo_minimum_mass_msun`。文中的 `M_min` 到
+`2 M_min` 只是一种理想化的自富集质量窗口，并非逐晕 SFR 公式。
+
+### 13.2 外部时变 LW 历史
+
+`load_popiii_lw_background_history` 可读取显式的 `(z, J21)` CSV，并在源表
+范围内插值；越界不会外推。低层 Pop III SFR 接口通过
+`lw_background_j21_grid=` 接受与 halo history 可广播的时变背景。例如：
 
 ```python
-compute_visbal2015_atomic_cooling_mass_msun(...)
-compute_popiii_sfr_visbal2015_from_grids(..., cosmology=cosmology)
+history = load_popiii_lw_background_history(
+    "data_save/zeus21_popiii_fiducial.csv"
+)
+j21_grid = history.interpolate(z_grid)
+result = compute_popiii_sfr_from_grids(
+    ...,
+    cosmology=cosmology,
+    lw_background_j21_grid=j21_grid,
+)
 ```
 
-后者返回 `sfr_grid`、`mcool_msun_grid`、`mh_over_mcool_grid` 和
-`atomic_window_grid`。该接口不替换默认 PopIII SFR prescription，也不参与
-UV/HeII 卷积；需要 HMF 积分时应在调用端显式处理。
+该桥接只替换分子冷却阈值所用的 `J21(z)`，不会静默引入 Zeus21 的
+streaming、HMF、金属污染或其他物理。
 
 ```

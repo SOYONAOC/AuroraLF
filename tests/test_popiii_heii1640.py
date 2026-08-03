@@ -56,6 +56,28 @@ def test_popiii_heplus_loader_reads_schaerer_q2_column(tmp_path) -> None:
     np.testing.assert_allclose(q_heplus_per_msun, np.array([1.0e45, 10.0**44.5]))
 
 
+def test_popiii_heplus_loader_maps_schaerer_no_emission_sentinel_to_zero(tmp_path) -> None:
+    from auroralf.ssp import load_popiii_heplus_ionizing_photon_table
+
+    table = tmp_path / "pop3_test_is5.22"
+    table.write_text(
+        "\n".join(
+            [
+                "# Star-formation: instantaneous burst at age=0",
+                "# L(H_beta) HeII_1640",
+                " 4.000E+00 47.0 46.0 45.0 1.0E+34 1 2 3 4 5 1 6 0.5 7 1.0",
+                " 6.000E+00 47.0 46.0 -99.0 0.0 1 2 3 4 5 1 6 0.5 0 0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _, q_heplus_per_msun = load_popiii_heplus_ionizing_photon_table(table)
+
+    np.testing.assert_array_equal(q_heplus_per_msun, np.array([1.0e45, 0.0]))
+
+
 def test_heii_and_heplus_caches_reload_same_path_atomic_replacement_and_hit_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

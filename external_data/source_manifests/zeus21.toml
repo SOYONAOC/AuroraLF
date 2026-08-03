@@ -1,0 +1,56 @@
+schema_version = "auroralf.external_source.v1"
+name = "Zeus21"
+source_url = "https://github.com/ZeusCosmo/Zeus21.git"
+commit = "9f2d2105e99e74096092e2061082a79c3f85eaca"
+retrieved_at = "2026-08-03T00:00:00+08:00"
+local_source_path = "third_party/zeus21"
+paper_arxiv_id = "2407.18294"
+paper_doi = "10.1103/PhysRevD.111.083503"
+
+[license]
+spdx = "MIT"
+path = "LICENSE"
+sha256 = "0415534dc09fd660b69b123e8d5a053404c07d37622f062dd401360f8f1fc81f"
+redistribution_cleared = true
+
+[environment]
+python = "3.13.7"
+install_command = "uv pip install --python .venv/bin/python ./third_party/zeus21"
+packages = [
+  "zeus21==0.1.dev0",
+  "classy==3.3.4.0",
+  "numpy==2.4.2",
+  "scipy==1.17.1",
+  "mcfit==0.0.22",
+  "numexpr==2.14.2",
+  "astropy==7.2.0",
+  "powerbox==0.9.0",
+  "pyfftw==0.15.1",
+]
+
+[environment.upstream_dependency_gap]
+status = "confirmed"
+detail = "setup.py omits powerbox and pyfftw although zeus21 imports them."
+explicit_install_command = "uv pip install --python .venv/bin/python powerbox==0.9.0 pyfftw==0.15.1"
+
+[reproduction]
+script = "scripts/analysis/reproduce_zeus21_popiii.py"
+output_csv = "data_save/zeus21_popiii_fiducial.csv"
+output_metadata = "data_save/zeus21_popiii_fiducial.metadata.json"
+output_figure = "outputs/zeus21_popiii_fiducial.png"
+wall_time_seconds = 15.935053192079067
+cpu_profile = "single local process"
+parameters = "public Pop II+III fiducial tutorial; z_min=10; precisionboost=1.2; LW and relative velocities enabled"
+
+[verification]
+upstream_commands = [
+  "PYTHONPATH=third_party/zeus21 .venv/bin/python -m pytest third_party/zeus21/tests/test_sfrd.py third_party/zeus21/tests/test_inputs.py",
+  "PYTHONPATH=third_party/zeus21 .venv/bin/python -m pytest third_party/zeus21/tests/test_astrophysics.py",
+]
+upstream_result = "4 passed, 3 skipped"
+auroralf_equation_check = "Mmol_LW agrees with auroralf.cooling.compute_popiii_lw_minimum_mass_msun at rtol=2e-12 over the output redshift grid."
+
+[local_patches]
+status = "clean"
+count = 0
+sha256 = []

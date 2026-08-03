@@ -7,6 +7,7 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MERAXES_MANIFEST = PROJECT_ROOT / "external_data" / "source_manifests" / "meraxes.toml"
+ZEUS21_MANIFEST = PROJECT_ROOT / "external_data" / "source_manifests" / "zeus21.toml"
 
 
 def test_meraxes_manifest_records_exact_source_license_build_and_patch_state() -> None:
@@ -61,3 +62,30 @@ def test_generated_source_and_run_trees_are_ignored() -> None:
     }
     assert "third_party/" in patterns
     assert "runs/" in patterns
+
+
+def test_zeus21_manifest_pins_reproducible_external_bridge() -> None:
+    payload = tomllib.loads(ZEUS21_MANIFEST.read_text(encoding="utf-8"))
+
+    assert payload["schema_version"] == "auroralf.external_source.v1"
+    assert payload["name"] == "Zeus21"
+    assert payload["source_url"] == "https://github.com/ZeusCosmo/Zeus21.git"
+    assert payload["commit"] == "9f2d2105e99e74096092e2061082a79c3f85eaca"
+    assert payload["local_source_path"] == "third_party/zeus21"
+    assert payload["paper_arxiv_id"] == "2407.18294"
+    assert payload["paper_doi"] == "10.1103/PhysRevD.111.083503"
+
+    license_record = payload["license"]
+    assert license_record["spdx"] == "MIT"
+    assert license_record["redistribution_cleared"] is True
+    assert re.fullmatch(r"[0-9a-f]{64}", license_record["sha256"])
+
+    environment = payload["environment"]
+    assert "powerbox==0.9.0" in environment["packages"]
+    assert "pyfftw==0.15.1" in environment["packages"]
+    assert environment["upstream_dependency_gap"]["status"] == "confirmed"
+
+    reproduction = payload["reproduction"]
+    assert reproduction["script"] == "scripts/analysis/reproduce_zeus21_popiii.py"
+    assert reproduction["wall_time_seconds"] > 0.0
+    assert payload["local_patches"] == {"status": "clean", "count": 0, "sha256": []}

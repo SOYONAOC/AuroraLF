@@ -21,7 +21,9 @@ from .popiii import (
     compute_popiii_star_formation_efficiency,
     compute_popiii_upper_mass_msun,
     compute_visbal2015_atomic_cooling_mass_msun,
+    compute_visbal2015_minihalo_minimum_mass_msun,
 )
+from .lw_history import PopIIILWBackgroundHistory, load_popiii_lw_background_history
 
 __all__ = [
     "DEFAULT_SFR_MODEL_PARAMETERS",
@@ -33,6 +35,7 @@ __all__ = [
     "POPIII_UPPER_MASS_MODES",
     "PopIIISFRGridResult",
     "PopIIISFRParameters",
+    "PopIIILWBackgroundHistory",
     "PopIIIVisbal2015SFRGridResult",
     "SFRModelParameters",
     "compute_sfr_from_tracks",
@@ -42,4 +45,6 @@ __all__ = [
     "compute_popiii_star_formation_efficiency",
     "compute_popiii_upper_mass_msun",
     "compute_visbal2015_atomic_cooling_mass_msun",
+    "compute_visbal2015_minihalo_minimum_mass_msun",
+    "load_popiii_lw_background_history",
 ]

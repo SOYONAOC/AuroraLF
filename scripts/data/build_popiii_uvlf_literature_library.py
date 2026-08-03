@@ -53,6 +53,48 @@ class PaperSeed:
 
 PAPER_SEEDS = [
     PaperSeed(
+        "2407.18294",
+        "formation_feedback_models",
+        1,
+        "Zeus21 analytic Pop III SFRD with self-consistent LW and streaming feedback; public code.",
+    ),
+    PaperSeed(
+        "2507.19581",
+        "formation_feedback_models",
+        1,
+        "Fast abcd dual-reservoir Pop III/II enrichment model; equations are public but cited code is unavailable.",
+    ),
+    PaperSeed(
+        "1505.06359",
+        "formation_feedback_models",
+        1,
+        "Visbal-Haiman-Bryan global collapsed-fraction SFRD, LW, enrichment, and reionization baseline.",
+    ),
+    PaperSeed(
+        "2206.00223",
+        "formation_feedback_models",
+        1,
+        "A-SLOTH public semi-analytic framework for Pop III formation and chemical evolution.",
+    ),
+    PaperSeed(
+        "2209.07339",
+        "formation_feedback_models",
+        1,
+        "A-SLOTH public code/reproducibility paper and software citation record.",
+    ),
+    PaperSeed(
+        "2603.26353",
+        "formation_feedback_models",
+        2,
+        "Simulation-calibrated Pop III halo-occupation fit with X-ray, LW, and environment dependence.",
+    ),
+    PaperSeed(
+        "2604.26006",
+        "formation_feedback_models",
+        3,
+        "Multi-scale analytic Pop III efficiency model; promising but no public code/data at retrieval time.",
+    ),
+    PaperSeed(
         "2501.11678",
         "direct_popiii_uvlf",
         1,
@@ -179,7 +221,7 @@ PAPER_SEEDS = [
         "Predicted UV properties of very metal-poor starbursts used for SSP/UV interpretation.",
     ),
     PaperSeed(
-        "astro-ph/0206390",
+        "astro-ph/0206389",
         "spectra_imf_uv_output",
         1,
         "Classic evolving spectra of Pop III stars and reionization consequences.",

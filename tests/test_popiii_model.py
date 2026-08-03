@@ -234,132 +234,37 @@ def test_visbal2015_atomic_cooling_mass_matches_paper_formula() -> None:
 
     mass = compute_visbal2015_atomic_cooling_mass_msun(redshift)
 
-    expected = 3.0e7 * ((1.0 + redshift) / 11.0) ** 1.5
+    expected = 5.4e7 * ((1.0 + redshift) / 11.0) ** -1.5
     np.testing.assert_allclose(mass, expected)
 
 
-def test_visbal2015_popiii_sfr_uses_hubble_time_scaling() -> None:
-    from auroralf.mah.models import Cosmology
-    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
+def test_visbal2015_minihalo_mass_matches_paper_formula() -> None:
+    from auroralf.sfr import compute_visbal2015_minihalo_minimum_mass_msun
 
-    cosmology = Cosmology(omega_m=0.4, omega_b=0.064, omega_lambda=0.6)
-    z_grid = np.array([[10.0, 10.0]])
-    mh_grid = np.array([[3.0e7, 6.0e7]])
-    active_grid = np.ones_like(mh_grid, dtype=bool)
+    redshift = np.array([10.0, 20.0])
+    j21 = np.array([0.0, 0.1])
+    expected = 2.5e5 * ((1.0 + redshift) / 26.0) ** -1.5
+    expected *= 1.0 + 6.96 * (4.0 * np.pi * j21) ** 0.47
 
-    result = compute_popiii_sfr_visbal2015_from_grids(
-        mh_grid=mh_grid,
-        z_grid=z_grid,
-        active_grid=active_grid,
-        fstar=0.1,
-        eta_duty=0.1,
-        cosmology=cosmology,
+    np.testing.assert_allclose(
+        compute_visbal2015_minihalo_minimum_mass_msun(
+            redshift,
+            lw_background_j21=j21,
+        ),
+        expected,
     )
 
-    expected = 0.16 * 0.1 * mh_grid * cosmology.hubble(z_grid) / 0.1 / 1.0e9
-    np.testing.assert_allclose(result.sfr_grid, expected)
-    np.testing.assert_allclose(result.sfr_grid[0, 1], 2.0 * result.sfr_grid[0, 0])
 
-    shorter_duty = compute_popiii_sfr_visbal2015_from_grids(
-        mh_grid=mh_grid,
-        z_grid=z_grid,
-        active_grid=active_grid,
-        fstar=0.1,
-        eta_duty=0.01,
-        cosmology=cosmology,
-    )
-    np.testing.assert_allclose(shorter_duty.sfr_grid, 10.0 * result.sfr_grid)
-
-
-def test_visbal2015_popiii_sfr_requires_cosmology() -> None:
+def test_misattributed_visbal2015_per_halo_sfr_fails_fast() -> None:
     from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
 
-    with pytest.raises(TypeError, match="cosmology"):
+    with pytest.raises(RuntimeError, match="misattributed.*collapsed-fraction"):
         compute_popiii_sfr_visbal2015_from_grids(
             mh_grid=np.array([[3.0e7]]),
             z_grid=np.array([[10.0]]),
             active_grid=np.array([[True]]),
             fstar=0.1,
-            eta_duty=1.0,
-        )
-
-
-def test_visbal2015_atomic_window_includes_one_to_two_mcool() -> None:
-    from auroralf.mah.models import Cosmology
-    from auroralf.sfr import (
-        compute_popiii_sfr_visbal2015_from_grids,
-        compute_visbal2015_atomic_cooling_mass_msun,
-    )
-
-    z_grid = np.full((1, 4), 10.0)
-    mcool = compute_visbal2015_atomic_cooling_mass_msun(z_grid)
-    mh_grid = np.array([[0.99, 1.0, 2.0, 2.01]]) * mcool
-    active_grid = np.ones_like(mh_grid, dtype=bool)
-    cosmology = Cosmology(omega_m=0.4, omega_b=0.064, omega_lambda=0.6)
-
-    result = compute_popiii_sfr_visbal2015_from_grids(
-        mh_grid=mh_grid,
-        z_grid=z_grid,
-        active_grid=active_grid,
-        fstar=0.1,
-        eta_duty=1.0,
-        cosmology=cosmology,
-    )
-
-    expected_raw = 0.16 * 0.1 * mh_grid * cosmology.hubble(z_grid) / 1.0e9
-    expected_window = np.array([[False, True, True, False]])
-    np.testing.assert_allclose(result.mcool_msun_grid, mcool)
-    np.testing.assert_allclose(result.mh_over_mcool_grid, mh_grid / mcool)
-    np.testing.assert_array_equal(result.atomic_window_grid, expected_window)
-    np.testing.assert_allclose(result.raw_sfr_scaling_grid, expected_raw)
-    np.testing.assert_allclose(result.sfr_grid, np.where(expected_window, expected_raw, 0.0))
-
-
-def test_visbal2015_inactive_rows_have_zero_raw_and_gated_sfr() -> None:
-    from auroralf.mah import Cosmology
-    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
-
-    result = compute_popiii_sfr_visbal2015_from_grids(
-        mh_grid=np.array([[3.0e7, 6.0e7], [3.0e7, 6.0e7]]),
-        z_grid=np.full((2, 2), 10.0),
-        active_grid=np.array([[True, True], [False, False]]),
-        fstar=0.1,
-        eta_duty=1.0,
-        cosmology=Cosmology(),
-    )
-
-    assert np.all(result.raw_sfr_scaling_grid[0] > 0.0)
-    np.testing.assert_array_equal(result.raw_sfr_scaling_grid[1], np.zeros(2))
-    np.testing.assert_array_equal(result.sfr_grid[1], np.zeros(2))
-
-
-def test_visbal2015_rejects_legacy_baryon_fraction_argument() -> None:
-    from auroralf.mah import Cosmology
-    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
-
-    with pytest.raises(TypeError, match="baryon_fraction"):
-        compute_popiii_sfr_visbal2015_from_grids(
-            mh_grid=np.array([[3.0e7]]),
-            z_grid=np.array([[10.0]]),
-            active_grid=np.array([[True]]),
-            baryon_fraction=0.16,
-            fstar=0.1,
-            eta_duty=1.0,
-            cosmology=Cosmology(),
-        )
-
-
-def test_visbal2015_rejects_nonfinite_eq10_scaling() -> None:
-    from auroralf.mah import Cosmology
-    from auroralf.sfr import compute_popiii_sfr_visbal2015_from_grids
-
-    with pytest.raises(RuntimeError, match="non-finite or negative"):
-        compute_popiii_sfr_visbal2015_from_grids(
-            mh_grid=np.array([[3.0e7]]),
-            z_grid=np.array([[10.0]]),
-            active_grid=np.array([[True]]),
-            fstar=0.1,
-            eta_duty=np.nextafter(0.0, 1.0),
+            eta_duty=0.1,
             cosmology=Cosmology(),
         )
 

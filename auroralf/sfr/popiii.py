@@ -14,9 +14,14 @@ from auroralf.cooling import (
 
 
 YEARS_PER_GYR = 1.0e9
-VISBAL2015_ATOMIC_COOLING_NORMALIZATION_MSUN = 3.0e7
+VISBAL2015_ATOMIC_COOLING_NORMALIZATION_MSUN = 5.4e7
 VISBAL2015_ATOMIC_COOLING_REDSHIFT_NORMALIZATION = 11.0
-VISBAL2015_ATOMIC_COOLING_REDSHIFT_EXPONENT = 1.5
+VISBAL2015_ATOMIC_COOLING_REDSHIFT_EXPONENT = -1.5
+VISBAL2015_MINIHALO_NORMALIZATION_MSUN = 2.5e5
+VISBAL2015_MINIHALO_REDSHIFT_NORMALIZATION = 26.0
+VISBAL2015_MINIHALO_REDSHIFT_EXPONENT = -1.5
+VISBAL2015_MINIHALO_LW_COEFFICIENT = 6.96
+VISBAL2015_MINIHALO_LW_EXPONENT = 0.47
 POPIII_UPPER_MASS_MODE_ATOMIC = "atomic"
 POPIII_UPPER_MASS_MODE_FIXED = "fixed"
 POPIII_UPPER_MASS_MODES = (POPIII_UPPER_MASS_MODE_ATOMIC, POPIII_UPPER_MASS_MODE_FIXED)
@@ -100,7 +105,7 @@ def compute_popiii_star_formation_efficiency(
     halo_mass_msun: np.ndarray | float,
     parameters: PopIIISFRParameters | None = None,
 ) -> np.ndarray | float:
-    """Return the Venditti/Cruz Pop III star-formation efficiency."""
+    """Return the Cruz et al. (2025, Eq. 10) Pop III efficiency."""
 
     params = _resolve_popiii_sfr_parameters(parameters)
     mass = np.asarray(halo_mass_msun, dtype=float)
@@ -163,6 +168,35 @@ def compute_visbal2015_atomic_cooling_mass_msun(z_obs: np.ndarray | float) -> np
     return _as_scalar_if_scalar_input(mcool, z_obs)
 
 
+def compute_visbal2015_minihalo_minimum_mass_msun(
+    z_obs: np.ndarray | float,
+    *,
+    lw_background_j21: np.ndarray | float,
+) -> np.ndarray | float:
+    """Return Visbal, Haiman & Bryan (2015) Eq. 4's minihalo threshold."""
+
+    redshift = np.asarray(z_obs, dtype=float)
+    lw_background = np.asarray(lw_background_j21, dtype=float)
+    if not np.all(np.isfinite(redshift)) or np.any(redshift < 0.0):
+        raise ValueError("z_obs must be finite and non-negative")
+    if not np.all(np.isfinite(lw_background)) or np.any(lw_background < 0.0):
+        raise ValueError("lw_background_j21 must be finite and non-negative")
+    try:
+        redshift, lw_background = np.broadcast_arrays(redshift, lw_background)
+    except ValueError as exc:
+        raise ValueError("lw_background_j21 must be scalar or broadcast with z_obs") from exc
+
+    minimum_mass = VISBAL2015_MINIHALO_NORMALIZATION_MSUN * (
+        (1.0 + redshift) / VISBAL2015_MINIHALO_REDSHIFT_NORMALIZATION
+    ) ** VISBAL2015_MINIHALO_REDSHIFT_EXPONENT
+    minimum_mass *= 1.0 + VISBAL2015_MINIHALO_LW_COEFFICIENT * (
+        4.0 * np.pi * lw_background
+    ) ** VISBAL2015_MINIHALO_LW_EXPONENT
+    if not np.all(np.isfinite(minimum_mass)) or np.any(minimum_mass <= 0.0):
+        raise RuntimeError("Visbal2015 minihalo mass calculation returned invalid values")
+    return _as_scalar_if_scalar_input(minimum_mass, z_obs, lw_background_j21)
+
+
 def compute_popiii_sfr_visbal2015_from_grids(
     *,
     mh_grid: np.ndarray,
@@ -172,70 +206,21 @@ def compute_popiii_sfr_visbal2015_from_grids(
     eta_duty: float,
     cosmology: Cosmology,
 ) -> PopIIIVisbal2015SFRGridResult:
-    """Compute Visbal et al. (2015) Eq. 10 Pop III SFR grids.
+    """Reject a historical AuroraLF diagnostic misattributed to Visbal (2015).
 
-    Both returned SFR grids are in ``Msun/yr``. ``raw_sfr_scaling_grid`` is
-    the active-only Eq. 10 scaling before the atomic-cooling window, while
-    ``sfr_grid`` is the physical result gated to ``1 <= Mh/Mcool <= 2``.
+    Visbal, Haiman & Bryan (2015) compute *global* SFR densities from time
+    derivatives of HMF collapsed fractions (their Eqs. 6--7).  They do not
+    define the per-halo ``Mh H(z) / eta_duty`` prescription formerly exposed
+    here.  Keeping a hard failure prevents that toy scaling from being used as
+    a literature reproduction.
     """
 
-    if not isinstance(cosmology, Cosmology):
-        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
-
-    mh = np.asarray(mh_grid, dtype=float)
-    z = np.asarray(z_grid, dtype=float)
-    active = np.asarray(active_grid, dtype=bool)
-    if mh.shape != active.shape:
-        raise ValueError("mh_grid and active_grid must have identical shapes")
-    if z.ndim == 1:
-        if mh.ndim != 2 or z.size != mh.shape[1]:
-            raise ValueError("1D z_grid length must match the time axis of mh_grid")
-        z = np.broadcast_to(z[None, :], mh.shape)
-    elif z.shape != mh.shape:
-        raise ValueError("z_grid must either be 1D over time or match mh_grid shape")
-    if float(fstar) < 0.0 or float(fstar) > 1.0 or not np.isfinite(float(fstar)):
-        raise ValueError("fstar must be finite and lie in [0, 1]")
-    if float(eta_duty) <= 0.0 or not np.isfinite(float(eta_duty)):
-        raise ValueError("eta_duty must be finite and positive")
-
-    finite_mass = np.isfinite(mh) & (mh > 0.0)
-    finite_redshift = np.isfinite(z) & (z >= 0.0)
-    source = active & finite_mass & finite_redshift
-    if np.any(active & ~finite_mass):
-        raise ValueError("active halo masses must be finite and positive")
-    if np.any(active & ~finite_redshift):
-        raise ValueError("active redshifts must be finite and non-negative")
-
-    mcool = np.asarray(compute_visbal2015_atomic_cooling_mass_msun(z), dtype=float)
-    mh_over_mcool = np.full_like(mh, np.nan, dtype=float)
-    mh_over_mcool[finite_mass] = mh[finite_mass] / mcool[finite_mass]
-    atomic_window = source & (mh_over_mcool >= 1.0) & (mh_over_mcool <= 2.0)
-
-    raw_sfr_scaling = np.zeros_like(mh, dtype=float)
-    if np.any(source) and float(fstar) > 0.0:
-        hubble_per_gyr = np.asarray(cosmology.hubble(z), dtype=float)
-        if not np.all(np.isfinite(hubble_per_gyr[source])) or np.any(hubble_per_gyr[source] <= 0.0):
-            raise RuntimeError("cosmology.hubble returned non-finite or non-positive values")
-        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-            raw_sfr_scaling[source] = (
-                (cosmology.omega_b / cosmology.omega_m)
-                * float(fstar)
-                * mh[source]
-                * hubble_per_gyr[source]
-                / float(eta_duty)
-                / YEARS_PER_GYR
-            )
-    if not np.all(np.isfinite(raw_sfr_scaling[source])) or np.any(raw_sfr_scaling[source] < 0.0):
-        raise RuntimeError("Visbal2015 Eq. 10 scaling returned non-finite or negative values")
-    sfr = np.zeros_like(mh, dtype=float)
-    sfr[atomic_window] = raw_sfr_scaling[atomic_window]
-
-    return PopIIIVisbal2015SFRGridResult(
-        sfr_grid=sfr,
-        raw_sfr_scaling_grid=raw_sfr_scaling,
-        mcool_msun_grid=mcool,
-        mh_over_mcool_grid=mh_over_mcool,
-        atomic_window_grid=atomic_window,
+    del mh_grid, z_grid, active_grid, fstar, eta_duty, cosmology
+    raise RuntimeError(
+        "compute_popiii_sfr_visbal2015_from_grids was scientifically "
+        "misattributed: Visbal et al. (2015) use global collapsed-fraction "
+        "derivatives, not a per-halo Hubble-time SFR. Use the Cruz/Zeus21 "
+        "prescription or implement the full Visbal global SFRD integral."
     )
 
 
@@ -245,8 +230,9 @@ def compute_popiii_duty_cycle(
     parameters: PopIIISFRParameters | None = None,
     *,
     cosmology: Cosmology,
+    lw_background_j21: np.ndarray | float | None = None,
 ) -> np.ndarray | float:
-    """Return ``exp(-M_mol/Mh) exp(-Mh/M_up)`` for the Pop III occupation."""
+    """Return the Cruz et al. (2025, Eqs. 11--13) Pop III duty weight."""
 
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
@@ -257,10 +243,15 @@ def compute_popiii_duty_cycle(
     if np.any(mass <= 0.0):
         raise ValueError("halo_mass_msun must be positive")
 
+    resolved_lw_background = (
+        float(params.lw_background_j21)
+        if lw_background_j21 is None
+        else np.asarray(lw_background_j21, dtype=float)
+    )
     lower_mass = np.asarray(
         compute_popiii_lw_minimum_mass_msun(
             z_obs,
-            lw_background_j21=float(params.lw_background_j21),
+            lw_background_j21=resolved_lw_background,
         ),
         dtype=float,
     )
@@ -290,8 +281,9 @@ def compute_popiii_sfr_from_grids(
     active_grid: np.ndarray,
     cosmology: Cosmology,
     parameters: PopIIISFRParameters | None = None,
+    lw_background_j21_grid: np.ndarray | float | None = None,
 ) -> PopIIISFRGridResult:
-    """Compute Pop III SFR in ``Msun/yr`` on halo-history grids."""
+    """Compute the Cruz et al. (2025, Eq. 8) Pop III SFR in ``Msun/yr``."""
 
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
@@ -316,8 +308,19 @@ def compute_popiii_sfr_from_grids(
 
     fstar = np.zeros_like(mh, dtype=float)
     duty = np.zeros_like(mh, dtype=float)
+    resolved_lw_background = (
+        float(params.lw_background_j21)
+        if lw_background_j21_grid is None
+        else np.asarray(lw_background_j21_grid, dtype=float)
+    )
+    try:
+        resolved_lw_background = np.broadcast_to(resolved_lw_background, mh.shape)
+    except ValueError as exc:
+        raise ValueError("lw_background_j21_grid must be scalar or match mh_grid") from exc
+    if not np.all(np.isfinite(resolved_lw_background)) or np.any(resolved_lw_background < 0.0):
+        raise ValueError("lw_background_j21_grid must be finite and non-negative")
     lower_mass = np.asarray(
-        compute_popiii_lw_minimum_mass_msun(z, lw_background_j21=float(params.lw_background_j21)),
+        compute_popiii_lw_minimum_mass_msun(z, lw_background_j21=resolved_lw_background),
         dtype=float,
     )
     upper_mass = np.asarray(
@@ -334,12 +337,16 @@ def compute_popiii_sfr_from_grids(
     )
     if np.any(source):
         fstar[source] = np.asarray(compute_popiii_star_formation_efficiency(mh[source], params), dtype=float)
+        duty_kwargs: dict[str, np.ndarray] = {}
+        if lw_background_j21_grid is not None:
+            duty_kwargs["lw_background_j21"] = resolved_lw_background[source]
         duty[source] = np.asarray(
             compute_popiii_duty_cycle(
                 mh[source],
                 z[source],
                 params,
                 cosmology=cosmology,
+                **duty_kwargs,
             ),
             dtype=float,
         )
@@ -377,4 +384,5 @@ __all__ = [
     "compute_popiii_star_formation_efficiency",
     "compute_popiii_upper_mass_msun",
     "compute_visbal2015_atomic_cooling_mass_msun",
+    "compute_visbal2015_minihalo_minimum_mass_msun",
 ]

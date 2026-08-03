@@ -1,0 +1,46 @@
+schema_version = "auroralf.external_source.v1"
+name = "Meraxes"
+source_url = "https://github.com/meraxes-devs/meraxes.git"
+commit = "f97a6041a1ed90b566983902087d9107135adb12"
+retrieved_at = "2026-06-17T10:46:40+08:00"
+local_source_path = "third_party/meraxes"
+
+[license]
+spdx = "NOASSERTION"
+status = "The pinned upstream commit contains no repository-level license file."
+evidence = "git ls-tree -r --name-only f97a6041a1ed90b566983902087d9107135adb12 contains no LICENSE, LICENCE, COPYING, or COPYRIGHT path."
+redistribution_cleared = false
+
+[[bundled_licenses]]
+component = "src/mlog"
+spdx = "MIT"
+path = "src/mlog/LICENSE"
+sha256 = "28234bd5e43a9251f12f4c3c7d1cfeb309435bd75878906d3c6736ac785aaf7e"
+scope_note = "This license applies to the bundled mlog component only, not to the whole Meraxes repository."
+
+[build]
+profile = "ventura2024_l10_paper_era"
+build_type = "Release"
+c_compiler = "/usr/bin/gcc"
+mpi = "OpenMPI 4.0.5"
+hdf5 = "HDF5 1.12.0 parallel build"
+gsl = "GSL 2.7.1"
+fftw = "FFTW 3.3.10 float+MPI shared build"
+parallel_build_jobs = 8
+runtime_mpi_ranks = 24
+cmake_flags = [
+  "-DCMAKE_BUILD_TYPE=Release",
+  "-DCMAKE_C_STANDARD=99",
+  "-DCMAKE_C_STANDARD_REQUIRED=ON",
+  "-DCMAKE_C_FLAGS=-std=c99 -D__PURE_INTEL_C99_HEADERS__ -DM_PI=3.14159265358979323846",
+  "-DUSE_MINI_HALOS=ON",
+  "-DCALC_MAGS=OFF",
+  "-DN_HISTORY_SNAPS=120",
+  "-DHDF5_PREFER_PARALLEL=TRUE",
+]
+
+[local_patches]
+status = "clean"
+count = 0
+sha256 = []
+empty_diff_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

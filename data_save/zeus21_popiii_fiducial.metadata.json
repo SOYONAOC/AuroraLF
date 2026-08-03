@@ -1,0 +1,31 @@
+{
+  "schema_version": "auroralf.zeus21_popiii_fiducial.v1",
+  "paper_arxiv_id": "2407.18294",
+  "source_url": "https://github.com/ZeusCosmo/Zeus21",
+  "source_commit": "9f2d2105e99e74096092e2061082a79c3f85eaca",
+  "runtime_seconds": 15.935053192079067,
+  "python": "3.13.7",
+  "packages": {
+    "zeus21": "0.1.dev0",
+    "classy": "3.3.4.0",
+    "numpy": "2.4.2",
+    "scipy": "1.17.1",
+    "mcfit": "0.0.22",
+    "powerbox": "0.9.0",
+    "pyfftw": "0.15.1"
+  },
+  "parameters": {
+    "z_min": 10.0,
+    "precisionboost": 1.2,
+    "fstar_popiii": 0.001,
+    "A_LW": 2.0,
+    "beta_LW": 0.6,
+    "A_vcb": 1.0,
+    "beta_vcb": 1.8,
+    "relative_velocities": true
+  },
+  "outputs": {
+    "csv": "data_save/zeus21_popiii_fiducial.csv",
+    "figure": "outputs/zeus21_popiii_fiducial.png"
+  }
+}

@@ -24,6 +24,7 @@ SCHAERER_HEPLUS_LOG_Q_COLUMN = 3
 SCHAERER_HEII1640_EW_COLUMN = 13
 SCHAERER_HEII1640_TO_HBETA_COLUMN = 14
 SCHAERER_HBETA_LUMINOSITY_COLUMN = 4
+SCHAERER_LOG_Q_SENTINEL = -99.0
 
 
 def _parse_popiii_heii1640_table_header(file_path: str) -> None:
@@ -139,9 +140,10 @@ def _load_popiii_heplus_ionizing_photon_table_from_schaerer(
     if not np.all(np.isfinite(log_q_heplus)):
         raise ValueError("Pop III He+ ionizing photon rates must be finite")
 
+    sentinel = log_q_heplus <= SCHAERER_LOG_Q_SENTINEL
     with np.errstate(over="ignore", under="ignore", invalid="ignore"):
         ages_myr = np.power(10.0, log_age_yr - 6.0)
-        q_heplus_per_msun = np.power(10.0, log_q_heplus)
+        q_heplus_per_msun = np.where(sentinel, 0.0, np.power(10.0, log_q_heplus))
     if not np.all(np.isfinite(ages_myr)):
         raise RuntimeError("computed Pop III He+ SSP ages must be finite")
     if not np.all(np.isfinite(q_heplus_per_msun)):
@@ -205,7 +207,8 @@ def load_popiii_heplus_ionizing_photon_table(
 
     Returns SSP age in ``Myr`` and ``Q_2`` in ``photon s^-1 Msun^-1``. In the
     Schaerer/Raiter ``*.22`` recombination tables, ``Q_2`` is the photon rate
-    above the He+ ionization edge at 54.4 eV.
+    above the He+ ionization edge at 54.4 eV. The documented ``logQ_2=-99``
+    no-emission sentinel is returned as exactly zero.
     """
 
     version = FileVersion.from_path(file_path)

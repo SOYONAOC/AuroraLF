@@ -37,8 +37,7 @@ from auroralf.io import (
 from auroralf.mah import Cosmology, generate_halo_histories
 from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.sfr import (
-    compute_popiii_sfr_visbal2015_from_grids,
-    compute_visbal2015_atomic_cooling_mass_msun,
+    compute_visbal2015_minihalo_minimum_mass_msun,
 )
 from auroralf.ssp import DEFAULT_POPIII_UV_SSP_FILE
 from auroralf.uvlf.dust import intrinsic_muv_from_observed, intrinsic_muv_jacobian
@@ -168,22 +167,12 @@ def _physical_gates_validation(asset_dir: Path) -> dict[str, object]:
     cosmology = Cosmology()
     ratio = np.linspace(0.5, 2.5, 401)
     redshift_grid = np.full((1, ratio.size), 10.0)
-    cooling_mass = compute_visbal2015_atomic_cooling_mass_msun(redshift_grid)
+    cooling_mass = compute_visbal2015_minihalo_minimum_mass_msun(
+        redshift_grid,
+        lw_background_j21=0.0,
+    )
     halo_mass = ratio[None, :] * cooling_mass
-    visbal = compute_popiii_sfr_visbal2015_from_grids(
-        mh_grid=halo_mass,
-        z_grid=redshift_grid,
-        active_grid=np.ones_like(halo_mass, dtype=bool),
-        fstar=0.1,
-        eta_duty=1.0,
-        cosmology=cosmology,
-    )
-    normalized_sfr = np.divide(
-        visbal.sfr_grid[0],
-        visbal.raw_sfr_scaling_grid[0],
-        out=np.zeros_like(visbal.sfr_grid[0]),
-        where=visbal.raw_sfr_scaling_grid[0] > 0.0,
-    )
+    normalized_sfr = ((halo_mass[0] >= cooling_mass[0]) & (halo_mass[0] <= 2.0 * cooling_mass[0])).astype(float)
 
     histories = generate_halo_histories(
         n_tracks=128,
@@ -211,8 +200,8 @@ def _physical_gates_validation(asset_dir: Path) -> dict[str, object]:
     gate_axis.axvline(1.0, color="0.35", ls="--", lw=1.0)
     gate_axis.axvline(2.0, color="0.35", ls="--", lw=1.0)
     gate_axis.fill_between(ratio, 0.0, 1.0, where=(ratio >= 1.0) & (ratio <= 2.0), color="#4c78a8", alpha=0.12)
-    gate_axis.set(xlabel=r"$M_h/M_{\rm cool}$", ylabel="gated / raw Pop III SFR", xlim=(0.5, 2.5), ylim=(-0.05, 1.12))
-    gate_axis.set_title(r"Visbal window: $1\leq M_h/M_{\rm cool}\leq2$")
+    gate_axis.set(xlabel=r"$M_h/M_{\rm min}$", ylabel="idealized Pop III window", xlim=(0.5, 2.5), ylim=(-0.05, 1.12))
+    gate_axis.set_title(r"Visbal enrichment toy window: $1\leq M_h/M_{\rm min}\leq2$")
 
     labels = tuple(clipping_fractions)
     values = np.asarray(tuple(clipping_fractions.values())) * 100.0
