@@ -3,7 +3,7 @@
   "paper_arxiv_id": "2407.18294",
   "source_url": "https://github.com/ZeusCosmo/Zeus21",
   "source_commit": "9f2d2105e99e74096092e2061082a79c3f85eaca",
-  "runtime_seconds": 15.935053192079067,
+  "runtime_seconds": 15.761509645730257,
   "python": "3.13.7",
   "packages": {
     "zeus21": "0.1.dev0",
@@ -26,6 +26,18 @@
   },
   "outputs": {
     "csv": "data_save/zeus21_popiii_fiducial.csv",
-    "figure": "outputs/zeus21_popiii_fiducial.png"
+    "figure": "outputs/zeus21_popiii_fiducial.png",
+    "mass_distribution_npz": "data_save/zeus21_popiii_mass_distribution.npz",
+    "mass_distribution_figure": "outputs/zeus21_popiii_mass_distribution.png"
+  },
+  "mass_distribution": {
+    "quantity": "dSFRD/dlog10(Mh)",
+    "units": "Msun yr^-1 Mpc^-3",
+    "halo_mass_units": "Msun",
+    "mass_grid_size": 42,
+    "mass_grid_min_msun": 100000.0,
+    "mass_grid_max_msun": 100000000000000.0,
+    "popii_global_closure_max_relative_error": 0.0004869711946535056,
+    "popiii_global_closure_max_relative_error": 0.0004715521263314162
   }
 }

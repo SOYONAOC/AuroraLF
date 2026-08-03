@@ -65,7 +65,7 @@ The output grid contains 77 samples over `10 <= z <= 35`.
 
 | Quantity | Result |
 |---|---:|
-| Runtime | 15.935 s (repeat runs: 15--17 s) |
+| Runtime | 15.762 s (repeat runs: 15--17 s) |
 | Peak Pop III SFRD | `5.41348e-4 Msun yr^-1 Mpc^-3` |
 | Peak redshift | `z=12.596` |
 | Pop III SFRD at `z=20` | `2.30921e-4 Msun yr^-1 Mpc^-3` |
@@ -79,12 +79,53 @@ The generated products are:
 
 - `data_save/zeus21_popiii_fiducial.csv`
 - `data_save/zeus21_popiii_fiducial.metadata.json`
+- `data_save/zeus21_popiii_mass_distribution.npz`
 - `outputs/zeus21_popiii_fiducial.png`
+- `outputs/zeus21_popiii_mass_distribution.png`
 
 `scripts/analysis/reproduce_zeus21_popiii.py` validates the exact source
 commit and tracked-source cleanliness before running. It then asserts that
 Zeus21's `Mmol_LW` and AuroraLF's
 `compute_popiii_lw_minimum_mass_msun` agree over every output redshift.
+
+## Halo-mass-resolved distribution
+
+Zeus21 does not define a stochastic count of discrete Pop III-hosting halos.
+Its smooth duty prescription instead provides the physically relevant
+mass-resolved contribution
+
+```text
+dSFRD_III/dln(Mh) = [dn/dMh] SFR_III(Mh,z) Mh.
+```
+
+The NPZ bridge product stores all three factors: `dn/dMh`, the Pop III SFR per
+halo, and `dSFRD/dlog10(Mh)` for Pop II and Pop III. Integrating the saved
+kernel over `log10(Mh)` closes to the previously saved global histories with
+maximum relative errors `4.87e-4` for Pop II and `4.72e-4` for Pop III.
+
+| Redshift | mode halo mass | 16th percentile | median halo mass | 84th percentile |
+|---:|---:|---:|---:|---:|
+| 10.0 | `4.31e7 Msun` | `1.88e7 Msun` | `4.47e7 Msun` | `1.07e8 Msun` |
+| 15.1 | `1.57e7 Msun` | `5.89e6 Msun` | `1.46e7 Msun` | `3.87e7 Msun` |
+| 20.0 | `5.70e6 Msun` | `2.24e6 Msun` | `5.68e6 Msun` | `1.57e7 Msun` |
+| 25.2 | `2.08e6 Msun` | `9.14e5 Msun` | `2.31e6 Msun` | `6.59e6 Msun` |
+| 30.2 | `7.55e5 Msun` | `4.50e5 Msun` | `1.06e6 Msun` | `2.95e6 Msun` |
+
+These are SFRD-weighted masses, not number-weighted halo-occupation
+percentiles. A count distribution requires a separate occupation model such
+as Park & Ricotti (2026), which is not part of the Zeus21 fiducial.
+
+The pinned upstream HMF uses 42 logarithmic points over `1e5--1e14 Msun`, or
+`0.2195 dex` spacing. Global integrals and cumulative percentiles are stable,
+but the plotted mode must land on a native mass bin and therefore has roughly
+`0.1--0.2 dex` localization precision. A dense interpolation check moves the
+mode by at most about 16% over the representative redshifts above.
+
+One unrelated upstream issue surfaced during this audit: the reionization
+coefficient `niondot_avg_III` uses `N_ion_perbaryon_II` rather than the defined
+Pop III value. It does not affect the SFRD or mass distribution saved here,
+but it must be resolved before treating the upstream ionization history as a
+validated Pop III prediction.
 
 ## External attachment implemented
 

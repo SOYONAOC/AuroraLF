@@ -87,5 +87,8 @@ def test_zeus21_manifest_pins_reproducible_external_bridge() -> None:
 
     reproduction = payload["reproduction"]
     assert reproduction["script"] == "scripts/analysis/reproduce_zeus21_popiii.py"
+    assert reproduction["output_mass_distribution"] == (
+        "data_save/zeus21_popiii_mass_distribution.npz"
+    )
     assert reproduction["wall_time_seconds"] > 0.0
     assert payload["local_patches"] == {"status": "clean", "count": 0, "sha256": []}

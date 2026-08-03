@@ -37,8 +37,10 @@ explicit_install_command = "uv pip install --python .venv/bin/python powerbox==0
 script = "scripts/analysis/reproduce_zeus21_popiii.py"
 output_csv = "data_save/zeus21_popiii_fiducial.csv"
 output_metadata = "data_save/zeus21_popiii_fiducial.metadata.json"
+output_mass_distribution = "data_save/zeus21_popiii_mass_distribution.npz"
 output_figure = "outputs/zeus21_popiii_fiducial.png"
-wall_time_seconds = 15.935053192079067
+output_mass_figure = "outputs/zeus21_popiii_mass_distribution.png"
+wall_time_seconds = 15.761509645730257
 cpu_profile = "single local process"
 parameters = "public Pop II+III fiducial tutorial; z_min=10; precisionboost=1.2; LW and relative velocities enabled"
 
@@ -49,6 +51,7 @@ upstream_commands = [
 ]
 upstream_result = "4 passed, 3 skipped"
 auroralf_equation_check = "Mmol_LW agrees with auroralf.cooling.compute_popiii_lw_minimum_mass_msun at rtol=2e-12 over the output redshift grid."
+mass_distribution_check = "Integrating dSFRD/dlog10(Mh) reproduces the global Pop II and Pop III SFRD histories to better than 5e-4 relative error."
 
 [local_patches]
 status = "clean"
