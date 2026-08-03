@@ -33,8 +33,19 @@ DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "data_save" / "zeus21_popiii_fiducial.csv"
 DEFAULT_OUTPUT_FIGURE = PROJECT_ROOT / "outputs" / "zeus21_popiii_fiducial.png"
 DEFAULT_OUTPUT_MASS_NPZ = PROJECT_ROOT / "data_save" / "zeus21_popiii_mass_distribution.npz"
 DEFAULT_OUTPUT_MASS_FIGURE = PROJECT_ROOT / "outputs" / "zeus21_popiii_mass_distribution.png"
+DEFAULT_OUTPUT_COMPOSITION_CSV = (
+    PROJECT_ROOT / "data_save" / "zeus21_popii_popiii_mass_bin_fractions.csv"
+)
+DEFAULT_OUTPUT_COMPOSITION_FIGURE = (
+    PROJECT_ROOT / "outputs" / "zeus21_popii_popiii_mass_fraction.png"
+)
 EXPECTED_ZEUS21_COMMIT = "9f2d2105e99e74096092e2061082a79c3f85eaca"
 PAPER_ARXIV_ID = "2407.18294"
+MASS_BIN_EDGES_MSUN = np.asarray(
+    (1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9, 1.0e10, 1.0e14),
+    dtype=float,
+)
+POP_III_FRACTION_LEVELS = np.asarray((0.9, 0.5, 0.1), dtype=float)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,6 +57,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-figure", type=Path, default=DEFAULT_OUTPUT_FIGURE)
     parser.add_argument("--output-mass-npz", type=Path, default=DEFAULT_OUTPUT_MASS_NPZ)
     parser.add_argument("--output-mass-figure", type=Path, default=DEFAULT_OUTPUT_MASS_FIGURE)
+    parser.add_argument(
+        "--output-composition-csv",
+        type=Path,
+        default=DEFAULT_OUTPUT_COMPOSITION_CSV,
+    )
+    parser.add_argument(
+        "--output-composition-figure",
+        type=Path,
+        default=DEFAULT_OUTPUT_COMPOSITION_FIGURE,
+    )
     return parser.parse_args()
 
 
@@ -157,6 +178,184 @@ def _write_csv(path: Path, columns: dict[str, np.ndarray]) -> None:
         writer.writeheader()
         for values in zip(*(np.asarray(value, dtype=float) for value in columns.values()), strict=True):
             writer.writerow({name: f"{value:.12e}" for name, value in zip(columns, values, strict=True)})
+
+
+def _integrate_mass_bins(
+    *,
+    log10_halo_mass: np.ndarray,
+    dsfrd_dlog10m: np.ndarray,
+    mass_bin_edges_msun: np.ndarray,
+) -> np.ndarray:
+    log_mass = np.asarray(log10_halo_mass, dtype=float)
+    kernel = np.asarray(dsfrd_dlog10m, dtype=float)
+    bin_edges = np.asarray(mass_bin_edges_msun, dtype=float)
+    if log_mass.ndim != 1 or kernel.ndim != 2:
+        raise ValueError("log10_halo_mass must be 1D and dsfrd_dlog10m must be 2D")
+    if kernel.shape[1] != log_mass.size:
+        raise ValueError("the mass axis of dsfrd_dlog10m must match log10_halo_mass")
+    if not np.all(np.isfinite(log_mass)) or np.any(np.diff(log_mass) <= 0.0):
+        raise ValueError("log10_halo_mass must be finite and strictly increasing")
+    if not np.all(np.isfinite(kernel)) or np.any(kernel < 0.0):
+        raise ValueError("dsfrd_dlog10m must be finite and non-negative")
+    if (
+        bin_edges.ndim != 1
+        or bin_edges.size < 2
+        or not np.all(np.isfinite(bin_edges))
+        or np.any(bin_edges <= 0.0)
+        or np.any(np.diff(bin_edges) <= 0.0)
+    ):
+        raise ValueError("mass_bin_edges_msun must be finite, positive, and increasing")
+
+    log_edges = np.log10(bin_edges)
+    if log_edges[0] < log_mass[0] or log_edges[-1] > log_mass[-1]:
+        raise ValueError("mass-bin edges must lie inside the halo-mass grid")
+
+    integrated = np.empty((kernel.shape[0], bin_edges.size - 1), dtype=float)
+    for bin_index, (lower, upper) in enumerate(
+        zip(log_edges[:-1], log_edges[1:], strict=True)
+    ):
+        interior = (log_mass > lower) & (log_mass < upper)
+        sample_mass = np.concatenate(([lower], log_mass[interior], [upper]))
+        for redshift_index, row in enumerate(kernel):
+            sample_kernel = np.concatenate(
+                (
+                    [np.interp(lower, log_mass, row)],
+                    row[interior],
+                    [np.interp(upper, log_mass, row)],
+                )
+            )
+            integrated[redshift_index, bin_index] = np.trapezoid(
+                sample_kernel,
+                sample_mass,
+            )
+    if not np.all(np.isfinite(integrated)) or np.any(integrated < 0.0):
+        raise RuntimeError("mass-bin integration produced invalid SFRD")
+    return integrated
+
+
+def _instantaneous_popiii_fraction(
+    *,
+    sfr_popii_per_halo: np.ndarray,
+    sfr_popiii_per_halo: np.ndarray,
+) -> np.ndarray:
+    popii = np.asarray(sfr_popii_per_halo, dtype=float)
+    popiii = np.asarray(sfr_popiii_per_halo, dtype=float)
+    if popii.shape != popiii.shape or popii.ndim != 2:
+        raise ValueError("Pop II and Pop III per-halo SFR arrays must be matching 2D arrays")
+    if (
+        not np.all(np.isfinite(popii))
+        or not np.all(np.isfinite(popiii))
+        or np.any(popii < 0.0)
+        or np.any(popiii < 0.0)
+    ):
+        raise ValueError("per-halo SFR arrays must be finite and non-negative")
+    total = popii + popiii
+    if np.any(total <= 0.0):
+        raise RuntimeError("Pop II plus Pop III per-halo SFR must be positive")
+    return popiii / total
+
+
+def _fraction_transition_masses(
+    *,
+    log10_halo_mass: np.ndarray,
+    popiii_fraction: np.ndarray,
+    fraction_levels: np.ndarray,
+) -> np.ndarray:
+    log_mass = np.asarray(log10_halo_mass, dtype=float)
+    fraction = np.asarray(popiii_fraction, dtype=float)
+    levels = np.asarray(fraction_levels, dtype=float)
+    if log_mass.ndim != 1 or fraction.ndim != 2 or fraction.shape[1] != log_mass.size:
+        raise ValueError("fraction mass axis must match the 1D halo-mass grid")
+    if (
+        levels.ndim != 1
+        or not np.all(np.isfinite(levels))
+        or np.any((levels <= 0.0) | (levels >= 1.0))
+    ):
+        raise ValueError("fraction levels must lie strictly between zero and one")
+    if not np.all(np.isfinite(fraction)) or np.any((fraction < 0.0) | (fraction > 1.0)):
+        raise ValueError("Pop III fraction must be finite and lie in [0, 1]")
+    if np.any(np.diff(fraction, axis=1) > 1.0e-10):
+        raise RuntimeError("Pop III SFR fraction is not monotonic with halo mass")
+
+    transition_log_mass = np.empty((fraction.shape[0], levels.size), dtype=float)
+    for redshift_index, row in enumerate(fraction):
+        for level_index, level in enumerate(levels):
+            crossed = np.flatnonzero(row <= level)
+            if crossed.size == 0 or crossed[0] == 0:
+                raise RuntimeError(
+                    f"fraction level {level} is not bracketed at redshift row {redshift_index}"
+                )
+            upper_index = int(crossed[0])
+            lower_index = upper_index - 1
+            lower_fraction = row[lower_index]
+            upper_fraction = row[upper_index]
+            if lower_fraction == upper_fraction:
+                raise RuntimeError("cannot interpolate a flat fraction transition")
+            weight = (level - lower_fraction) / (upper_fraction - lower_fraction)
+            transition_log_mass[redshift_index, level_index] = (
+                log_mass[lower_index]
+                + weight * (log_mass[upper_index] - log_mass[lower_index])
+            )
+    return 10.0**transition_log_mass
+
+
+def _write_mass_bin_composition_csv(
+    *,
+    path: Path,
+    redshift: np.ndarray,
+    mass_bin_edges_msun: np.ndarray,
+    sfrd_popii_by_bin: np.ndarray,
+    sfrd_popiii_by_bin: np.ndarray,
+) -> None:
+    z = np.asarray(redshift, dtype=float)
+    edges = np.asarray(mass_bin_edges_msun, dtype=float)
+    popii = np.asarray(sfrd_popii_by_bin, dtype=float)
+    popiii = np.asarray(sfrd_popiii_by_bin, dtype=float)
+    expected_shape = (z.size, edges.size - 1)
+    if popii.shape != expected_shape or popiii.shape != expected_shape:
+        raise ValueError("mass-bin SFRD arrays do not match redshift and bin edges")
+    total_by_bin = popii + popiii
+    if np.any(total_by_bin <= 0.0):
+        raise RuntimeError("every saved halo-mass bin must have positive total SFRD")
+    total_by_redshift = np.sum(total_by_bin, axis=1)
+    if np.any(total_by_redshift <= 0.0):
+        raise RuntimeError("total mass-binned SFRD must be positive")
+
+    fieldnames = (
+        "redshift",
+        "halo_mass_lower_msun",
+        "halo_mass_upper_msun",
+        "sfrd_popii_msun_yr_mpc3",
+        "sfrd_popiii_msun_yr_mpc3",
+        "popii_fraction_of_bin_sfr",
+        "popiii_fraction_of_bin_sfr",
+        "bin_fraction_of_total_sfrd",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for redshift_index, redshift_value in enumerate(z):
+            for bin_index, (lower, upper) in enumerate(
+                zip(edges[:-1], edges[1:], strict=True)
+            ):
+                bin_total = total_by_bin[redshift_index, bin_index]
+                values = (
+                    redshift_value,
+                    lower,
+                    upper,
+                    popii[redshift_index, bin_index],
+                    popiii[redshift_index, bin_index],
+                    popii[redshift_index, bin_index] / bin_total,
+                    popiii[redshift_index, bin_index] / bin_total,
+                    bin_total / total_by_redshift[redshift_index],
+                )
+                writer.writerow(
+                    {
+                        name: f"{value:.12e}"
+                        for name, value in zip(fieldnames, values, strict=True)
+                    }
+                )
 
 
 def _plot_history(path: Path, columns: dict[str, np.ndarray]) -> None:
@@ -357,6 +556,132 @@ def _plot_mass_distribution(
     plt.close(figure)
 
 
+def _plot_population_composition(
+    *,
+    path: Path,
+    redshift: np.ndarray,
+    halo_mass_msun: np.ndarray,
+    popiii_sfr_fraction: np.ndarray,
+    total_dsfrd_dlog10m: np.ndarray,
+    molecular_threshold_msun: np.ndarray,
+    atomic_threshold_msun: np.ndarray,
+) -> None:
+    z = np.asarray(redshift, dtype=float)
+    halo_mass = np.asarray(halo_mass_msun, dtype=float)
+    fraction = np.asarray(popiii_sfr_fraction, dtype=float)
+    total_kernel = np.asarray(total_dsfrd_dlog10m, dtype=float)
+    expected_shape = (z.size, halo_mass.size)
+    if fraction.shape != expected_shape or total_kernel.shape != expected_shape:
+        raise ValueError("composition arrays must match the redshift and halo-mass grids")
+    if (
+        not np.all(np.isfinite(fraction))
+        or np.any((fraction < 0.0) | (fraction > 1.0))
+        or not np.all(np.isfinite(total_kernel))
+        or np.any(total_kernel < 0.0)
+    ):
+        raise ValueError("composition plot received invalid values")
+    row_maximum = np.max(total_kernel, axis=1)
+    if np.any(row_maximum <= 0.0):
+        raise RuntimeError("composition plot requires positive SFRD at every redshift")
+    active = total_kernel >= row_maximum[:, None] * 1.0e-4
+
+    figure, (map_axis, slice_axis) = plt.subplots(1, 2, figsize=(12.0, 4.8))
+    map_axis.set_facecolor("#D9D9D9")
+    image = map_axis.pcolormesh(
+        z,
+        halo_mass,
+        np.ma.masked_where(~active, fraction).T,
+        vmin=0.0,
+        vmax=1.0,
+        shading="auto",
+        cmap="RdBu_r",
+    )
+    contour_levels = np.sort(POP_III_FRACTION_LEVELS)
+    contours = map_axis.contour(
+        z,
+        halo_mass,
+        fraction.T,
+        levels=contour_levels,
+        colors="black",
+        linewidths=(0.8, 1.5, 0.8),
+    )
+    map_axis.clabel(
+        contours,
+        fmt={0.1: r"$10\%$", 0.5: r"$50\%$", 0.9: r"$90\%$"},
+        fontsize=8,
+        inline=True,
+    )
+    map_axis.plot(
+        z,
+        molecular_threshold_msun,
+        color="#17BECF",
+        linestyle="--",
+        linewidth=1.4,
+        label=r"$M_{\rm mol}$ (LW+$v_{cb}$)",
+    )
+    map_axis.plot(
+        z,
+        atomic_threshold_msun,
+        color="#FFBF00",
+        linestyle=":",
+        linewidth=1.7,
+        label=r"$M_{\rm atom}$",
+    )
+    map_axis.set(
+        xlabel="redshift z",
+        ylabel=r"halo mass $M_h$ [$M_\odot$]",
+        xlim=(float(np.max(z)), float(np.min(z))),
+        ylim=(float(halo_mass[0]), 1.0e9),
+        yscale="log",
+    )
+    map_axis.text(
+        0.02,
+        0.025,
+        r"gray: total SFRD $<10^{-4}$ of the peak at fixed $z$",
+        transform=map_axis.transAxes,
+        fontsize=7,
+        color="#333333",
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.0},
+    )
+    map_axis.legend(loc="upper right", fontsize=8, framealpha=0.85)
+    colorbar = figure.colorbar(
+        image,
+        ax=map_axis,
+        orientation="horizontal",
+        pad=0.16,
+        fraction=0.08,
+        aspect=28,
+    )
+    colorbar.set_label(r"instantaneous Pop III SFR fraction $f_{\rm III}$")
+
+    colors = plt.cm.viridis(np.linspace(0.03, 0.95, 6))
+    for target_redshift, color in zip(
+        (10.0, 15.0, 20.0, 25.0, 30.0, 35.0),
+        colors,
+        strict=True,
+    ):
+        index = int(np.argmin(np.abs(z - target_redshift)))
+        slice_axis.semilogx(
+            halo_mass,
+            fraction[index],
+            color=color,
+            label=rf"$z={z[index]:.1f}$",
+        )
+    slice_axis.axhline(0.5, color="#444444", linestyle="--", linewidth=0.9)
+    slice_axis.set(
+        xlabel=r"halo mass $M_h$ [$M_\odot$]",
+        ylabel=r"instantaneous Pop III SFR fraction $f_{\rm III}$",
+        xlim=(float(halo_mass[0]), 1.0e9),
+        ylim=(-0.02, 1.02),
+    )
+    slice_axis.legend(frameon=False, fontsize=9, ncol=2)
+    figure.suptitle("Zeus21 fiducial: Pop II / Pop III instantaneous SFR composition")
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, dpi=500, bbox_inches="tight")
+    plt.close(figure)
+
+
 def _portable_path(path: Path) -> str:
     resolved = path.resolve()
     try:
@@ -378,6 +703,7 @@ def main() -> None:
         Mmol_LW,
         SFRD_II_integrand,
         SFRD_III_integrand,
+        SFR_II,
         SFR_III,
     )
 
@@ -445,6 +771,17 @@ def main() -> None:
     hmf_dndm = np.exp(
         hmf.logHMFint((np.log(halo_mass_grid), redshift_grid))
     )
+    sfr_popii_per_halo = np.asarray(
+        SFR_II(
+            astro,
+            cosmo,
+            hmf,
+            halo_mass_grid,
+            redshift_grid,
+            redshift_grid,
+        ),
+        dtype=float,
+    )
     sfr_popiii_per_halo = np.asarray(
         SFR_III(
             astro,
@@ -462,10 +799,67 @@ def main() -> None:
         ("dsfrd_dlnm_popii", dsfrd_dlnm_popii),
         ("dsfrd_dlnm_popiii", dsfrd_dlnm_popiii),
         ("hmf_dndm", hmf_dndm),
+        ("sfr_popii_per_halo", sfr_popii_per_halo),
         ("sfr_popiii_per_halo", sfr_popiii_per_halo),
     ):
         if not np.all(np.isfinite(values)) or np.any(values < 0.0):
             raise RuntimeError(f"Zeus21 mass-resolved {name} contains invalid values")
+
+    composition_halo_mass = np.geomspace(1.0e5, 1.0e10, 501)
+    composition_redshift_grid, composition_halo_mass_grid = np.meshgrid(
+        redshift,
+        composition_halo_mass,
+        indexing="ij",
+    )
+    composition_sfr_popii = np.asarray(
+        SFR_II(
+            astro,
+            cosmo,
+            hmf,
+            composition_halo_mass_grid,
+            composition_redshift_grid,
+            composition_redshift_grid,
+        ),
+        dtype=float,
+    )
+    composition_sfr_popiii = np.asarray(
+        SFR_III(
+            astro,
+            cosmo,
+            hmf,
+            composition_halo_mass_grid,
+            coefficients.J21LW_interp_conv_avg,
+            composition_redshift_grid,
+            composition_redshift_grid,
+            cosmo.vcb_avg,
+        ),
+        dtype=float,
+    )
+    popiii_instantaneous_fraction = _instantaneous_popiii_fraction(
+        sfr_popii_per_halo=composition_sfr_popii,
+        sfr_popiii_per_halo=composition_sfr_popiii,
+    )
+    fraction_transition_mass = _fraction_transition_masses(
+        log10_halo_mass=np.log10(composition_halo_mass),
+        popiii_fraction=popiii_instantaneous_fraction,
+        fraction_levels=POP_III_FRACTION_LEVELS,
+    )
+    composition_hmf_dndm = np.exp(
+        hmf.logHMFint(
+            (np.log(composition_halo_mass_grid), composition_redshift_grid)
+        )
+    )
+    composition_total_dsfrd_dlog10m = (
+        composition_hmf_dndm
+        * (composition_sfr_popii + composition_sfr_popiii)
+        * composition_halo_mass_grid
+        * np.log(10.0)
+    )
+    if (
+        not np.all(np.isfinite(composition_total_dsfrd_dlog10m))
+        or np.any(composition_total_dsfrd_dlog10m < 0.0)
+    ):
+        raise RuntimeError("dense Pop II plus Pop III SFRD kernel contains invalid values")
 
     integrated_popii = np.trapezoid(dsfrd_dlnm_popii, hmf.logtabMh, axis=1)
     integrated_popiii = np.trapezoid(dsfrd_dlnm_popiii, hmf.logtabMh, axis=1)
@@ -482,15 +876,62 @@ def main() -> None:
             f"Pop III error={popiii_closure_error:.3e}"
         )
 
+    dsfrd_dlog10m_popii = dsfrd_dlnm_popii * np.log(10.0)
+    dsfrd_dlog10m_popiii = dsfrd_dlnm_popiii * np.log(10.0)
+    sfrd_popii_by_mass_bin = _integrate_mass_bins(
+        log10_halo_mass=np.log10(hmf.Mhtab),
+        dsfrd_dlog10m=dsfrd_dlog10m_popii,
+        mass_bin_edges_msun=MASS_BIN_EDGES_MSUN,
+    )
+    sfrd_popiii_by_mass_bin = _integrate_mass_bins(
+        log10_halo_mass=np.log10(hmf.Mhtab),
+        dsfrd_dlog10m=dsfrd_dlog10m_popiii,
+        mass_bin_edges_msun=MASS_BIN_EDGES_MSUN,
+    )
+    np.testing.assert_allclose(
+        np.sum(sfrd_popii_by_mass_bin, axis=1),
+        integrated_popii,
+        rtol=2.0e-12,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        np.sum(sfrd_popiii_by_mass_bin, axis=1),
+        integrated_popiii,
+        rtol=2.0e-12,
+        atol=0.0,
+    )
+    sfrd_total_by_mass_bin = sfrd_popii_by_mass_bin + sfrd_popiii_by_mass_bin
+    if np.any(sfrd_total_by_mass_bin <= 0.0):
+        raise RuntimeError("every halo-mass bin must have positive total SFRD")
+    popiii_fraction_by_mass_bin = (
+        sfrd_popiii_by_mass_bin / sfrd_total_by_mass_bin
+    )
+    total_sfrd_fraction_by_mass_bin = (
+        sfrd_total_by_mass_bin
+        / np.sum(sfrd_total_by_mass_bin, axis=1)[:, None]
+    )
+
     peak_mass, p16_mass, median_mass, p84_mass = _mass_contribution_quantiles(
         log_halo_mass=np.asarray(hmf.logtabMh, dtype=float),
         dsfrd_dlnm=dsfrd_dlnm_popiii,
     )
+    global_sfrd_total = np.asarray(
+        coefficients.SFRD_II_avg + coefficients.SFRD_III_avg,
+        dtype=float,
+    )
+    if np.any(global_sfrd_total <= 0.0):
+        raise RuntimeError("global Pop II plus Pop III SFRD must be positive")
 
     columns = {
         "redshift": redshift,
         "sfrd_popii_msun_yr_mpc3": np.asarray(coefficients.SFRD_II_avg, dtype=float),
         "sfrd_popiii_msun_yr_mpc3": np.asarray(coefficients.SFRD_III_avg, dtype=float),
+        "popii_fraction_of_total_sfrd": (
+            np.asarray(coefficients.SFRD_II_avg, dtype=float) / global_sfrd_total
+        ),
+        "popiii_fraction_of_total_sfrd": (
+            np.asarray(coefficients.SFRD_III_avg, dtype=float) / global_sfrd_total
+        ),
         "j21_lw_popii": j21_popii,
         "j21_lw_popiii": j21_popiii,
         "j21_lw_total": j21_total,
@@ -502,6 +943,9 @@ def main() -> None:
         "popiii_sfrd_p16_halo_mass_msun": p16_mass,
         "popiii_sfrd_median_halo_mass_msun": median_mass,
         "popiii_sfrd_p84_halo_mass_msun": p84_mass,
+        "popiii_sfr_fraction_90pct_halo_mass_msun": fraction_transition_mass[:, 0],
+        "popiii_sfr_fraction_50pct_halo_mass_msun": fraction_transition_mass[:, 1],
+        "popiii_sfr_fraction_10pct_halo_mass_msun": fraction_transition_mass[:, 2],
     }
     if not all(np.all(np.isfinite(values)) for values in columns.values()):
         raise RuntimeError("Zeus21 reproduction produced non-finite output")
@@ -512,17 +956,39 @@ def main() -> None:
     output_mass_npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_mass_npz,
-        schema_version=np.asarray("auroralf.zeus21_popiii_mass_distribution.v1"),
+        schema_version=np.asarray("auroralf.zeus21_popiii_mass_distribution.v2"),
         redshift=redshift,
         halo_mass_msun=np.asarray(hmf.Mhtab, dtype=float),
         hmf_dndm_mpc3_msun=hmf_dndm,
+        popii_sfr_per_halo_msun_yr=sfr_popii_per_halo,
         popiii_sfr_per_halo_msun_yr=sfr_popiii_per_halo,
-        dsfrd_dlog10m_popii_msun_yr_mpc3=dsfrd_dlnm_popii * np.log(10.0),
-        dsfrd_dlog10m_popiii_msun_yr_mpc3=dsfrd_dlnm_popiii * np.log(10.0),
+        dsfrd_dlog10m_popii_msun_yr_mpc3=dsfrd_dlog10m_popii,
+        dsfrd_dlog10m_popiii_msun_yr_mpc3=dsfrd_dlog10m_popiii,
+        composition_halo_mass_msun=composition_halo_mass,
+        composition_sfr_popii_per_halo_msun_yr=composition_sfr_popii,
+        composition_sfr_popiii_per_halo_msun_yr=composition_sfr_popiii,
+        popiii_instantaneous_sfr_fraction=popiii_instantaneous_fraction,
+        popiii_fraction_levels=POP_III_FRACTION_LEVELS,
+        popiii_fraction_transition_halo_mass_msun=fraction_transition_mass,
+        composition_total_dsfrd_dlog10m_msun_yr_mpc3=(
+            composition_total_dsfrd_dlog10m
+        ),
+        mass_bin_edges_msun=MASS_BIN_EDGES_MSUN,
+        sfrd_popii_by_mass_bin_msun_yr_mpc3=sfrd_popii_by_mass_bin,
+        sfrd_popiii_by_mass_bin_msun_yr_mpc3=sfrd_popiii_by_mass_bin,
+        popiii_sfr_fraction_by_mass_bin=popiii_fraction_by_mass_bin,
+        total_sfrd_fraction_by_mass_bin=total_sfrd_fraction_by_mass_bin,
     )
 
     plt.style.use("apj")
     _write_csv(args.output_csv.resolve(), columns)
+    _write_mass_bin_composition_csv(
+        path=args.output_composition_csv.resolve(),
+        redshift=redshift,
+        mass_bin_edges_msun=MASS_BIN_EDGES_MSUN,
+        sfrd_popii_by_bin=sfrd_popii_by_mass_bin,
+        sfrd_popiii_by_bin=sfrd_popiii_by_mass_bin,
+    )
     _plot_history(args.output_figure.resolve(), columns)
     _plot_mass_distribution(
         path=args.output_mass_figure.resolve(),
@@ -533,6 +999,15 @@ def main() -> None:
         p16_mass_msun=p16_mass,
         median_mass_msun=median_mass,
         p84_mass_msun=p84_mass,
+        molecular_threshold_msun=mmol_full,
+        atomic_threshold_msun=matom,
+    )
+    _plot_population_composition(
+        path=args.output_composition_figure.resolve(),
+        redshift=redshift,
+        halo_mass_msun=composition_halo_mass,
+        popiii_sfr_fraction=popiii_instantaneous_fraction,
+        total_dsfrd_dlog10m=composition_total_dsfrd_dlog10m,
         molecular_threshold_msun=mmol_full,
         atomic_threshold_msun=matom,
     )
@@ -563,6 +1038,10 @@ def main() -> None:
             "figure": _portable_path(args.output_figure),
             "mass_distribution_npz": _portable_path(args.output_mass_npz),
             "mass_distribution_figure": _portable_path(args.output_mass_figure),
+            "mass_bin_composition_csv": _portable_path(args.output_composition_csv),
+            "population_composition_figure": _portable_path(
+                args.output_composition_figure
+            ),
         },
         "mass_distribution": {
             "quantity": "dSFRD/dlog10(Mh)",
@@ -573,6 +1052,18 @@ def main() -> None:
             "mass_grid_max_msun": float(np.max(hmf.Mhtab)),
             "popii_global_closure_max_relative_error": float(popii_closure_error),
             "popiii_global_closure_max_relative_error": float(popiii_closure_error),
+        },
+        "population_composition": {
+            "point_quantity": "SFR_III / (SFR_II + SFR_III) at fixed Mh and z",
+            "bin_quantity": "integral SFRD_III / integral (SFRD_II + SFRD_III)",
+            "fraction_units": "dimensionless",
+            "composition_mass_grid_size": int(composition_halo_mass.size),
+            "composition_mass_grid_min_msun": float(composition_halo_mass[0]),
+            "composition_mass_grid_max_msun": float(composition_halo_mass[-1]),
+            "fraction_transition_levels": POP_III_FRACTION_LEVELS.tolist(),
+            "mass_bin_edges_msun": MASS_BIN_EDGES_MSUN.tolist(),
+            "plot_active_sfrd_threshold_relative_to_redshift_peak": 1.0e-4,
+            "interpretation": "conditional ensemble-mean instantaneous SFR fraction",
         },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

@@ -90,5 +90,11 @@ def test_zeus21_manifest_pins_reproducible_external_bridge() -> None:
     assert reproduction["output_mass_distribution"] == (
         "data_save/zeus21_popiii_mass_distribution.npz"
     )
+    assert reproduction["output_mass_bin_composition"] == (
+        "data_save/zeus21_popii_popiii_mass_bin_fractions.csv"
+    )
+    assert reproduction["output_population_composition_figure"] == (
+        "outputs/zeus21_popii_popiii_mass_fraction.png"
+    )
     assert reproduction["wall_time_seconds"] > 0.0
     assert payload["local_patches"] == {"status": "clean", "count": 0, "sha256": []}

@@ -80,8 +80,10 @@ The generated products are:
 - `data_save/zeus21_popiii_fiducial.csv`
 - `data_save/zeus21_popiii_fiducial.metadata.json`
 - `data_save/zeus21_popiii_mass_distribution.npz`
+- `data_save/zeus21_popii_popiii_mass_bin_fractions.csv`
 - `outputs/zeus21_popiii_fiducial.png`
 - `outputs/zeus21_popiii_mass_distribution.png`
+- `outputs/zeus21_popii_popiii_mass_fraction.png`
 
 `scripts/analysis/reproduce_zeus21_popiii.py` validates the exact source
 commit and tracked-source cleanliness before running. It then asserts that
@@ -120,6 +122,65 @@ The pinned upstream HMF uses 42 logarithmic points over `1e5--1e14 Msun`, or
 but the plotted mode must land on a native mass bin and therefore has roughly
 `0.1--0.2 dex` localization precision. A dense interpolation check moves the
 mode by at most about 16% over the representative redshifts above.
+
+## Pop II / Pop III composition by halo mass
+
+At fixed halo mass and redshift, the two mass-resolved kernels share the same
+HMF and halo-mass factor. Their ratio therefore reduces exactly to the ratio
+of the two effective per-halo SFR prescriptions:
+
+```text
+f_III(Mh,z) = SFR_III(Mh,z) / [SFR_II(Mh,z) + SFR_III(Mh,z)].
+```
+
+For a finite mass interval, the reported fraction is instead the ratio of
+integrated SFRD kernels:
+
+```text
+F_III[M1,M2] = integral K_III dlog10(Mh)
+              / integral [K_II + K_III] dlog10(Mh),
+K_X = dSFRD_X/dlog10(Mh).
+```
+
+The following entries are Pop III percentages; the Pop II percentage in every
+cell is `100% - F_III`. Values use the nearest native Zeus21 redshift sample.
+
+| redshift | global | `1e5--1e6` | `1e6--1e7` | `1e7--1e8` | `1e8--1e9` | `1e9--1e10` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10.0 | 2.78% | 100.00% | 99.69% | 40.30% | 1.59% | 0.000022% |
+| 15.1 | 19.71% | 100.00% | 99.25% | 41.65% | 0.79% | `<1e-6%` |
+| 20.0 | 57.19% | 100.00% | 98.80% | 41.78% | 0.41% | `<1e-6%` |
+| 25.2 | 87.53% | 100.00% | 98.60% | 42.38% | 0.20% | `<1e-6%` |
+| 30.2 | 97.16% | 100.00% | 98.68% | 42.75% | 0.11% | `<1e-6%` |
+| 35.0 | 99.34% | 99.99998% | 98.87% | 42.15% | 0.058% | `<1e-6%` |
+
+The low-mass `100%` entries need an absolute-weight check. At `z=10`, the
+`1e5--1e6 Msun` bin contributes only `3.7e-11%` of the total SFRD, despite its
+formal Pop III fraction being unity. By `z=30.2`, the same bin carries 46.3%
+of the total SFRD, and `1e6--1e7 Msun` carries another 50.0%. The rise of the
+global Pop III fraction with redshift is consequently driven mainly by the
+cosmic SFRD weight moving into low-mass halos, not by a large change of the
+fixed-bin composition.
+
+The dense 501-point per-halo evaluation gives the following smooth transition
+masses:
+
+| redshift | `f_III=90%` | `f_III=50%` | `f_III=10%` |
+|---:|---:|---:|---:|
+| 10.0 | `1.99e7 Msun` | `4.27e7 Msun` | `1.16e8 Msun` |
+| 15.1 | `1.44e7 Msun` | `3.06e7 Msun` | `7.68e7 Msun` |
+| 20.0 | `1.09e7 Msun` | `2.33e7 Msun` | `5.65e7 Msun` |
+| 25.2 | `8.46e6 Msun` | `1.82e7 Msun` | `4.34e7 Msun` |
+| 30.2 | `6.87e6 Msun` | `1.49e7 Msun` | `3.51e7 Msun` |
+| 35.0 | `5.76e6 Msun` | `1.26e7 Msun` | `2.94e7 Msun` |
+
+This is a conditional ensemble-mean instantaneous SFR fraction. Zeus21 has no
+per-halo enrichment history, pristine-gas reservoir, or stochastic population
+label, so the ratio is not a cumulative Pop III stellar-mass fraction, a halo
+occupation probability, or proof that both populations coexist in an
+individual resolved halo. The composition figure masks regions where the
+combined mass-resolved SFRD is below `1e-4` of its peak at the same redshift;
+the numerical fraction remains available in the NPZ and CSV.
 
 One unrelated upstream issue surfaced during this audit: the reionization
 coefficient `niondot_avg_III` uses `N_ion_perbaryon_II` rather than the defined
