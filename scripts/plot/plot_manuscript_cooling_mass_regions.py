@@ -22,7 +22,7 @@ DEFAULT_OUTPUT = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot Pop III/Pop II cooling-based halo-mass routing regions for the manuscript."
+        description="Plot cooling-defined halo host regimes for the manuscript."
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--lw-background-j21", type=float, default=0.0)
@@ -66,40 +66,58 @@ def main() -> None:
         raise RuntimeError("atomic-cooling threshold must remain above the molecular-cooling floor")
 
     plt.style.use("apj")
-    plt.rcParams.update(
-        {
-            "axes.labelsize": 10.0,
-            "xtick.labelsize": 8.0,
-            "ytick.labelsize": 8.0,
-        }
-    )
 
     y_min = 2.0e4
     y_max = 5.0e8
-    fig, ax = plt.subplots(figsize=(6.05, 3.85), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(5.0, 4.1), constrained_layout=True)
     ax.fill_between(z, y_min, m_mol, color="#f2f3f6", lw=0.0)
     ax.fill_between(z, m_mol, m_atom, color="#d9cdea", lw=0.0)
     ax.fill_between(z, m_atom, y_max, color="#c7dceb", lw=0.0)
-    ax.plot(z, m_mol, color="white", lw=1.2)
-    ax.plot(z, m_atom, color="white", lw=1.2)
+    ax.plot(
+        z,
+        m_mol,
+        color="#6a51a3",
+        lw=1.6,
+        label=r"$M_{\rm min,III}(z,J_{\rm LW})$",
+    )
+    ax.plot(
+        z,
+        m_atom,
+        color="#2b6a8f",
+        lw=1.6,
+        label=r"$M_{\rm atomic}(z)$",
+    )
 
-    ax.text(26.0, 1.55e8, "Pop II + Pop III", color="#1f2a3d", fontsize=10, ha="center")
-    ax.text(28.0, 1.9e6, "Pop III minihalos", color="#4f3e78", fontsize=10, ha="center")
-    ax.text(28.0, 4.5e4, "No star formation", color="#4b5563", fontsize=9, ha="center")
-
-    z_arrow = 12.5
-    m_arrow = float(np.interp(z_arrow, z, m_mol))
-    ax.annotate(
-        "LW-regulated\nlower bound\n" + r"$M_{\rm min,III}(z,J_{\rm LW})$",
-        xy=(z_arrow, m_arrow),
-        xytext=(8.0, 4.3e6),
-        textcoords="data",
-        arrowprops={"arrowstyle": "->", "color": "#4f3e78", "lw": 0.9},
-        color="#4f3e78",
-        fontsize=7.4,
-        ha="left",
+    ax.text(
+        29.0,
+        1.35e8,
+        "Star-forming halos",
+        color="#1f2a3d",
+        fontsize=13.0,
+        fontweight="semibold",
+        ha="center",
         va="center",
     )
+    ax.text(
+        29.0,
+        1.8e6,
+        "Minihalos",
+        color="#4f3e78",
+        fontsize=13.0,
+        fontweight="semibold",
+        ha="center",
+        va="center",
+    )
+    ax.text(
+        29.0,
+        4.5e4,
+        "No star formation",
+        color="#4b5563",
+        fontsize=12.5,
+        fontweight="semibold",
+        ha="center",
+    )
+    ax.legend(loc="upper left", fontsize=8.5, frameon=True)
 
     ax.set_yscale("log")
     ax.set_xlim(float(args.z_min), float(args.z_max))

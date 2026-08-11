@@ -15,10 +15,10 @@ result: UVLFRunResult = run_uvlf(config)
 canonical_z6 = result.for_redshift(6.0).for_mode("canonical")
 ```
 
-On branch `SFRIIIII`, the Pop II IMF gate is an archived feature. Production
-uses only the canonical IMF and requires `enable_archived_imf_gate = false`.
-The non-canonical modes and their source-time selector remain available only
-through an explicit archive opt-in for exact historical reproduction.
+The Pop II IMF gate, burst scatter, and metallicity models are archived
+features. Production uses only the canonical IMF, zero burst scatter, and
+`metallicity_source = "none"`. Their implementations remain available only
+through explicit archive opt-ins for exact historical reproduction.
 
 Shared reference values come from Astropy in `auroralf/constants.py`.
 Production uses Astropy `Planck18`: `H0=67.66 km/s/Mpc`, `Omega_m=0.30966`,
@@ -555,12 +555,12 @@ attributes，并与传入 `cosmology` 严格匹配；不匹配会显式报错，
   保留的接口参数；当前实现中 `run_halo_uv_pipeline()` 内部 UV 卷积按串行执行
 - `mzr_metallicity_parameters`
   可选 `auroralf.chemistry.MZRBirthMetallicityParameters`；提供时由累计 surviving stellar mass 和经验 MZR
-  直接给出 `Z_birth(t)`，作为经验 baseline
+  直接给出 `Z_birth(t)`；该低层接口仅保留用于历史复现与诊断
 - `regulator_metallicity_parameters`
   可选 `auroralf.chemistry.RegulatorMetallicityParameters`；提供时由累计 `Mstar`、halo baryon gas reservoir
-  和有效 `lambda_Z` 给出 `Z_birth(t)` 与 `Z_gas(t)`，作为默认物理金属丰度闭包
+  和有效 `lambda_Z` 给出 `Z_birth(t)` 与 `Z_gas(t)`；该低层接口仅保留用于历史复现与诊断
 - `burst_scatter_dex`
-  对源时刻 SFR 施加 lognormal burst scatter 的标准差，单位 dex；默认 `0.0` 表示关闭
+  archived 低层参数；对源时刻 SFR 施加 lognormal burst scatter 的标准差，单位 dex
 - `burst_scatter_timescale_myr`
   burst scatter 在同一 halo 内保持相关的时间尺度，单位 `Myr`；默认 `20.0`
 - `burst_scatter_preserve_mean`
@@ -787,7 +787,11 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - 非 canonical IMF 模式是 archived feature；v2 配置必须显式设置
   `enable_archived_imf_gate = true` 才能用于历史复现，并仍需提供 regulator 或 MZR
   birth-metallicity backend。production 不使用这一入口
-- `burst_scatter_dex > 0` 时，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
+- burst scatter 是 archived feature；v2 配置必须同时设置
+  `enable_archived_burst_scatter = true` 和 `burst_scatter_dex > 0`
+- MZR/regulator 是 archived feature；v2 配置必须设置
+  `enable_archived_metallicity = true` 后才能选择非 `none` backend
+- 历史 burst 复现中，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
   相同 `base_seed`、redshift 和 mass index 在所有 IMF mode 中共享同一组 paired realization
 - 默认 `burst_scatter_preserve_mean=True` 时，每条 halo 的 burst 历史会做 mass-conserving 归一化：
   `SFR_burst(t) = SFR_0(t) B(t) integral SFR_0 dt / integral SFR_0(t) B(t) dt`
@@ -815,16 +819,19 @@ print(result.uvlf["phi"])
 ## v2 production UVLF workflow
 
 `configs/uvlf/production.toml` is the single production configuration. It
-contains the cosmology, MAH backend, time-delay model, metallicity backend,
-canonical Pop II population, burst-scatter policy, HMF sampling, worker count, and
+contains the cosmology, MAH backend, time-delay model, canonical Pop II
+population, HMF sampling, worker count, and
 absolute output target after TOML-relative path resolution. Unknown keys,
-invalid units/ranges, missing SSP/cache files, and incompatible metallicity
-gates fail before sampling starts.
+invalid units/ranges, missing SSP/cache files, and archived-feature use without
+explicit opt-in fail before sampling starts.
 
-The strict v2.1 configuration archives the source-time IMF gate:
+The strict v2.2 configuration archives the source-time IMF gate, burst scatter,
+and metallicity models:
 `imf_modes = ["canonical"]` and `enable_archived_imf_gate = false` are the
-production settings. Variant modes are rejected unless the archive flag is
-explicitly enabled for historical reproduction.
+production IMF settings; `burst_scatter_dex = 0` and
+`metallicity_source = "none"` are the production SFR settings. Archived modes
+are rejected unless their corresponding opt-in is explicitly enabled for
+historical reproduction.
 
 Render and inspect the exact scheduler command before submission:
 
@@ -856,10 +863,11 @@ Existing outputs are never silently replaced:
 The old `run_uvlf_compare_imf_no_delay_all_z.py` and
 `submit_uvlf_imf_compare.py` entry points are migration-only shims. Scientific
 options that were formerly CLI flags now belong in the typed TOML config. In
-particular, non-canonical modes with a non-`None` birth-metallicity gate require
-`metallicity_source = "regulator"` or `"mzr"`; burst scatter is controlled by
-`burst_scatter_dex`, `burst_scatter_correlation_timescale_myr`, and
-`burst_scatter_mass_conserving` under `[star_formation]`.
+historical reproduction, non-canonical modes with a non-`None`
+birth-metallicity gate require both `enable_archived_metallicity = true` and
+`metallicity_source = "regulator"` or `"mzr"`. Burst scatter requires
+`enable_archived_burst_scatter = true` before its archived parameters can be
+used under `[star_formation]`.
 
 Legacy `.npz` UVLF products can be migrated with
 `scripts/data/convert_uvlf_npz_to_v2_hdf5.py`. New production runs should not

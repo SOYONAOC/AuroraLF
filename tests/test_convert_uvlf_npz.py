@@ -23,7 +23,7 @@ REDSHIFTS = (6.0, 8.0)
 
 def _config_text() -> str:
     return """
-schema_version = "2.1.0"
+schema_version = "2.2.0"
 run_id = "legacy-conversion"
 redshifts = [6.0, 8.0]
 base_seed = 123
@@ -53,9 +53,11 @@ efficiency_normalization = 0.12
 characteristic_halo_mass_msun = 5.011872336e11
 low_mass_slope = 0.66
 high_mass_slope = 0.65
+enable_archived_burst_scatter = false
 burst_scatter_dex = 0.0
 burst_scatter_correlation_timescale_myr = 20.0
 burst_scatter_mass_conserving = true
+enable_archived_metallicity = true
 metallicity_source = "mzr"
 
 [star_formation.mzr]

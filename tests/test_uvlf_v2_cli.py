@@ -40,7 +40,7 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "run.toml"
     config.write_text(
         f'''
-schema_version = "2.1.0"
+schema_version = "2.2.0"
 run_id = "cli-reduced"
 redshifts = [10.0]
 base_seed = 20260711
@@ -70,9 +70,11 @@ efficiency_normalization = 0.12
 characteristic_halo_mass_msun = 5.011872336e11
 low_mass_slope = 0.66
 high_mass_slope = 0.65
+enable_archived_burst_scatter = false
 burst_scatter_dex = 0.0
 burst_scatter_correlation_timescale_myr = 20.0
 burst_scatter_mass_conserving = true
+enable_archived_metallicity = false
 metallicity_source = "none"
 
 [stellar_population]
@@ -150,12 +152,15 @@ def test_cli_flags_are_mutually_exclusive_and_slurm_is_required(tmp_path: Path) 
     assert "requires a SLURM allocation" in completed.stderr
 
 
-def test_production_config_is_strict_and_archives_imf_gate() -> None:
+def test_production_config_is_strict_and_archives_optional_features() -> None:
     from auroralf import UVLFRunConfig
 
     config = UVLFRunConfig.from_toml(PRODUCTION_CONFIG)
     assert config.mah.backend == "mcbride"
-    assert config.star_formation.metallicity_source == "regulator"
+    assert config.star_formation.enable_archived_burst_scatter is False
+    assert config.star_formation.burst_scatter_dex == 0.0
+    assert config.star_formation.enable_archived_metallicity is False
+    assert config.star_formation.metallicity_source == "none"
     assert config.stellar_population.imf_modes == ("canonical",)
     assert config.stellar_population.enable_archived_imf_gate is False
     assert config.stellar_population.source_redshift_gate_enabled is False

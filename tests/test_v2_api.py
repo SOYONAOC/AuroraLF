@@ -68,6 +68,7 @@ def _config(
             characteristic_halo_mass_msun=2.0e11,
             low_mass_slope=0.6,
             high_mass_slope=0.7,
+            enable_archived_burst_scatter=True,
             burst_scatter_dex=0.2,
             burst_scatter_correlation_timescale_myr=15.0,
             burst_scatter_mass_conserving=True,

@@ -145,6 +145,11 @@ default paths, or silently skipping the calculation.
   must not feed back into the SFR model. `birth_metallicity_zsun_grid` is the
   source-time metallicity used for IMF gating; `gas_metallicity_zsun_grid` is
   the regulator gas metallicity.
+- Burst scatter and MZR/regulator metallicity are archived production features.
+  Production requires `enable_archived_burst_scatter=False`,
+  `burst_scatter_dex=0`, `enable_archived_metallicity=False`, and
+  `metallicity_source="none"`. Historical configs must explicitly opt in to
+  each archived feature; do not let old TOML files silently reactivate them.
 - The SFR delay model is controlled by `enable_time_delay`. Low-level Python
   APIs keep `False` as their backward-compatible default; the production UVLF
   script defaults to delay enabled and uses `--disable-time-delay` only for
@@ -184,9 +189,9 @@ time-delay model. The old `run_uvlf_compare_imf_no_delay_all_z.py`,
 `run_uvlf_mass_function_compare_full.py` entry points are intentionally disabled
 migration shims.
 
-When running non-canonical IMF modes with the default metallicity gate, use the
-regulator backend by setting `metallicity_source = "regulator"` under
-`[star_formation]` before submitting the TOML config.
+When reproducing non-canonical IMF modes with a metallicity gate, set
+`enable_archived_metallicity = true` and choose the regulator or MZR backend
+under `[star_formation]`. This path is archival and must not enter production.
 
 Use `scripts/analysis/sweep_regulator_metallicity.py` for regulator parameter
 scans and `scripts/analysis/plot_regulator_mzr_validation.py` /

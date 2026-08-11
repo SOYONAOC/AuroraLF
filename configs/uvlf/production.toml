@@ -1,4 +1,4 @@
-schema_version = "2.1.0"
+schema_version = "2.2.0"
 run_id = "uvlf-v2-production"
 redshifts = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
 base_seed = 42
@@ -28,28 +28,12 @@ efficiency_normalization = 0.12
 characteristic_halo_mass_msun = 5.011872336e11
 low_mass_slope = 0.66
 high_mass_slope = 0.65
+enable_archived_burst_scatter = false
 burst_scatter_dex = 0.0
 burst_scatter_correlation_timescale_myr = 20.0
 burst_scatter_mass_conserving = true
-metallicity_source = "regulator"
-
-[star_formation.regulator]
-solar_metallicity_mass_fraction = 0.0142
-gas_fraction_norm = 0.02
-gas_fraction_mass_scale_msun = 1.0e10
-gas_fraction_mass_slope = 0.0
-gas_fraction_redshift_scale = 10.0
-gas_fraction_redshift_slope = 0.0
-returned_fraction = 0.4
-metal_yield = 0.01
-inflow_metallicity_zsun = 0.0
-metal_loading_norm = 20.0
-metal_loading_mass_scale_msun = 1.0e10
-metal_loading_mass_slope = -0.5
-metal_loading_redshift_scale = 10.0
-metal_loading_redshift_slope = 0.0
-stellar_mass_floor_msun = 0.0
-metallicity_scatter_dex = 0.0
+enable_archived_metallicity = false
+metallicity_source = "none"
 
 [stellar_population]
 imf_modes = ["canonical"]

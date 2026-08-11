@@ -379,15 +379,14 @@ def test_hmf_sampling_requires_metallicity_for_metallicity_gated_topheavy() -> N
         )
 
 
-def test_production_config_exposes_regulator_metallicity_without_legacy_flags() -> None:
+def test_production_config_archives_metallicity_models() -> None:
     from auroralf import UVLFRunConfig
 
     config = UVLFRunConfig.from_toml(
         PROJECT_ROOT / "configs" / "uvlf" / "production.toml"
     )
-    regulator = config.star_formation.regulator
-    assert config.star_formation.metallicity_source == "regulator"
-    assert regulator is not None
-    assert regulator.gas_fraction_norm == pytest.approx(0.02)
-    assert regulator.metal_loading_norm == pytest.approx(20.0)
+    assert config.star_formation.enable_archived_metallicity is False
+    assert config.star_formation.metallicity_source == "none"
+    assert config.star_formation.mzr is None
+    assert config.star_formation.regulator is None
     assert config.stellar_population.birth_metallicity_topheavy_max_zsun == pytest.approx(0.05)

@@ -30,7 +30,7 @@ from auroralf.uvlf.hmf_sampling import validate_mass_function_model
 from auroralf.uvlf.imf import IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 
 
-CONFIG_SCHEMA_VERSION = "2.1.0"
+CONFIG_SCHEMA_VERSION = "2.2.0"
 _UINT64_MAX = 2**64 - 1
 _RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -292,17 +292,25 @@ class StarFormationConfig:
     characteristic_halo_mass_msun: float = 10.0**11.7
     low_mass_slope: float = 0.66
     high_mass_slope: float = 0.65
+    enable_archived_burst_scatter: bool = False
     burst_scatter_dex: float = 0.0
     burst_scatter_correlation_timescale_myr: float = 20.0
     burst_scatter_mass_conserving: bool = True
+    enable_archived_metallicity: bool = False
     metallicity_source: str = "none"
     mzr: MZRConfig | None = None
     regulator: RegulatorConfig | None = None
 
     def __post_init__(self) -> None:
         enable_delay = _strict_bool("enable_time_delay", self.enable_time_delay)
+        archive_burst = _strict_bool(
+            "enable_archived_burst_scatter", self.enable_archived_burst_scatter
+        )
         preserve_mass = _strict_bool(
             "burst_scatter_mass_conserving", self.burst_scatter_mass_conserving
+        )
+        archive_metallicity = _strict_bool(
+            "enable_archived_metallicity", self.enable_archived_metallicity
         )
         efficiency = _strict_float("efficiency_normalization", self.efficiency_normalization)
         mass = _strict_float(
@@ -341,15 +349,29 @@ class StarFormationConfig:
             raise ValueError("burst_scatter_dex must be non-negative")
         if timescale <= 0.0:
             raise ValueError("burst_scatter_correlation_timescale_myr must be positive")
+        if scatter > 0.0 and not archive_burst:
+            raise ValueError(
+                "burst scatter is archived; set "
+                "star_formation.enable_archived_burst_scatter=true only for "
+                "explicit historical reproduction"
+            )
+        if source != "none" and not archive_metallicity:
+            raise ValueError(
+                "metallicity models are archived; set "
+                "star_formation.enable_archived_metallicity=true only for "
+                "explicit historical reproduction"
+            )
         for name, value in (
             ("enable_time_delay", enable_delay),
             ("efficiency_normalization", efficiency),
             ("characteristic_halo_mass_msun", mass),
             ("low_mass_slope", low_slope),
             ("high_mass_slope", high_slope),
+            ("enable_archived_burst_scatter", archive_burst),
             ("burst_scatter_dex", scatter),
             ("burst_scatter_correlation_timescale_myr", timescale),
             ("burst_scatter_mass_conserving", preserve_mass),
+            ("enable_archived_metallicity", archive_metallicity),
             ("metallicity_source", source),
         ):
             object.__setattr__(self, name, value)
@@ -673,9 +695,11 @@ _STAR_FORMATION_REQUIRED = {
     "characteristic_halo_mass_msun",
     "low_mass_slope",
     "high_mass_slope",
+    "enable_archived_burst_scatter",
     "burst_scatter_dex",
     "burst_scatter_correlation_timescale_myr",
     "burst_scatter_mass_conserving",
+    "enable_archived_metallicity",
     "metallicity_source",
 }
 _STAR_FORMATION_OPTIONAL = {"mzr", "regulator"}
@@ -876,11 +900,15 @@ def _decode_run_config(root: Mapping[str, Any], base_directory: Path) -> UVLFRun
             characteristic_halo_mass_msun=star_table["characteristic_halo_mass_msun"],
             low_mass_slope=star_table["low_mass_slope"],
             high_mass_slope=star_table["high_mass_slope"],
+            enable_archived_burst_scatter=star_table[
+                "enable_archived_burst_scatter"
+            ],
             burst_scatter_dex=star_table["burst_scatter_dex"],
             burst_scatter_correlation_timescale_myr=star_table[
                 "burst_scatter_correlation_timescale_myr"
             ],
             burst_scatter_mass_conserving=star_table["burst_scatter_mass_conserving"],
+            enable_archived_metallicity=star_table["enable_archived_metallicity"],
             metallicity_source=star_table["metallicity_source"],
             mzr=mzr,
             regulator=regulator,

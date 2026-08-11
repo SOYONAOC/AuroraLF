@@ -421,6 +421,7 @@ def test_production_config_defaults_to_delay_and_mass_conserving_zero_scatter() 
 
     config = UVLFRunConfig.from_toml(PRODUCTION_CONFIG)
     assert config.star_formation.enable_time_delay is True
+    assert config.star_formation.enable_archived_burst_scatter is False
     assert config.star_formation.burst_scatter_dex == pytest.approx(0.0)
     assert config.star_formation.burst_scatter_mass_conserving is True
     assert config.stellar_population.source_redshift_gate_enabled is False

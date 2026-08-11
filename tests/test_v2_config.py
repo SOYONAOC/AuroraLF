@@ -85,9 +85,11 @@ def _star_formation(**overrides: object) -> StarFormationConfig:
         "characteristic_halo_mass_msun": 10.0**11.7,
         "low_mass_slope": 0.66,
         "high_mass_slope": 0.65,
+        "enable_archived_burst_scatter": False,
         "burst_scatter_dex": 0.0,
         "burst_scatter_correlation_timescale_myr": 20.0,
         "burst_scatter_mass_conserving": True,
+        "enable_archived_metallicity": False,
         "metallicity_source": "none",
         "mzr": None,
         "regulator": None,
@@ -158,7 +160,7 @@ def valid_run_config(tmp_path: Path, **overrides: object) -> UVLFRunConfig:
 def test_config_schema_version_and_frozen_model_conversion(tmp_path: Path) -> None:
     config = valid_run_config(tmp_path)
 
-    assert CONFIG_SCHEMA_VERSION == "2.1.0"
+    assert CONFIG_SCHEMA_VERSION == "2.2.0"
     with pytest.raises(FrozenInstanceError):
         config.run_id = "changed"  # type: ignore[misc]
     cosmology = config.cosmology.to_model()
@@ -251,7 +253,37 @@ def test_metallicity_source_requires_exact_matching_nested_config(
     regulator: RegulatorConfig | None,
 ) -> None:
     with pytest.raises(ValueError, match="metallicity_source"):
-        _star_formation(metallicity_source=source, mzr=mzr, regulator=regulator)
+        _star_formation(
+            enable_archived_metallicity=True,
+            metallicity_source=source,
+            mzr=mzr,
+            regulator=regulator,
+        )
+
+
+def test_archived_burst_scatter_requires_explicit_opt_in() -> None:
+    with pytest.raises(ValueError, match="burst scatter is archived"):
+        _star_formation(burst_scatter_dex=0.2)
+
+    config = _star_formation(
+        enable_archived_burst_scatter=True,
+        burst_scatter_dex=0.2,
+    )
+    assert config.enable_archived_burst_scatter is True
+    assert config.burst_scatter_dex == pytest.approx(0.2)
+
+
+def test_archived_metallicity_requires_explicit_opt_in() -> None:
+    with pytest.raises(ValueError, match="metallicity models are archived"):
+        _star_formation(metallicity_source="mzr", mzr=_mzr())
+
+    config = _star_formation(
+        enable_archived_metallicity=True,
+        metallicity_source="mzr",
+        mzr=_mzr(),
+    )
+    assert config.enable_archived_metallicity is True
+    assert config.metallicity_source == "mzr"
 
 
 def test_nested_metallicity_configs_convert_to_current_models() -> None:
@@ -358,7 +390,7 @@ def test_output_path_must_be_absolute_hdf5(path: Path) -> None:
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"schema_version": "2.1.1"}, "schema_version"),
+        ({"schema_version": "2.2.1"}, "schema_version"),
         ({"run_id": "bad id"}, "run_id"),
         ({"run_id": "x" * 129}, "run_id"),
         ({"redshifts": ()}, "redshifts"),
@@ -390,7 +422,7 @@ def test_run_config_requires_every_redshift_below_mah_start_redshift(tmp_path: P
 
 def _valid_toml() -> str:
     return """
-schema_version = "2.1.0"
+schema_version = "2.2.0"
 run_id = "toml-run"
 redshifts = [6.0, 8.0]
 base_seed = 42
@@ -420,9 +452,11 @@ efficiency_normalization = 0.12
 characteristic_halo_mass_msun = 5.011872336e11
 low_mass_slope = 0.66
 high_mass_slope = 0.65
+enable_archived_burst_scatter = false
 burst_scatter_dex = 0.0
 burst_scatter_correlation_timescale_myr = 20.0
 burst_scatter_mass_conserving = true
+enable_archived_metallicity = false
 metallicity_source = "none"
 
 [stellar_population]
@@ -543,7 +577,7 @@ def test_from_toml_symlink_resolves_relative_paths_from_real_config_parent(
     [
         (_valid_toml().replace("base_seed = 42\n", ""), "base_seed"),
         (_valid_toml().replace("h0_km_s_mpc = 67.4\n", ""), "cosmology.h0_km_s_mpc"),
-        (_valid_toml().replace("schema_version = \"2.1.0\"\n", ""), "schema_version"),
+        (_valid_toml().replace("schema_version = \"2.2.0\"\n", ""), "schema_version"),
     ],
 )
 def test_from_toml_reports_missing_required_keys_precisely(

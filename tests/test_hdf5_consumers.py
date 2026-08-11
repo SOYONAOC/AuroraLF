@@ -328,7 +328,11 @@ def test_multi_artifact_compatibility_allows_only_declared_physical_fields(
         allowed_config_differences=frozenset(),
         context="runtime-only comparison",
     )
-    burst_sf = replace(reference.config.star_formation, burst_scatter_dex=0.3)
+    burst_sf = replace(
+        reference.config.star_formation,
+        enable_archived_burst_scatter=True,
+        burst_scatter_dex=0.3,
+    )
     burst = _result(_config(tmp_path, run_id="burst", star_formation=burst_sf))
     require_compatible_results(
         reference,

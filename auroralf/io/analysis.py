@@ -11,6 +11,7 @@ from .schema import canonical_config_mapping
 
 BURST_CONFIG_DIFFERENCES = frozenset(
     {
+        "star_formation.enable_archived_burst_scatter",
         "star_formation.burst_scatter_dex",
         "star_formation.burst_scatter_correlation_timescale_myr",
         "star_formation.burst_scatter_mass_conserving",
