@@ -3,6 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from auroralf.mah.models import Cosmology
+from auroralf.mah.physics import (
+    BRYAN_NORMAN_REFERENCE_OVERDENSITY,
+    compute_bryan_norman_virial_terms,
+)
 
 
 ATOMIC_COOLING_TEMPERATURE_K = 1.0e4
@@ -11,8 +15,6 @@ VIRIAL_TEMPERATURE_NORMALIZATION_K = 1.98e4
 VIRIAL_MASS_NORMALIZATION_MSUN = 1.0e8
 VIRIAL_MU_NORMALIZATION = 0.6
 VIRIAL_REDSHIFT_NORMALIZATION = 10.0
-BRYAN_NORMAN_OVERDENSITY_LINEAR = 82.0
-BRYAN_NORMAN_OVERDENSITY_QUADRATIC = -39.0
 POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN = 3.3e7
 POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT = -1.5
 POPIII_LW_FEEDBACK_COEFFICIENT = 2.0
@@ -62,25 +64,15 @@ def compute_atomic_cooling_mass_msun(
     h = cosmology.h0_km_s_mpc / 100.0
     one_plus_redshift = 1.0 + redshift
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-        expansion_squared = (
-            cosmology.omega_m * one_plus_redshift**3
-            + cosmology.omega_lambda
-        )
-        omega_m_at_redshift = (
-            cosmology.omega_m * one_plus_redshift**3 / expansion_squared
-        )
-        density_offset = omega_m_at_redshift - 1.0
-        reference_overdensity = 18.0 * np.pi**2
-        collapse_overdensity = (
-            reference_overdensity
-            + BRYAN_NORMAN_OVERDENSITY_LINEAR * density_offset
-            + BRYAN_NORMAN_OVERDENSITY_QUADRATIC * density_offset**2
+        _, omega_m_at_redshift, collapse_overdensity = compute_bryan_norman_virial_terms(
+            redshift,
+            cosmology=cosmology,
         )
         virial_correction = (
             cosmology.omega_m
             / omega_m_at_redshift
             * collapse_overdensity
-            / reference_overdensity
+            / BRYAN_NORMAN_REFERENCE_OVERDENSITY
         )
         threshold = (
             VIRIAL_MASS_NORMALIZATION_MSUN

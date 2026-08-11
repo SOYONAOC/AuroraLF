@@ -71,6 +71,7 @@ def _config(tmp_path: Path) -> UVLFRunConfig:
         star_formation=StarFormationConfig(metallicity_source="none"),
         stellar_population=StellarPopulationConfig(
             imf_modes=MODES,
+            enable_archived_imf_gate=True,
             canonical_ssp_path=canonical,
             topheavy_ssp_path=topheavy,
             popiii_ssp_path=popiii,

@@ -6,6 +6,10 @@ from numbers import Integral, Real
 import numpy as np
 
 from auroralf.config import UVLFRunConfig
+from auroralf._array_utils import (
+    immutable_array as _immutable_array,
+    validate_real_array_members as _validate_real_array_members,
+)
 from auroralf.uvlf.imf import validate_imf_mode
 
 
@@ -22,27 +26,6 @@ def _strict_int(name: str, value: object) -> int:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise TypeError(f"{name} must be an integer and boolean values are not allowed")
     return int(value)
-
-
-def _validate_real_array_members(name: str, value: object) -> None:
-    if isinstance(value, np.ndarray):
-        if np.issubdtype(value.dtype, np.bool_) or np.issubdtype(value.dtype, np.complexfloating):
-            raise TypeError(f"{name} must contain real non-boolean values")
-        if np.issubdtype(value.dtype, np.integer) or np.issubdtype(value.dtype, np.floating):
-            return
-        if value.dtype == np.dtype(object):
-            for item in value.flat:
-                if isinstance(item, (bool, np.bool_)) or not isinstance(item, Real):
-                    raise TypeError(f"{name} must contain real non-boolean values")
-            return
-        raise TypeError(f"{name} must contain real non-boolean values")
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            if isinstance(item, (bool, np.bool_)) or not isinstance(item, Real):
-                raise TypeError(f"{name} must contain real non-boolean values")
-        return
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise TypeError(f"{name} must contain real non-boolean values")
 
 
 def _validate_integer_array_members(name: str, value: object) -> None:
@@ -77,14 +60,6 @@ def _validate_boolean_array_members(name: str, value: object) -> None:
         return
     if not isinstance(value, (bool, np.bool_)):
         raise TypeError(f"{name} must have boolean dtype and boolean members")
-
-
-def _immutable_array(array: np.ndarray) -> np.ndarray:
-    contiguous = np.ascontiguousarray(array)
-    immutable_buffer = contiguous.tobytes(order="C")
-    immutable = np.frombuffer(immutable_buffer, dtype=contiguous.dtype).reshape(contiguous.shape)
-    immutable.flags.writeable = False
-    return immutable
 
 
 def _working_float_1d(name: str, value: object) -> np.ndarray:

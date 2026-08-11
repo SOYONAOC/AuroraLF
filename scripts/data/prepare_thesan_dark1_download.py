@@ -534,25 +534,6 @@ def _count_offset_mapping_datasets(path: Path) -> int:
     return count
 
 
-def _find_tree_mass_field(path: Path) -> tuple[bool, str]:
-    with h5py.File(path, "r") as handle:
-        found_snapnum = False
-        found_mass = ""
-
-        def visitor(name: str, obj: h5py.Dataset) -> None:
-            nonlocal found_snapnum, found_mass
-            if not isinstance(obj, h5py.Dataset):
-                return
-            leaf = name.split("/")[-1]
-            if leaf == "SnapNum":
-                found_snapnum = True
-            if found_mass == "" and leaf in TREE_MASS_FIELD_CANDIDATES:
-                found_mass = leaf
-
-        handle.visititems(visitor)
-    return found_snapnum, found_mass
-
-
 def _validate_tree_structure(path: Path) -> dict[str, Any]:
     required_branch_fields = {
         "SnapNum",

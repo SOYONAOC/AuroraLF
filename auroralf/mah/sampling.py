@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .models import GaussianApproximation, POWER_LAW_FRACTION
+from auroralf.constants import POWER_LAW_FRACTION
+
+from .models import GaussianApproximation
 
 
 PARAMETER_SAMPLER_MCBRIDE = "mcbride"

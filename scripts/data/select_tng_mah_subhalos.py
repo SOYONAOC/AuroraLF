@@ -5,7 +5,6 @@ import argparse
 import csv
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +13,12 @@ import h5py
 import numpy as np
 import requests
 
+from auroralf.constants import PLANCK15_H
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SIMULATION = "TNG100-1-Dark"
 DEFAULT_API_BASE = "https://www.tng-project.org/api"
-DEFAULT_HUBBLE = 0.6774
+DEFAULT_HUBBLE = PLANCK15_H
 DEFAULT_TARGET_REDSHIFTS = (6.0, 8.0, 10.0, 12.5)
 DEFAULT_LOGM_MIN = 9.0
 DEFAULT_LOGM_MAX = 13.0

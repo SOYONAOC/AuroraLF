@@ -41,9 +41,7 @@ from .dust import compute_dust_attenuated_uvlf
 from .hmf_sampling import prepare_reed07_hmf_interpolator, uv_luminosity_to_muv
 from .imf import IMFTransitionParameters, validate_imf_mode
 from .pipeline import (
-    HaloModeEvaluation,
     LoadedSSPKernels,
-    SharedHaloBatch,
     evaluate_shared_halo_batch,
     load_ssp_kernels,
     prepare_shared_halo_batch,
@@ -109,6 +107,39 @@ class _MassTaskSpec:
             object.__setattr__(self, name, normalized)
 
 
+def _normalize_mass_mode_metadata(
+    *,
+    imf_mode: str,
+    topheavy_source_count: object,
+    starforming_source_count: object,
+    popiii_source_count: object,
+    active_source_count: object,
+    evaluation_seconds: object,
+) -> tuple[str, dict[str, int], float]:
+    mode = validate_imf_mode(imf_mode)
+    counts = {
+        name: _strict_int_scalar(name, value)
+        for name, value in (
+            ("topheavy_source_count", topheavy_source_count),
+            ("starforming_source_count", starforming_source_count),
+            ("popiii_source_count", popiii_source_count),
+            ("active_source_count", active_source_count),
+        )
+    }
+    if any(count < 0 for count in counts.values()):
+        raise ValueError("mode source counts must be non-negative")
+    if counts["topheavy_source_count"] > counts["starforming_source_count"]:
+        raise ValueError("topheavy_source_count must not exceed starforming_source_count")
+    if counts["starforming_source_count"] > counts["active_source_count"]:
+        raise ValueError("starforming_source_count must not exceed active_source_count")
+    if counts["popiii_source_count"] > counts["active_source_count"]:
+        raise ValueError("popiii_source_count must not exceed active_source_count")
+    seconds = _strict_float_scalar("evaluation_seconds", evaluation_seconds)
+    if seconds < 0.0:
+        raise ValueError("evaluation_seconds must be non-negative")
+    return mode, counts, seconds
+
+
 @dataclass(frozen=True, slots=True)
 class _MassModeTaskResult:
     imf_mode: str
@@ -120,31 +151,18 @@ class _MassModeTaskResult:
     evaluation_seconds: float
 
     def __post_init__(self) -> None:
-        mode = validate_imf_mode(self.imf_mode)
+        mode, counts, seconds = _normalize_mass_mode_metadata(
+            imf_mode=self.imf_mode,
+            topheavy_source_count=self.topheavy_source_count,
+            starforming_source_count=self.starforming_source_count,
+            popiii_source_count=self.popiii_source_count,
+            active_source_count=self.active_source_count,
+            evaluation_seconds=self.evaluation_seconds,
+        )
         luminosity = _immutable_float_vector(
             "uv_luminosity_erg_per_s_hz",
             self.uv_luminosity_erg_per_s_hz,
         )
-        counts: dict[str, int] = {}
-        for name in (
-            "topheavy_source_count",
-            "starforming_source_count",
-            "popiii_source_count",
-            "active_source_count",
-        ):
-            count = _strict_int_scalar(name, getattr(self, name))
-            if count < 0:
-                raise ValueError(f"{name} must be non-negative")
-            counts[name] = count
-        if counts["topheavy_source_count"] > counts["starforming_source_count"]:
-            raise ValueError("topheavy_source_count must not exceed starforming_source_count")
-        if counts["starforming_source_count"] > counts["active_source_count"]:
-            raise ValueError("starforming_source_count must not exceed active_source_count")
-        if counts["popiii_source_count"] > counts["active_source_count"]:
-            raise ValueError("popiii_source_count must not exceed active_source_count")
-        seconds = _strict_float_scalar("evaluation_seconds", self.evaluation_seconds)
-        if seconds < 0.0:
-            raise ValueError("evaluation_seconds must be non-negative")
         object.__setattr__(self, "imf_mode", mode)
         object.__setattr__(self, "uv_luminosity_erg_per_s_hz", luminosity)
         object.__setattr__(self, "evaluation_seconds", seconds)
@@ -187,6 +205,34 @@ def _rebuild_mass_mode_task_result(
     )
 
 
+def _validate_mass_mode_task_result_integrity(
+    result: _MassModeTaskResult,
+) -> None:
+    if type(result) is not _MassModeTaskResult:
+        raise TypeError("mode_results entries must be exactly _MassModeTaskResult")
+    _normalize_mass_mode_metadata(
+        imf_mode=result.imf_mode,
+        topheavy_source_count=result.topheavy_source_count,
+        starforming_source_count=result.starforming_source_count,
+        popiii_source_count=result.popiii_source_count,
+        active_source_count=result.active_source_count,
+        evaluation_seconds=result.evaluation_seconds,
+    )
+    luminosity = result.uv_luminosity_erg_per_s_hz
+    if type(luminosity) is not np.ndarray or luminosity.dtype != np.dtype(float):
+        raise TypeError("uv_luminosity_erg_per_s_hz must be a normalized float array")
+    if luminosity.ndim != 1 or luminosity.size == 0:
+        raise ValueError("uv_luminosity_erg_per_s_hz must be a non-empty 1D array")
+    if not np.all(np.isfinite(luminosity)) or np.any(luminosity < 0.0):
+        raise ValueError("uv_luminosity_erg_per_s_hz must be finite and non-negative")
+    current: object = luminosity
+    while isinstance(current, np.ndarray):
+        if current.flags.writeable:
+            raise ValueError("uv_luminosity_erg_per_s_hz must be immutable")
+        current = current.base
+    if isinstance(current, memoryview) and not current.readonly:
+        raise ValueError("uv_luminosity_erg_per_s_hz must be immutable")
+
 @dataclass(frozen=True, slots=True)
 class _MassTaskResult:
     redshift: float
@@ -222,27 +268,15 @@ class _MassTaskResult:
             raise ValueError("final SFR means must be non-negative")
         if type(self.mode_results) is not tuple or not self.mode_results:
             raise TypeError("mode_results must be a non-empty tuple")
-        if any(type(result) is not _MassModeTaskResult for result in self.mode_results):
-            raise TypeError("mode_results entries must be exactly _MassModeTaskResult")
-        normalized_mode_results = tuple(
-            _rebuild_mass_mode_task_result(
-                result.imf_mode,
-                result.uv_luminosity_erg_per_s_hz,
-                result.topheavy_source_count,
-                result.starforming_source_count,
-                result.popiii_source_count,
-                result.active_source_count,
-                result.evaluation_seconds,
-            )
-            for result in self.mode_results
-        )
-        modes = tuple(result.imf_mode for result in normalized_mode_results)
+        for result in self.mode_results:
+            _validate_mass_mode_task_result_integrity(result)
+        modes = tuple(result.imf_mode for result in self.mode_results)
         if len(set(modes)) != len(modes):
             raise ValueError("mode_results must contain unique IMF modes")
-        sample_count = normalized_mode_results[0].uv_luminosity_erg_per_s_hz.size
+        sample_count = self.mode_results[0].uv_luminosity_erg_per_s_hz.size
         if any(
             result.uv_luminosity_erg_per_s_hz.size != sample_count
-            for result in normalized_mode_results
+            for result in self.mode_results
         ):
             raise ValueError("mode_results luminosity arrays must have equal lengths")
         if (self.final_sfr_msun_per_yr is None) != (
@@ -299,7 +333,6 @@ class _MassTaskResult:
         )
         object.__setattr__(self, "shared_preparation_seconds", seconds)
         object.__setattr__(self, "worker_pid", worker_pid)
-        object.__setattr__(self, "mode_results", normalized_mode_results)
         object.__setattr__(self, "final_sfr_msun_per_yr", final_sfr_samples)
         object.__setattr__(
             self,
@@ -727,41 +760,32 @@ def _validate_scheduled_result(
 ) -> _MassTaskResult:
     if type(spec) is not _MassTaskSpec:
         raise TypeError("mass task spec must be exactly _MassTaskSpec")
-    normalized_spec = _MassTaskSpec(
-        redshift=spec.redshift,
-        mass_index=spec.mass_index,
-        halo_mass_msun=spec.halo_mass_msun,
-        mass_weight_per_mpc3=spec.mass_weight_per_mpc3,
-    )
     if type(result) is not _MassTaskResult:
         raise TypeError("mass task must return exactly _MassTaskResult")
-    normalized_result = _rebuild_mass_task_result(
-        result.redshift,
-        result.mass_index,
+    for mode_result in result.mode_results:
+        _validate_mass_mode_task_result_integrity(mode_result)
+    result_index = _strict_int_scalar("mass task result mass_index", result.mass_index)
+    result_redshift = _strict_float_scalar("mass task result redshift", result.redshift)
+    result_halo_mass = _strict_float_scalar(
+        "mass task result halo_mass_msun",
         result.halo_mass_msun,
-        result.mass_weight_per_mpc3,
-        result.final_sfr_mean_msun_per_yr,
-        result.final_popiii_sfr_mean_msun_per_yr,
-        result.mode_results,
-        result.shared_preparation_seconds,
-        result.worker_pid,
-        result.worker_context_token,
-        result.worker_initialization_load_count,
-        result.final_sfr_msun_per_yr,
-        result.final_popiii_sfr_msun_per_yr,
     )
-    if normalized_result.mass_index != normalized_spec.mass_index:
+    result_mass_weight = _strict_float_scalar(
+        "mass task result mass_weight_per_mpc3",
+        result.mass_weight_per_mpc3,
+    )
+    if result_index != spec.mass_index:
         raise RuntimeError(
-            f"mass task result index {normalized_result.mass_index} does not match submitted "
-            f"index {normalized_spec.mass_index}"
+            f"mass task result index {result_index} does not match submitted "
+            f"index {spec.mass_index}"
         )
-    if normalized_result.redshift != normalized_spec.redshift:
+    if result_redshift != spec.redshift:
         raise RuntimeError("mass task result redshift does not match submitted spec")
-    if normalized_result.halo_mass_msun != normalized_spec.halo_mass_msun:
+    if result_halo_mass != spec.halo_mass_msun:
         raise RuntimeError("mass task result halo mass does not match submitted spec")
-    if normalized_result.mass_weight_per_mpc3 != normalized_spec.mass_weight_per_mpc3:
+    if result_mass_weight != spec.mass_weight_per_mpc3:
         raise RuntimeError("mass task result mass weight does not match submitted spec")
-    return normalized_result
+    return result
 
 
 def _ordered_parallel_results(
@@ -777,7 +801,7 @@ def _ordered_parallel_results(
     window = 2 * worker_count
     spec_iterator = iter(specs)
     running: dict[Future[_MassTaskResult], _MassTaskSpec] = {}
-    completed: dict[int, tuple[_MassTaskSpec, _MassTaskResult]] = {}
+    completed: dict[int, _MassTaskResult] = {}
     submitted_indices: set[int] = set()
     submitted_count = 0
     consumed_count = 0
@@ -828,10 +852,10 @@ def _ordered_parallel_results(
         fill_window()
         while running or completed:
             while expected_index is not None and expected_index in completed:
-                spec, result = completed.pop(expected_index)
+                result = completed.pop(expected_index)
                 consumed_count += 1
                 notify()
-                yield _validate_scheduled_result(spec, result)
+                yield result
                 expected_index += 1
                 fill_window()
             if not running:
@@ -848,7 +872,7 @@ def _ordered_parallel_results(
                 result = _validate_scheduled_result(spec, future.result())
                 if result.mass_index in completed:
                     raise RuntimeError(f"duplicate mass task result index {result.mass_index}")
-                completed[result.mass_index] = (spec, result)
+                completed[result.mass_index] = result
             notify()
     except BaseException:
         for future in running:

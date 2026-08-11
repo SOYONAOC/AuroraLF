@@ -7,6 +7,33 @@ from auroralf.mah import Cosmology
 from auroralf.seeding import derive_pipeline_random_seeds
 
 
+def test_uniform_time_grid_keeps_exact_requested_point_count_at_float_boundary() -> None:
+    import auroralf.mah.generator as generator
+
+    cosmology = Cosmology()
+    astro = generator._build_astropy_cosmology(cosmology)
+    z_start = 16.0
+    z_final = 14.5
+    point_count = 8
+    dt_gyr = float(astro.age(z_final).value - astro.age(z_start).value) / (
+        point_count - 1
+    )
+
+    redshift, time_gyr = generator._resolve_redshift_grid(
+        z_final=z_final,
+        z_start_max=z_start,
+        time_grid_mode="uniform_in_t",
+        dt=dt_gyr,
+        dz=None,
+        cosmology=cosmology,
+        custom_grid=None,
+    )
+
+    assert redshift.size == point_count
+    assert time_gyr.size == point_count
+    np.testing.assert_allclose(np.diff(time_gyr), dt_gyr, rtol=1.0e-14, atol=0.0)
+
+
 def test_mcbride_preserves_negative_raw_rate_and_records_clipping(monkeypatch: pytest.MonkeyPatch) -> None:
     import auroralf.mah.generator as generator
 

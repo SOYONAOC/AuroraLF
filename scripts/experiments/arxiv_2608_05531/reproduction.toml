@@ -1,0 +1,84 @@
+schema_version = 1
+
+[paper]
+arxiv_id = "2608.05531v1"
+title = "A Roadmap for Transient Hunters: Mapping Stellar Mass and Star Formation Rate Anisotropies in the Local Universe"
+authors = ["Ye-Hao Cheng", "Yuan-Pei Yang", "Ye Li"]
+paper_url = "https://arxiv.org/abs/2608.05531"
+pdf_url = "https://arxiv.org/pdf/2608.05531"
+local_pdf = "external_data/literature_sources/arxiv_2608_05531/arxiv_2608.05531v1.pdf"
+pdf_sha256 = "7cb7d14d9625d0417edad2e452f13ff0a85b1da4d47911f019f4c25cdd4b305a"
+zenodo_doi = "10.5281/zenodo.20695048"
+
+[paths]
+input_root = "external_data/literature_sources/arxiv_2608_05531/zenodo_20695048"
+reusable_results = "data_save/reproductions/arxiv_2608_05531"
+diagnostics = "outputs/reproductions/arxiv_2608_05531"
+
+[ml]
+target = "logSFR"
+paper_feature_listing = ["gmag", "g-r", "r-z", "z-W1", "W1-W2", "redshift", "logM"]
+author_feature_order = ["g-r", "r-z", "z-W1", "W1-W2", "redshift", "gmag", "logM"]
+random_seed = 42
+blind_fraction = 0.3333333333333333
+cv_folds = 10
+iterations = 1200
+depth = 10
+learning_rate = 0.05
+loss_function = "RMSE"
+task_type = "CPU"
+training_rows_after_cleaning = 335064
+train_validation_rows = 223376
+blind_test_rows = 111688
+external_prediction_rows = 325807
+raw_training_rows = 335264
+target_zero_rows_removed = 200
+production_fit_rows = 223376
+blind_rows_refit_into_production_model = false
+
+[expected]
+published_table1_metrics = ["rmse_dex", "sigma_dex", "bias_dex", "outlier_fraction_3sigma"]
+zenodo_notebook_diagnostics = ["r2", "mae_dex"]
+
+[expected.cv_oof]
+r2 = 0.763
+rmse_dex = 0.306
+mae_dex = 0.197
+bias_dex = -0.0001
+sigma_dex = 0.306
+outlier_fraction_3sigma = 0.02290
+
+[expected.blind_test]
+r2 = 0.760
+rmse_dex = 0.306
+mae_dex = 0.196
+bias_dex = -0.0015
+sigma_dex = 0.306
+outlier_fraction_3sigma = 0.02302
+
+[maps]
+coordinate_system = "equatorial"
+nside = [1, 2, 4, 8, 16, 32, 64, 128]
+distance_min_mpc = 30
+distance_max_mpc = 200
+distance_step_mpc = 10
+
+[gsmf]
+phi1_mpc3 = 0.00293
+phi2_mpc3 = 0.00063
+log10_mstar_msun = 10.66
+beta1 = -0.62
+beta2 = -1.5
+dwarf_mass_min_msun = 1.0e5
+dwarf_mass_max_msun = 1.0e8
+paper_mass_fraction_percent = 1.78
+
+[provenance]
+paper_status = "arXiv v1"
+author_environment_lock_available = false
+raw_regalade_snapshot_available = false
+raw_gswlc2_snapshot_available = false
+topcat_crossmatch_recipe_available = false
+angular_power_spectrum_code_available = false
+relative_fluctuation_code_available = false
+ccsn_comparison_code_and_catalog_snapshot_available = false

@@ -68,6 +68,38 @@ def test_hmf_sampling_validates_popiii_lw_at_entry_when_popiii_disabled(invalid_
         )
 
 
+@pytest.mark.parametrize("pipeline_workers", [0, -1])
+def test_hmf_sampling_rejects_nonpositive_pipeline_workers(
+    pipeline_workers: int,
+) -> None:
+    from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf
+
+    with pytest.raises(ValueError, match="pipeline_workers must be positive"):
+        sample_uvlf_from_hmf(
+            z_obs=10.0,
+            cosmology=Cosmology(),
+            base_seed=42,
+            N_mass=1,
+            pipeline_workers=pipeline_workers,
+        )
+
+
+@pytest.mark.parametrize("pipeline_workers", [True, np.bool_(False), 1.5, "1"])
+def test_hmf_sampling_rejects_noninteger_pipeline_workers(
+    pipeline_workers: object,
+) -> None:
+    from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf
+
+    with pytest.raises(TypeError, match="pipeline_workers must be an integer non-boolean value"):
+        sample_uvlf_from_hmf(
+            z_obs=10.0,
+            cosmology=Cosmology(),
+            base_seed=42,
+            N_mass=1,
+            pipeline_workers=pipeline_workers,  # type: ignore[arg-type]
+        )
+
+
 def test_hmf_sampling_uses_one_popiii_lw_source_for_floor_channels_workers_and_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -514,17 +546,17 @@ def test_hmf_reed07_scalar_input_returns_float() -> None:
     assert value > 0.0
 
 
-def test_atomic_cooling_mass_matches_frozen_massfunc_v0p2p2_reference() -> None:
+def test_atomic_cooling_mass_matches_astropy_planck18_reference() -> None:
     z_obs = np.array([0.0, 6.0, 10.0, 12.5, 20.0, 40.0, 50.0])
     expected = np.array(
         [
-            2.1555409198655934e9,
-            1.5777348254316154e8,
-            8.019352909179857e7,
-            5.899500408755787e7,
-            3.0413245854815666e7,
-            1.114909690469442e7,
-            8.036408113253607e6,
+            2.1548341297061906e9,
+            1.5850980685330954e8,
+            8.057033196980429e7,
+            5.92725023366572e7,
+            3.0556436621610377e7,
+            1.1201604186524495e7,
+            8.074256846391252e6,
         ]
     )
     cosmology = Cosmology()
@@ -541,7 +573,7 @@ def test_atomic_cooling_mass_uses_custom_cosmology() -> None:
         omega_b=0.08,
         omega_lambda=0.6,
     )
-    expected = 3.558719511990472e7
+    expected = 3.545044267043421e7
 
     actual = compute_atomic_cooling_mass_msun(10.0, cosmology=custom)
     default = compute_atomic_cooling_mass_msun(10.0, cosmology=Cosmology())

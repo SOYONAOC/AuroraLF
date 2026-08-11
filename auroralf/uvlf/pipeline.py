@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import InitVar, dataclass, replace
 from numbers import Real
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
+from auroralf.constants import YEARS_PER_GYR
+from auroralf._array_utils import (
+    immutable_array as _immutable_array,
+    validate_real_array_members as _validate_real_array_members,
+)
 from auroralf.seeding import PipelineRandomSeeds
 from auroralf.chemistry import (
     MZRBirthMetallicityParameters,
-    MZRBirthMetallicityResult,
     RegulatorMetallicityParameters,
-    RegulatorMetallicityResult,
     compute_mzr_birth_metallicity,
     compute_regulator_metallicity,
 )
@@ -63,7 +63,6 @@ from .imf import (
     IMF_MODE_CANONICAL,
     IMFTransitionParameters,
     compute_topheavy_source_flags,
-    requires_topheavy_ssp,
     resolve_ssp_path,
     validate_imf_mode,
 )
@@ -73,7 +72,6 @@ DEFAULT_SSP_FILE = DEFAULT_CANONICAL_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_FILE = DEFAULT_MILD_TOPHEAVY_SSP_FILE
 DEFAULT_TOPHEAVY_SSP_METALLICITY = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 DEFAULT_POPIII_SSP_FILE = DEFAULT_POPIII_UV_SSP_FILE
-YEARS_PER_GYR = 1.0e9
 DEFAULT_BURST_SCATTER_TIMESCALE_MYR = 20.0
 
 
@@ -97,179 +95,10 @@ class HaloUVPipelineResult:
     gas_mass_grid: np.ndarray | None = None
 
 
-def _validate_real_array_members(name: str, values: object) -> None:
-    if isinstance(values, np.ndarray):
-        if np.issubdtype(values.dtype, np.bool_) or np.issubdtype(
-            values.dtype,
-            np.complexfloating,
-        ):
-            raise TypeError(f"{name} must contain real non-boolean values")
-        if np.issubdtype(values.dtype, np.integer) or np.issubdtype(
-            values.dtype,
-            np.floating,
-        ):
-            return
-        if values.dtype == np.dtype(object):
-            if all(
-                isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
-                for item in values.flat
-            ):
-                return
-        raise TypeError(f"{name} must contain real non-boolean values")
-    if isinstance(values, (list, tuple)) and all(
-        isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
-        for item in values
-    ):
-        return
-    raise TypeError(f"{name} must contain real non-boolean values")
-
-
-def _immutable_array(values: np.ndarray) -> np.ndarray:
-    contiguous = np.ascontiguousarray(np.asarray(values))
-    if contiguous.dtype.hasobject:
-        first = None if contiguous.size == 0 else contiguous.flat[0]
-        if first is None or (
-            isinstance(first, str)
-            and all(isinstance(item, str) for item in contiguous.flat)
-        ):
-            contiguous = np.ascontiguousarray(contiguous, dtype=str)
-        elif isinstance(first, (bool, np.bool_)) and all(
-            isinstance(item, (bool, np.bool_)) for item in contiguous.flat
-        ):
-            contiguous = np.ascontiguousarray(contiguous, dtype=bool)
-        elif (
-            isinstance(first, Real)
-            and not isinstance(first, (bool, np.bool_))
-            and all(
-                isinstance(item, Real) and not isinstance(item, (bool, np.bool_))
-                for item in contiguous.flat
-            )
-        ):
-            contiguous = np.ascontiguousarray(contiguous, dtype=float)
-        else:
-            raise TypeError(
-                "object-dtype arrays must contain only strings, booleans, or real values"
-            )
-    immutable = np.frombuffer(
-        contiguous.tobytes(order="C"),
-        dtype=contiguous.dtype,
-    ).reshape(contiguous.shape)
-    immutable.flags.writeable = False
-    return immutable
-
-
-def _normalized_numpy_scalar_item(value: np.generic, *, operation: str) -> object:
-    item = value.item()
-    if item is value or isinstance(item, np.generic):
-        raise TypeError(
-            f"cannot {operation} NumPy scalar type {type(value).__name__} "
-            f"with dtype {value.dtype} without losing extended precision"
-        )
-    return item
-
-
-def _deep_freeze(value: object) -> object:
-    if isinstance(value, np.generic):
-        return _deep_freeze(
-            _normalized_numpy_scalar_item(value, operation="freeze")
-        )
-    if isinstance(value, np.ndarray):
-        return _immutable_array(value)
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                _deep_freeze(key): _deep_freeze(item)
-                for key, item in value.items()
-            }
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_deep_freeze(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return frozenset(_deep_freeze(item) for item in value)
-    if isinstance(value, (bytearray, memoryview)):
-        return bytes(value)
-    if value is None or isinstance(
-        value,
-        (bool, int, float, str, bytes, Path),
-    ):
-        return value
-    raise TypeError(
-        f"unsupported unknown or mutable value in shared metadata: {type(value).__name__}"
-    )
-
-
-def _readonly_flat_view(values: np.ndarray) -> np.ndarray:
-    flattened = values.reshape(-1)
-    flattened.flags.writeable = False
-    return flattened
-
-
-def _freeze_mapping_reusing_arrays(
-    values: Mapping[object, object],
-    *,
-    replacements: Mapping[str, tuple[np.ndarray, np.ndarray]],
-) -> Mapping[object, object]:
-    frozen: dict[object, object] = {}
-    for key, item in values.items():
-        frozen_key = _deep_freeze(key)
-        replacement_pair = replacements.get(key) if isinstance(key, str) else None
-        if replacement_pair is not None and isinstance(item, np.ndarray):
-            source, replacement = replacement_pair
-            same_layout = (
-                item.shape == source.shape
-                and item.strides == source.strides
-                and item.dtype == source.dtype
-                and item.__array_interface__["data"][0]
-                == source.__array_interface__["data"][0]
-            )
-            if same_layout:
-                frozen[frozen_key] = replacement
-                continue
-        frozen[frozen_key] = _deep_freeze(item)
-    return MappingProxyType(frozen)
-
-
-def _deep_thaw_mapping_key(value: object) -> object:
-    if isinstance(value, np.generic):
-        return _deep_thaw_mapping_key(
-            _normalized_numpy_scalar_item(value, operation="thaw mapping key")
-        )
-    if isinstance(value, tuple):
-        return tuple(_deep_thaw_mapping_key(item) for item in value)
-    if isinstance(value, frozenset):
-        return frozenset(_deep_thaw_mapping_key(item) for item in value)
-    if value is None or isinstance(
-        value,
-        (bool, int, float, str, bytes, Path),
-    ):
-        return value
-    raise TypeError(f"unsupported frozen mapping key: {type(value).__name__}")
-
-
-def _deep_thaw(value: object) -> object:
-    if isinstance(value, np.generic):
-        return _deep_thaw(
-            _normalized_numpy_scalar_item(value, operation="thaw")
-        )
-    if isinstance(value, np.ndarray):
-        return np.array(value, copy=True)
-    if isinstance(value, Mapping):
-        return {
-            _deep_thaw_mapping_key(key): _deep_thaw(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_deep_thaw(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return {_deep_thaw(item) for item in value}
-    if isinstance(value, (bytearray, memoryview)):
-        return bytes(value)
-    if value is None or isinstance(
-        value,
-        (bool, int, float, str, bytes, Path),
-    ):
-        return value
-    raise TypeError(f"unsupported frozen value: {type(value).__name__}")
+def _readonly_view(values: np.ndarray) -> np.ndarray:
+    readonly = np.asarray(values).view()
+    readonly.flags.writeable = False
+    return readonly
 
 
 def _readonly_grid(
@@ -308,8 +137,6 @@ def _readonly_vector(
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class SharedHaloBatch:
-    histories: HaloHistoryResult
-    sfr_tracks: Mapping[str, object]
     popiii_enabled: bool
     redshift_grid: np.ndarray
     floor_mass_msun: np.ndarray
@@ -334,26 +161,19 @@ class SharedHaloBatch:
     metallicity_source: str
     timing_mah_generation_seconds: float
     timing_sfr_and_chemistry_seconds: float
-    _freeze_arrays: InitVar[bool] = True
+    _array_policy: InitVar[str] = "copy"
 
-    def __post_init__(self, _freeze_arrays: bool) -> None:
-        if type(_freeze_arrays) is not bool:
-            raise TypeError("_freeze_arrays must be exactly bool")
-        if type(self.histories) is not HaloHistoryResult:
-            raise TypeError("histories must be exactly HaloHistoryResult")
-        if not isinstance(self.histories.tracks, Mapping) or not isinstance(
-            self.histories.metadata,
-            Mapping,
-        ):
-            raise TypeError("histories tracks and metadata must be mappings")
-        if not isinstance(self.sfr_tracks, Mapping):
-            raise TypeError("sfr_tracks must be a mapping")
+    def __post_init__(self, _array_policy: str) -> None:
+        if type(_array_policy) is not str:
+            raise TypeError("_array_policy must be exactly str")
+        if _array_policy not in ("copy", "view", "mutable"):
+            raise ValueError("_array_policy must be one of ('copy', 'view', 'mutable')")
         if type(self.popiii_enabled) is not bool:
             raise TypeError("popiii_enabled must be exactly bool")
         time_grid = _readonly_grid(
             "time_gyr_grid",
             self.time_gyr_grid,
-            immutable=_freeze_arrays,
+            immutable=False,
         )
         shape = time_grid.shape
         float_grids: dict[str, np.ndarray] = {}
@@ -372,7 +192,7 @@ class SharedHaloBatch:
             grid = _readonly_grid(
                 name,
                 getattr(self, name),
-                immutable=_freeze_arrays,
+                immutable=False,
             )
             if grid.shape != shape:
                 raise ValueError(f"{name} must match time_gyr_grid shape {shape}")
@@ -383,7 +203,7 @@ class SharedHaloBatch:
                 name,
                 getattr(self, name),
                 boolean=True,
-                immutable=_freeze_arrays,
+                immutable=False,
             )
             if grid.shape != shape:
                 raise ValueError(f"{name} must match time_gyr_grid shape {shape}")
@@ -391,12 +211,12 @@ class SharedHaloBatch:
         redshift_grid = _readonly_vector(
             "redshift_grid",
             self.redshift_grid,
-            immutable=_freeze_arrays,
+            immutable=False,
         )
         floor_mass = _readonly_vector(
             "floor_mass_msun",
             self.floor_mass_msun,
-            immutable=_freeze_arrays,
+            immutable=False,
         )
         if redshift_grid.size != shape[1] or floor_mass.size != shape[1]:
             raise ValueError("redshift_grid and floor_mass_msun must match the history time axis")
@@ -489,7 +309,7 @@ class SharedHaloBatch:
             if value is None:
                 optional_grids[name] = None
                 continue
-            grid = _readonly_grid(name, value, immutable=_freeze_arrays)
+            grid = _readonly_grid(name, value, immutable=False)
             if grid.shape != shape or not np.all(np.isfinite(grid)) or np.any(grid < 0.0):
                 raise ValueError(f"{name} must match shape {shape} and be finite non-negative")
             optional_grids[name] = grid
@@ -507,38 +327,6 @@ class SharedHaloBatch:
             raise ValueError(
                 "metallicity_source must agree with the supplied metallicity grids"
             )
-        track_expectations = {
-            "SFR": float_grids["sfr_msun_per_yr_grid"].reshape(-1),
-            "SFR_popiii": popiii_sfr.reshape(-1),
-            "fstar_popiii": popiii_fstar.reshape(-1),
-            "popiii_duty_cycle": popiii_duty.reshape(-1),
-            "popiii_lower_mass_msun": float_grids[
-                "popiii_lower_mass_msun_grid"
-            ].reshape(-1),
-            "popiii_upper_mass_msun": float_grids[
-                "popiii_upper_mass_msun_grid"
-            ].reshape(-1),
-        }
-        for name, expected in track_expectations.items():
-            if name not in self.sfr_tracks:
-                raise ValueError(f"sfr_tracks is missing required field {name!r}")
-            actual = np.asarray(self.sfr_tracks[name])
-            if actual.shape != expected.shape or not np.array_equal(
-                actual,
-                expected,
-                equal_nan=True,
-            ):
-                raise ValueError(f"sfr_tracks[{name!r}] must match its shared grid")
-        if "popiii_source_flag" not in self.sfr_tracks:
-            raise ValueError("sfr_tracks is missing required field 'popiii_source_flag'")
-        source_track = np.asarray(self.sfr_tracks["popiii_source_flag"])
-        if source_track.dtype != np.dtype(bool) or not np.array_equal(
-            source_track,
-            popiii_source.reshape(-1),
-        ):
-            raise ValueError(
-                "sfr_tracks['popiii_source_flag'] must match popiii_source_grid"
-            )
         for name in ("timing_mah_generation_seconds", "timing_sfr_and_chemistry_seconds"):
             raw_value = getattr(self, name)
             if isinstance(raw_value, (bool, np.bool_)) or not isinstance(raw_value, Real):
@@ -547,77 +335,35 @@ class SharedHaloBatch:
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
             object.__setattr__(self, name, value)
-        object.__setattr__(self, "time_gyr_grid", time_grid)
-        object.__setattr__(self, "popiii_enabled", self.popiii_enabled)
-        if _freeze_arrays:
-            frozen_history_tracks = _deep_freeze(self.histories.tracks)
-            if not isinstance(frozen_history_tracks, Mapping):
-                raise RuntimeError("frozen halo history tracks must remain a mapping")
-            frozen_history_metadata = _deep_freeze(self.histories.metadata)
-            if not isinstance(frozen_history_metadata, Mapping):
-                raise RuntimeError("frozen halo history metadata must remain a mapping")
-            frozen_histories = HaloHistoryResult(
-                tracks=frozen_history_tracks,  # type: ignore[arg-type]
-                metadata=frozen_history_metadata,  # type: ignore[arg-type]
-            )
-            sfr_array_replacements = {
-                "t_gyr": (
-                    np.asarray(self.time_gyr_grid).reshape(-1),
-                    _readonly_flat_view(time_grid),
-                ),
-                "z": (
-                    np.asarray(self.redshift_history_grid).reshape(-1),
-                    _readonly_flat_view(float_grids["redshift_history_grid"]),
-                ),
-                "Mh": (
-                    np.asarray(self.halo_mass_msun_grid).reshape(-1),
-                    _readonly_flat_view(float_grids["halo_mass_msun_grid"]),
-                ),
-                "dMh_dt_sfr": (
-                    np.asarray(self.dmh_dt_sfr_msun_per_gyr_grid).reshape(-1),
-                    _readonly_flat_view(
-                        float_grids["dmh_dt_sfr_msun_per_gyr_grid"]
-                    ),
-                ),
-                "active_flag": (
-                    np.asarray(self.active_grid).reshape(-1),
-                    _readonly_flat_view(bool_grids["active_grid"]),
-                ),
-                "SFR": (
-                    np.asarray(self.sfr_msun_per_yr_grid).reshape(-1),
-                    _readonly_flat_view(float_grids["sfr_msun_per_yr_grid"]),
-                ),
-                "SFR_popiii": (
-                    np.asarray(self.popiii_sfr_msun_per_yr_grid).reshape(-1),
-                    _readonly_flat_view(popiii_sfr),
-                ),
-                "fstar_popiii": (
-                    np.asarray(self.popiii_fstar_grid).reshape(-1),
-                    _readonly_flat_view(popiii_fstar),
-                ),
-                "popiii_duty_cycle": (
-                    np.asarray(self.popiii_duty_cycle_grid).reshape(-1),
-                    _readonly_flat_view(popiii_duty),
-                ),
-                "popiii_lower_mass_msun": (
-                    np.asarray(self.popiii_lower_mass_msun_grid).reshape(-1),
-                    _readonly_flat_view(float_grids["popiii_lower_mass_msun_grid"]),
-                ),
-                "popiii_upper_mass_msun": (
-                    np.asarray(self.popiii_upper_mass_msun_grid).reshape(-1),
-                    _readonly_flat_view(float_grids["popiii_upper_mass_msun_grid"]),
-                ),
-                "popiii_source_flag": (
-                    np.asarray(self.popiii_source_grid).reshape(-1),
-                    _readonly_flat_view(popiii_source),
-                ),
+        if _array_policy == "copy":
+            time_grid = _immutable_array(time_grid)
+            redshift_grid = _immutable_array(redshift_grid)
+            floor_mass = _immutable_array(floor_mass)
+            float_grids = {
+                name: _immutable_array(value) for name, value in float_grids.items()
             }
-            frozen_sfr_tracks = _freeze_mapping_reusing_arrays(
-                self.sfr_tracks,
-                replacements=sfr_array_replacements,
-            )
-            object.__setattr__(self, "histories", frozen_histories)
-            object.__setattr__(self, "sfr_tracks", frozen_sfr_tracks)
+            bool_grids = {
+                name: _immutable_array(value) for name, value in bool_grids.items()
+            }
+            optional_grids = {
+                name: None if value is None else _immutable_array(value)
+                for name, value in optional_grids.items()
+            }
+        elif _array_policy == "view":
+            time_grid = _readonly_view(time_grid)
+            redshift_grid = _readonly_view(redshift_grid)
+            floor_mass = _readonly_view(floor_mass)
+            float_grids = {
+                name: _readonly_view(value) for name, value in float_grids.items()
+            }
+            bool_grids = {
+                name: _readonly_view(value) for name, value in bool_grids.items()
+            }
+            optional_grids = {
+                name: None if value is None else _readonly_view(value)
+                for name, value in optional_grids.items()
+            }
+        object.__setattr__(self, "time_gyr_grid", time_grid)
         object.__setattr__(self, "redshift_grid", redshift_grid)
         object.__setattr__(self, "floor_mass_msun", floor_mass)
         for name, value in float_grids.items():
@@ -885,61 +631,8 @@ class HaloModeEvaluation:
             object.__setattr__(self, name, value)
 
 
-_UV_WORKER_STATE: dict[str, np.ndarray] = {}
-
-
 def _build_astropy_cosmology(cosmology: Cosmology) -> FlatLambdaCDM:
     return FlatLambdaCDM(H0=cosmology.h0_km_s_mpc, Om0=cosmology.omega_m, Ob0=cosmology.omega_b)
-
-
-def _init_uv_worker(ssp_luv_grid: np.ndarray) -> None:
-    _reject_boolean_values("ssp_luv_grid", ssp_luv_grid)
-    _UV_WORKER_STATE["ssp_luv_grid"] = np.asarray(ssp_luv_grid, dtype=float)
-
-
-def _compute_uv_chunk(
-    args: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float],
-) -> np.ndarray:
-    t_grid, mh_chunk, sfr_chunk, active_chunk, ssp_age_grid, ssp_lookback_max_myr = args
-    ssp_luv_grid = _UV_WORKER_STATE["ssp_luv_grid"]
-    for name, values in (
-        ("t_grid", t_grid),
-        ("mh_grid", mh_chunk),
-        ("sfr_grid", sfr_chunk),
-        ("ssp_age_grid", ssp_age_grid),
-        ("ssp_luv_grid", ssp_luv_grid),
-    ):
-        _reject_boolean_values(name, values)
-    _reject_boolean_scalar("ssp_lookback_max_myr", ssp_lookback_max_myr)
-
-    time = np.asarray(t_grid, dtype=float)
-    halo_mass = np.asarray(mh_chunk, dtype=float)
-    sfr = np.asarray(sfr_chunk, dtype=float)
-    active = np.asarray(active_chunk)
-    if time.shape != sfr.shape or halo_mass.shape != sfr.shape or active.shape != sfr.shape:
-        raise ValueError("UV worker time, halo-mass, SFR, and active grids must have identical shapes")
-    if active.dtype != np.dtype(bool):
-        raise ValueError("UV worker active grid must have boolean dtype")
-
-    legacy_ssp_age_gyr = np.asarray(ssp_age_grid, dtype=float)
-    ssp_luv = np.asarray(ssp_luv_grid, dtype=float)
-    if legacy_ssp_age_gyr.ndim != 1 or ssp_luv.ndim != 1:
-        raise ValueError("legacy SSP age and luminosity grids must be 1D")
-    if legacy_ssp_age_gyr.size != ssp_luv.size:
-        raise ValueError("legacy SSP age and luminosity grids must have the same length")
-    order = np.argsort(legacy_ssp_age_gyr, kind="stable")
-    with np.errstate(over="ignore", invalid="ignore"):
-        ssp_age_myr = legacy_ssp_age_gyr[order] * 1.0e3
-
-    return compute_final_ssp_observable_from_sfr_grid(
-        t_grid_gyr=time,
-        sfr_grid=sfr,
-        active_grid=active,
-        ssp_age_myr=ssp_age_myr,
-        ssp_observable_per_msun=ssp_luv[order],
-        lookback_max_myr=ssp_lookback_max_myr,
-        time_unit_in_years=YEARS_PER_GYR,
-    )
 
 
 def compute_uv_luminosities_parallel(
@@ -952,6 +645,12 @@ def compute_uv_luminosities_parallel(
     n_workers: int,
     ssp_lookback_max_myr: float,
 ) -> np.ndarray:
+    """Compatibility adapter for the legacy Gyr-age UV convolution API.
+
+    The shared SSP kernel now evaluates every halo row in one vectorized call, so
+    the retained ``n_workers`` argument is validated but no process pool is needed.
+    """
+
     for name, values in (
         ("t_grid", t_grid),
         ("mh_grid", mh_grid),
@@ -961,7 +660,6 @@ def compute_uv_luminosities_parallel(
     ):
         _reject_boolean_values(name, values)
     _reject_boolean_scalar("ssp_lookback_max_myr", ssp_lookback_max_myr)
-
     if isinstance(n_workers, (bool, np.bool_)) or not isinstance(
         n_workers,
         (int, np.integer),
@@ -969,7 +667,7 @@ def compute_uv_luminosities_parallel(
         raise ValueError("n_workers must be a positive non-boolean integer")
     if int(n_workers) <= 0:
         raise ValueError("n_workers must be a positive non-boolean integer")
-    worker_count = int(n_workers)
+
     time = np.asarray(t_grid, dtype=float)
     halo_mass = np.asarray(mh_grid, dtype=float)
     sfr = np.asarray(sfr_grid, dtype=float)
@@ -986,45 +684,28 @@ def compute_uv_luminosities_parallel(
         time_rows = time
     else:
         raise ValueError("t_grid must be shared 1D or match the 2D SFR grid")
-    if not np.all(np.isfinite(time_rows)):
+    time_deltas = np.diff(time_rows, axis=1)
+    if not np.all(np.isfinite(time_rows)) or not np.all(np.isfinite(time_deltas)):
         raise ValueError("t_grid must contain only finite values")
-    with np.errstate(over="ignore", invalid="ignore"):
-        time_deltas = np.diff(time_rows, axis=1)
-    if not np.all(np.isfinite(time_deltas)) or np.any(time_deltas <= 0.0):
+    if np.any(time_deltas <= 0.0):
         raise ValueError("each shared or row t_grid must be strictly increasing")
 
-    if worker_count == 1:
-        _init_uv_worker(ssp_luv_grid)
-        return _compute_uv_chunk(
-            (time_rows, halo_mass, sfr, active, ssp_age_grid, ssp_lookback_max_myr)
-        )
-
-    chunk_count = min(worker_count, halo_mass.shape[0])
-    time_chunks = np.array_split(time_rows, chunk_count, axis=0)
-    mh_chunks = np.array_split(halo_mass, chunk_count, axis=0)
-    sfr_chunks = np.array_split(sfr, chunk_count, axis=0)
-    active_chunks = np.array_split(active, chunk_count, axis=0)
-    tasks = [
-        (time_chunk, mh_chunk, sfr_chunk, active_chunk, ssp_age_grid, ssp_lookback_max_myr)
-        for time_chunk, mh_chunk, sfr_chunk, active_chunk in zip(
-            time_chunks,
-            mh_chunks,
-            sfr_chunks,
-            active_chunks,
-            strict=True,
-        )
-    ]
-
-    outputs: list[np.ndarray] = []
-    with ProcessPoolExecutor(
-        max_workers=worker_count,
-        initializer=_init_uv_worker,
-        initargs=(np.asarray(ssp_luv_grid, dtype=float),),
-        mp_context=multiprocessing.get_context("spawn"),
-    ) as executor:
-        for chunk_output in executor.map(_compute_uv_chunk, tasks):
-            outputs.append(np.asarray(chunk_output, dtype=float))
-    return np.concatenate(outputs)
+    legacy_ssp_age_gyr = np.asarray(ssp_age_grid, dtype=float)
+    ssp_luv = np.asarray(ssp_luv_grid, dtype=float)
+    if legacy_ssp_age_gyr.ndim != 1 or ssp_luv.ndim != 1:
+        raise ValueError("legacy SSP age and luminosity grids must be 1D")
+    if legacy_ssp_age_gyr.size != ssp_luv.size:
+        raise ValueError("legacy SSP age and luminosity grids must have the same length")
+    order = np.argsort(legacy_ssp_age_gyr, kind="stable")
+    return compute_final_ssp_observable_from_sfr_grid(
+        t_grid_gyr=time_rows,
+        sfr_grid=sfr,
+        active_grid=active,
+        ssp_age_myr=legacy_ssp_age_gyr[order] * 1.0e3,
+        ssp_observable_per_msun=ssp_luv[order],
+        lookback_max_myr=ssp_lookback_max_myr,
+        time_unit_in_years=YEARS_PER_GYR,
+    )
 
 
 def default_worker_count() -> int:
@@ -1519,8 +1200,6 @@ def prepare_shared_halo_batch(
         raise RuntimeError("could not infer an effective M_min(z) floor from active histories")
     finished = time.perf_counter()
     shared = SharedHaloBatch(
-        histories=histories,
-        sfr_tracks=sfr_tracks,
         popiii_enabled=enable_popiii,
         redshift_grid=redshift_grid,
         floor_mass_msun=floor_mass,
@@ -1545,7 +1224,7 @@ def prepare_shared_halo_batch(
         metallicity_source=metallicity_source,
         timing_mah_generation_seconds=after_mah - started,
         timing_sfr_and_chemistry_seconds=finished - after_mah,
-        _freeze_arrays=_mutable_result_sources is None,
+        _array_policy="mutable" if _mutable_result_sources is not None else "view",
     )
     if _mutable_result_sources is not None:
         if _mutable_result_sources:
@@ -1776,6 +1455,14 @@ def run_halo_uv_pipeline(
         burst_scatter_preserve_mean=burst_scatter_preserve_mean,
         _mutable_result_sources=mutable_result_sources,
     )
+    mutable_histories = mutable_result_sources.pop("histories", None)
+    mutable_sfr_tracks = mutable_result_sources.pop("sfr_tracks", None)
+    if mutable_result_sources:
+        raise RuntimeError("unexpected mutable pipeline result sources")
+    if type(mutable_histories) is not HaloHistoryResult:
+        raise RuntimeError("missing mutable halo history result")
+    if type(mutable_sfr_tracks) is not dict:
+        raise RuntimeError("missing mutable SFR track result")
     kernels = load_ssp_kernels(
         ssp_file=ssp_file,
         imf_modes=(mode,),
@@ -1791,7 +1478,7 @@ def run_halo_uv_pipeline(
         kernels=kernels,
         ssp_lookback_max_myr=ssp_lookback_max_myr,
     )
-    histories_metadata = shared.histories.metadata
+    histories_metadata = mutable_histories.metadata
     starforming = shared.starforming_grid
     positive_light = evaluation.uv_luminosity_erg_per_s_hz > 0.0
     candidate_count = int(
@@ -1967,14 +1654,6 @@ def run_halo_uv_pipeline(
         },
         "uv_convolution_method": "shared_prepared_batch_final_ssp_observable_v2",
     }
-    mutable_histories = mutable_result_sources.pop("histories", None)
-    mutable_sfr_tracks = mutable_result_sources.pop("sfr_tracks", None)
-    if mutable_result_sources:
-        raise RuntimeError("unexpected mutable pipeline result sources")
-    if type(mutable_histories) is not HaloHistoryResult:
-        raise RuntimeError("missing mutable halo history result")
-    if type(mutable_sfr_tracks) is not dict:
-        raise RuntimeError("missing mutable SFR track result")
     return HaloUVPipelineResult(
         histories=mutable_histories,
         sfr_tracks=mutable_sfr_tracks,

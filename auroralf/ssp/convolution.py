@@ -4,8 +4,9 @@ from typing import Any
 
 import numpy as np
 
+from auroralf.constants import YEARS_PER_GYR
 
-DEFAULT_TIME_UNIT_IN_YEARS = 1.0e9
+DEFAULT_TIME_UNIT_IN_YEARS = YEARS_PER_GYR
 SSP_UV_LOOKBACK_MAX_MYR = 100.0
 
 

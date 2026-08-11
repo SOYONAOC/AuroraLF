@@ -171,22 +171,22 @@ Large UVLF comparisons are compute jobs. Submit them through the SLURM wrapper
 instead of running the production target directly on a login node:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --canonical-only
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_v2.py \
+  --config configs/uvlf/production.toml --dry-run
 ```
 
-The target script `scripts/run/run_uvlf_compare_imf_no_delay_all_z.py` is the
-unified production entry point for canonical, top-heavy, metallicity-gated, and
-burst-scatter UVLF runs. It requires a SLURM allocation and defaults to
-`enable_time_delay=True`. The older
-`scripts/run/run_uvlf_mass_function_compare_full.py` entry point is intentionally
-disabled and points users to the Reed07 HMF workflow.
+The target script `scripts/run/run_uvlf_v2.py` is the unified production entry
+point for canonical, top-heavy, metallicity-gated, burst-scatter, TNG, and
+THESAN UVLF runs. It requires a SLURM allocation; all scientific behavior is
+selected in the typed TOML configuration. The production config enables the
+time-delay model. The old `run_uvlf_compare_imf_no_delay_all_z.py`,
+`submit_uvlf_imf_compare.py`, and
+`run_uvlf_mass_function_compare_full.py` entry points are intentionally disabled
+migration shims.
 
 When running non-canonical IMF modes with the default metallicity gate, use the
-regulator backend, for example:
-
-```bash
-PYTHONPATH=. .venv/bin/python scripts/submit/submit_uvlf_imf_compare.py --dry-run -- --metallicity-source regulator --metallicity-random-seed 123
-```
+regulator backend by setting `metallicity_source = "regulator"` under
+`[star_formation]` before submitting the TOML config.
 
 Use `scripts/analysis/sweep_regulator_metallicity.py` for regulator parameter
 scans and `scripts/analysis/plot_regulator_mzr_validation.py` /

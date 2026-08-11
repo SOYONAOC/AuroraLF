@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from auroralf.constants import YEARS_PER_GYR
 from auroralf.mah.models import Cosmology
 from auroralf.cooling import (
     DEFAULT_LW_BACKGROUND_J21,
@@ -13,7 +14,6 @@ from auroralf.cooling import (
 )
 
 
-YEARS_PER_GYR = 1.0e9
 VISBAL2015_ATOMIC_COOLING_NORMALIZATION_MSUN = 5.4e7
 VISBAL2015_ATOMIC_COOLING_REDSHIFT_NORMALIZATION = 11.0
 VISBAL2015_ATOMIC_COOLING_REDSHIFT_EXPONENT = -1.5

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,7 +23,7 @@ REDSHIFTS = (6.0, 8.0)
 
 def _config_text() -> str:
     return """
-schema_version = "2.0.0"
+schema_version = "2.1.0"
 run_id = "legacy-conversion"
 redshifts = [6.0, 8.0]
 base_seed = 123
@@ -67,6 +66,7 @@ stellar_mass_floor_msun = 1000000.0
 
 [stellar_population]
 imf_modes = ["canonical", "mah_burst_mild_topheavy"]
+enable_archived_imf_gate = true
 canonical_ssp_path = "sources/canonical.dat"
 topheavy_ssp_path = "sources/topheavy.hdf5"
 topheavy_ssp_template_metallicity_zsun = 0.05

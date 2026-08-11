@@ -15,6 +15,18 @@ result: UVLFRunResult = run_uvlf(config)
 canonical_z6 = result.for_redshift(6.0).for_mode("canonical")
 ```
 
+On branch `SFRIIIII`, the Pop II IMF gate is an archived feature. Production
+uses only the canonical IMF and requires `enable_archived_imf_gate = false`.
+The non-canonical modes and their source-time selector remain available only
+through an explicit archive opt-in for exact historical reproduction.
+
+Shared reference values come from Astropy in `auroralf/constants.py`.
+Production uses Astropy `Planck18`: `H0=67.66 km/s/Mpc`, `Omega_m=0.30966`,
+`Omega_b=0.04897`, `sigma8=0.8102`, and `n_s=0.9665`. AuroraLF's analytic
+equations neglect radiation, so their flat background uses
+`Omega_Lambda=1-Omega_m=0.69034`. TNG/THESAN cache workflows retain the exact
+simulation value `Omega_m=0.3089` and validate it against cache provenance.
+
 TOML paths are resolved relative to the TOML file, not the current working
 directory. `run_uvlf` validates the SSP files used by enabled modes and the
 active MAH-backend cache, then delegates to the shared-batch streaming core and returns
@@ -49,7 +61,8 @@ lock currently targets Python `>=3.13,<3.14`; SciPy is intentionally pinned to
 
 Core code:
 
-- `auroralf/uvlf/`: UV luminosity function pipeline, HMF weighting, dust mapping, and Pop II IMF gate logic
+- `auroralf/constants.py`: Astropy-derived unit conversions, physical constants, production Planck18 cosmology, and TNG/THESAN simulation cosmology
+- `auroralf/uvlf/`: UV luminosity function pipeline, HMF weighting, dust mapping, and archived Pop II IMF gate logic
 - `auroralf/mah/`: Monte Carlo halo assembly history generation
 - `auroralf/sfr/`: star-formation model utilities
 - `auroralf/chemistry/`: MZR prior 和 gas-regulator 金属丰度诊断
@@ -293,7 +306,7 @@ from auroralf.chemistry import RegulatorMetallicityParameters, compute_regulator
 说明：
 
 - 这是诊断性金属闭合，不包含显式 metal production/mixing 时间延迟，也不把 `lambda_Z` 反馈到 SFR
-- 当前实现把本步 regulator `Zgas` 作为 source-time `Zbirth` 提供给 IMF gate
+- 当前实现保留把本步 regulator `Zgas` 作为 source-time `Zbirth` 提供给 archived IMF gate 的诊断路径；production 不启用该 gate
 - 若要和观测常用的星系气体分数比较，应使用
   `fgas_gal = fres / (fres + Mstar / (fb Mh))`，不要把 `fres=0.02`
   误读成 2% galaxy gas fraction
@@ -504,8 +517,8 @@ from auroralf.uvlf import run_halo_uv_pipeline
 - `imf_mode`
   Pop II IMF 模式，支持：
   - `"canonical"`：所有源时刻都使用 canonical Pop II SSP
-  - `"z10_mild_topheavy"`：保留的历史模式名；默认使用 active source-time 与 birth-metallicity gate，不再默认要求 `z >= z_topheavy_min`
-  - `"mah_burst_mild_topheavy"`：满足 `Mh / dMh_dt_sfr <= growth_time_threshold_myr`，且 birth metallicity 不超过阈值时使用 mild top-heavy SSP
+  - `"z10_mild_topheavy"`：archived historical mode
+  - `"mah_burst_mild_topheavy"`：archived historical mode；满足 growth-time 与 birth-metallicity 条件时使用 mild top-heavy SSP
 - `imf_transition_parameters`
   `auroralf.uvlf.IMFTransitionParameters`，默认
   `source_redshift_gate_enabled=False`、`growth_time_threshold_myr=50.0`、
@@ -598,8 +611,8 @@ attributes，并与传入 `cosmology` 严格匹配；不匹配会显式报错，
 - `auroralf.mah` 部分使用默认 `M_min` 时，atomic-cooling threshold 会显式使用
   同一个 `cosmology` 的 `h` 与 `omega_m`
 - UV 卷积只对 `active_flag=True` 的有效历史段进行
-- Pop II top-heavy 不是全局替换 SSP，而是按 `imf_mode` 在源时刻选择 canonical 或 mild top-heavy SSP kernel
-- 默认 mild top-heavy 还要求本步成星前 `Z_birth <= 0.05 Zsun`；这个阈值位于低金属 IMF 过渡区间内，并与当前 top-heavy SSP 的 `0.05 Zsun` 选择一致
+- production 只使用 canonical Pop II SSP；archived top-heavy 路径按 `imf_mode` 在源时刻选择 SSP kernel
+- archived mild top-heavy 路径默认还要求本步成星前 `Z_birth <= 0.05 Zsun`
 - `mzr_metallicity_parameters` 和 `regulator_metallicity_parameters` 二选一；
   它们都只向 IMF selector 提供 source-time `Z_birth`，regulator 额外输出 `Z_gas`、`Mgas` 和 `metal_mass` 诊断
 - 可选 burst scatter 使用
@@ -771,8 +784,9 @@ from auroralf.uvlf import sample_uvlf_from_hmf
 - 内层条件采样器直接复用 `auroralf.uvlf.run_halo_uv_pipeline()`
 - 当前并行层级放在外层 `N_mass` 循环；`run_halo_uv_pipeline()` 内部 UV 卷积保持串行，避免嵌套进程池
 - 若设置 `progress_path`，外层 `N_mass` 进度条会实时写入文本文件
-- 非 canonical IMF 模式默认使用 birth-metallicity gate，因此需要传入 regulator 或 MZR birth-metallicity backend；
-  关闭该 gate 时可把 `IMFTransitionParameters.metallicity_topheavy_max_zsun` 设为 `None`
+- 非 canonical IMF 模式是 archived feature；v2 配置必须显式设置
+  `enable_archived_imf_gate = true` 才能用于历史复现，并仍需提供 regulator 或 MZR
+  birth-metallicity backend。production 不使用这一入口
 - `burst_scatter_dex > 0` 时，金属演化和 UV 卷积使用同一条 burst 后的 SFR 历史；
   相同 `base_seed`、redshift 和 mass index 在所有 IMF mode 中共享同一组 paired realization
 - 默认 `burst_scatter_preserve_mean=True` 时，每条 halo 的 burst 历史会做 mass-conserving 归一化：
@@ -802,10 +816,15 @@ print(result.uvlf["phi"])
 
 `configs/uvlf/production.toml` is the single production configuration. It
 contains the cosmology, MAH backend, time-delay model, metallicity backend,
-source-time IMF gates, burst-scatter policy, HMF sampling, worker count, and
+canonical Pop II population, burst-scatter policy, HMF sampling, worker count, and
 absolute output target after TOML-relative path resolution. Unknown keys,
 invalid units/ranges, missing SSP/cache files, and incompatible metallicity
 gates fail before sampling starts.
+
+The strict v2.1 configuration archives the source-time IMF gate:
+`imf_modes = ["canonical"]` and `enable_archived_imf_gate = false` are the
+production settings. Variant modes are rejected unless the archive flag is
+explicitly enabled for historical reproduction.
 
 Render and inspect the exact scheduler command before submission:
 
@@ -868,7 +887,7 @@ from auroralf.uvlf import compute_dust_attenuated_uvlf
   尘埃修正公式
   `A_UV = max(c1 + c0 * beta, 0)` 和 `beta = beta0 + dbeta * (M_UV^obs - m0)` 中的系数
 - `clip_to_bounds`
-  是否把映射后的 intrinsic magnitude 截断到输入网格边界内，默认 `True`
+  是否把映射后的 intrinsic magnitude 截断到输入网格边界内，默认 `False`
 - `match_faint_end_after_intersection`
   保留的兼容接口参数；当前实现中不再使用旧的交点拼接逻辑
 - `insert_transition_point`

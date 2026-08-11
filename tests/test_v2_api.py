@@ -75,6 +75,7 @@ def _config(
         ),
         stellar_population=StellarPopulationConfig(
             imf_modes=modes,
+            enable_archived_imf_gate=any(mode != "canonical" for mode in modes),
             canonical_ssp_path=canonical.resolve(),
             topheavy_ssp_path=topheavy.resolve(),
             topheavy_ssp_template_metallicity_zsun=0.05,

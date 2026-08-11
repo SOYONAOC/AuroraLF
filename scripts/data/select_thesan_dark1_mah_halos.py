@@ -13,12 +13,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.constants import PLANCK15_H
 
 DEFAULT_THESAN_ROOT = PROJECT_ROOT / "external_data/thesan/thesan-dark-1"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/thesan_discovery/selected_halos_corrected.csv"
 DEFAULT_SUMMARY_OUTPUT = PROJECT_ROOT / "outputs/thesan_discovery/selection_summary_corrected.csv"
 DEFAULT_MASS_FIELD = "Group_M_Crit200"
-DEFAULT_HUBBLE = 0.6774
+DEFAULT_HUBBLE = PLANCK15_H
 
 
 def _parse_args() -> argparse.Namespace:

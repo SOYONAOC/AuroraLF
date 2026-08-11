@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from numbers import Integral, Real
+from numbers import Integral
 
 import numpy as np
+
+from auroralf._array_utils import (
+    immutable_array as _immutable_array,
+    validate_real_array_members as _validate_real_array_members,
+)
 
 
 def _strict_nonnegative_int(name: str, value: object) -> int:
@@ -13,33 +18,6 @@ def _strict_nonnegative_int(name: str, value: object) -> int:
     if normalized < 0:
         raise ValueError(f"{name} must be non-negative")
     return normalized
-
-
-def _validate_real_array_members(name: str, value: object) -> None:
-    if isinstance(value, np.ndarray):
-        if np.issubdtype(value.dtype, np.bool_) or np.issubdtype(
-            value.dtype,
-            np.complexfloating,
-        ):
-            raise TypeError(f"{name} must contain real non-boolean values")
-        if np.issubdtype(value.dtype, np.integer) or np.issubdtype(
-            value.dtype,
-            np.floating,
-        ):
-            return
-        if value.dtype == np.dtype(object):
-            for item in value.flat:
-                if isinstance(item, (bool, np.bool_)) or not isinstance(item, Real):
-                    raise TypeError(f"{name} must contain real non-boolean values")
-            return
-        raise TypeError(f"{name} must contain real non-boolean values")
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            if isinstance(item, (bool, np.bool_)) or not isinstance(item, Real):
-                raise TypeError(f"{name} must contain real non-boolean values")
-        return
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise TypeError(f"{name} must contain real non-boolean values")
 
 
 def _working_real_1d(name: str, value: object, *, allow_empty: bool) -> np.ndarray:
@@ -87,14 +65,6 @@ def _working_bool_1d(name: str, value: object, *, allow_empty: bool) -> np.ndarr
     if not allow_empty and array.size == 0:
         raise ValueError(f"{name} must be non-empty")
     return array
-
-
-def _immutable_array(array: np.ndarray) -> np.ndarray:
-    contiguous = np.ascontiguousarray(array)
-    immutable_buffer = contiguous.tobytes(order="C")
-    immutable = np.frombuffer(immutable_buffer, dtype=contiguous.dtype).reshape(contiguous.shape)
-    immutable.flags.writeable = False
-    return immutable
 
 
 def _stable_axis_geometry(edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

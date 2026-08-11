@@ -1,0 +1,10 @@
+# Reconstructed compatibility envelope; the authors did not publish an
+# environment lock. Do not describe this file as the original environment.
+numpy
+pandas
+scipy
+scikit-learn
+catboost>=1.2,<1.3
+matplotlib
+healpy>=1.16
+jupyter

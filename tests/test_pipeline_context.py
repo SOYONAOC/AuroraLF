@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from auroralf.mah import Cosmology
+from auroralf.mah.physics import compute_bryan_norman_virial_terms
 from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.sfr import compute_sfr_from_tracks
 
@@ -32,6 +33,26 @@ REQUIRED_COSMOLOGY_CALLS = {
     "_compute_lw_proxy",
     "_integrate_sfrd_at_z",
 }
+
+
+def test_bryan_norman_virial_terms_match_flat_lcdm_formula() -> None:
+    cosmology = Cosmology(omega_m=0.4, omega_b=0.08, omega_lambda=0.6)
+    redshift = np.array([0.0, 6.0, 10.0, 20.0], dtype=float)
+    matter_term = cosmology.omega_m * (1.0 + redshift) ** 3
+    expected_omega_m = matter_term / (matter_term + cosmology.omega_lambda)
+    density_offset = expected_omega_m - 1.0
+    expected_overdensity = (
+        18.0 * np.pi**2 + 82.0 * density_offset - 39.0 * density_offset**2
+    )
+
+    expansion_squared, omega_m_at_redshift, virial_overdensity = compute_bryan_norman_virial_terms(
+        redshift,
+        cosmology=cosmology,
+    )
+
+    np.testing.assert_array_equal(expansion_squared, matter_term + cosmology.omega_lambda)
+    np.testing.assert_array_equal(omega_m_at_redshift, expected_omega_m)
+    np.testing.assert_array_equal(virial_overdensity, expected_overdensity)
 
 
 def test_repository_science_calls_pass_explicit_cosmology() -> None:

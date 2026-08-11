@@ -90,6 +90,7 @@ def _config(tmp_path: Path, *, modes: tuple[str, ...] = ("canonical",)) -> UVLFR
         star_formation=StarFormationConfig(),
         stellar_population=StellarPopulationConfig(
             imf_modes=modes,
+            enable_archived_imf_gate=any(mode != "canonical" for mode in modes),
             canonical_ssp_path=(tmp_path / "canonical.dat").resolve(),
             topheavy_ssp_path=(tmp_path / "topheavy.hdf5").resolve(),
             popiii_ssp_path=(tmp_path / "popiii.dat").resolve(),

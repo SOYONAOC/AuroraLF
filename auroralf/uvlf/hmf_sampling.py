@@ -3,14 +3,16 @@ from __future__ import annotations
 import multiprocessing as mp
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from hmf import MassFunction
 
+from auroralf.constants import AB_ZEROPOINT_LNU, PLANCK18_NS, PLANCK18_SIGMA8
 from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
 from auroralf.seeding import (
     derive_hmf_mass_seed,
@@ -63,13 +65,12 @@ from .pipeline import (
 
 LOGM_MIN = 9.0
 LOGM_MAX = 13.0
-AB_ZEROPOINT_LNU = 51.60
 MASS_FUNCTION_MODEL_HMF_REED07 = "hmf_reed07"
 MASS_FUNCTION_MODELS = (MASS_FUNCTION_MODEL_HMF_REED07,)
 DEFAULT_MASS_FUNCTION_MODEL = MASS_FUNCTION_MODEL_HMF_REED07
 DEFAULT_HMF_DLOG10M = 0.005
-MASS_FUNCTION_NS = 0.965
-MASS_FUNCTION_SIGMA8 = 0.811
+MASS_FUNCTION_NS = PLANCK18_NS
+MASS_FUNCTION_SIGMA8 = PLANCK18_SIGMA8
 HMF_REED07_FITTING_FUNCTION = "Reed07"
 DEPRECATED_MASS_FUNCTION_MODELS = {"massfunc_st", "hmf_watson13_fof"}
 
@@ -670,7 +671,16 @@ def sample_uvlf_from_hmf(
     if topheavy_ssp_file is None:
         topheavy_ssp_file = DEFAULT_TOPHEAVY_SSP_FILE
 
-    pipeline_workers = default_worker_count() if pipeline_workers is None else int(pipeline_workers)
+    if pipeline_workers is None:
+        pipeline_workers = default_worker_count()
+    elif isinstance(pipeline_workers, (bool, np.bool_)) or not isinstance(
+        pipeline_workers,
+        Integral,
+    ):
+        raise TypeError("pipeline_workers must be an integer non-boolean value")
+    pipeline_workers = int(pipeline_workers)
+    if pipeline_workers <= 0:
+        raise ValueError("pipeline_workers must be positive")
     progress_file = None if progress_path is None else Path(progress_path).expanduser().resolve()
     if progress_file is not None:
         progress_file.parent.mkdir(parents=True, exist_ok=True)
@@ -786,8 +796,21 @@ def sample_uvlf_from_hmf(
         for mass_index, (log_mass, mass, weight) in enumerate(zip(logMh, Mh, mass_weight, strict=True))
     ]
 
-    if max(1, pipeline_workers) == 1:
-        results_iter = (_run_single_mass_sample(task) for task in tasks)
+    executor_context = (
+        nullcontext(None)
+        if pipeline_workers == 1
+        else ProcessPoolExecutor(
+            max_workers=pipeline_workers,
+            mp_context=mp.get_context("spawn"),
+        )
+    )
+    with executor_context as executor:
+        if executor is None:
+            results_iter = (_run_single_mass_sample(task) for task in tasks)
+        else:
+            futures = [executor.submit(_run_single_mass_sample, task) for task in tasks]
+            results_iter = (future.result() for future in as_completed(futures))
+
         completed = 0
         for (
             mass_index,
@@ -856,83 +879,6 @@ def sample_uvlf_from_hmf(
                 )
                 if print_progress:
                     print(progress_text.strip(), flush=True)
-    else:
-        completed = 0
-        with ProcessPoolExecutor(
-            max_workers=max(1, pipeline_workers),
-            mp_context=mp.get_context("spawn"),
-        ) as executor:
-            future_to_index = {executor.submit(_run_single_mass_sample, task): task[0] for task in tasks}
-            for future in as_completed(future_to_index):
-                (
-                    mass_index,
-                    log_mass,
-                    luminosity,
-                    sfr,
-                    topheavy_light_fraction,
-                    popiii_luminosity,
-                    popiii_light_fraction,
-                    popiii_sfr,
-                    duration,
-                    topheavy_source_count,
-                    starforming_source_count,
-                    popiii_source_count,
-                    active_source_count,
-                    final_gas_metallicity_zsun_median,
-                    birth_metallicity_zsun_starforming_median,
-                ) = future.result()
-                if luminosity.size != n_tracks:
-                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of luminosity samples")
-                if sfr.size != n_tracks:
-                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of SFR samples")
-                if topheavy_light_fraction.size != n_tracks:
-                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of top-heavy fractions")
-                if popiii_luminosity.size != n_tracks:
-                    raise RuntimeError(
-                        "run_halo_uv_pipeline returned an unexpected number of Pop III luminosity samples"
-                    )
-                if popiii_light_fraction.size != n_tracks:
-                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III fractions")
-                if popiii_sfr.size != n_tracks:
-                    raise RuntimeError("run_halo_uv_pipeline returned an unexpected number of Pop III SFR samples")
-
-                start = mass_index * n_tracks
-                stop = start + n_tracks
-                sample_logMh[start:stop] = log_mass
-                sample_Mh[start:stop] = Mh[mass_index]
-                sample_mass_weight[start:stop] = mass_weight[mass_index]
-                sample_track_index[start:stop] = np.arange(n_tracks, dtype=int)
-                sample_luminosity[start:stop] = luminosity
-                sample_sfr[start:stop] = sfr
-                sample_topheavy_light_fraction[start:stop] = topheavy_light_fraction
-                sample_popiii_luminosity[start:stop] = popiii_luminosity
-                sample_popiii_light_fraction[start:stop] = popiii_light_fraction
-                sample_popiii_sfr[start:stop] = popiii_sfr
-                sample_stellar_channel[start:stop] = stellar_channel_by_mass[mass_index]
-                sample_atomic_cooling_mass_msun[start:stop] = atomic_cooling_mass_msun
-                sample_popiii_minimum_mass_msun[start:stop] = popiii_minimum_mass_msun
-                sample_sample_weight[start:stop] = mass_weight[mass_index] / n_tracks
-                sample_Muv[start:stop] = np.asarray(uv_luminosity_to_muv(luminosity), dtype=float)
-                per_mass_pipeline_seconds[mass_index] = duration
-                topheavy_source_count_by_mass[mass_index] = topheavy_source_count
-                starforming_source_count_by_mass[mass_index] = starforming_source_count
-                popiii_source_count_by_mass[mass_index] = popiii_source_count
-                active_source_count_by_mass[mass_index] = active_source_count
-                final_gas_metallicity_zsun_median_by_mass[mass_index] = final_gas_metallicity_zsun_median
-                birth_metallicity_zsun_starforming_median_by_mass[mass_index] = (
-                    birth_metallicity_zsun_starforming_median
-                )
-
-                completed += 1
-                if progress_file is not None and (completed == N_mass or completed % progress_stride == 0):
-                    progress_text = _write_progress(
-                        progress_file,
-                        completed=completed,
-                        total=N_mass,
-                        elapsed_seconds=time.perf_counter() - t0,
-                    )
-                    if print_progress:
-                        print(progress_text.strip(), flush=True)
 
     if quantity == "luminosity":
         histogram_values = sample_luminosity
@@ -1049,7 +995,7 @@ def sample_uvlf_from_hmf(
             "omega_b": cosmology.omega_b,
             "omega_lambda": cosmology.omega_lambda,
         },
-        "pipeline_workers": max(1, pipeline_workers),
+        "pipeline_workers": pipeline_workers,
         "mah_backend": mah_backend,
         "sampler": sampler,
         "tng_mah_cache_path": None if tng_mah_cache_path is None else str(Path(tng_mah_cache_path).expanduser().resolve()),

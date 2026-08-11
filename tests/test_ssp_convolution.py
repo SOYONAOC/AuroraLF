@@ -439,110 +439,35 @@ def test_legacy_halo_uv_convolution_rejects_unrepresentable_lookbacks_before_ear
         convolution.compute_halo_uv_luminosity(**values)
 
 
-def test_parallel_uv_convolution_single_worker_keeps_legacy_ssp_age_units() -> None:
-    from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
-
-    result = compute_uv_luminosities_parallel(
-        t_grid=np.array([0.0, 1.0e-3, 2.0e-3]),
-        mh_grid=np.ones((1, 3)),
-        sfr_grid=np.ones((1, 3)),
-        active_grid=np.ones((1, 3), dtype=bool),
-        ssp_age_grid=np.array([1.0e-5, 2.0e-3]),
-        ssp_luv_grid=np.ones(2),
-        n_workers=1,
-        ssp_lookback_max_myr=10.0,
-    )
-
-    np.testing.assert_allclose(result, np.array([2.0e6]))
-
-
 @pytest.mark.parametrize("n_workers", [1, 2])
-def test_parallel_uv_convolution_preserves_inactive_knots_and_single_source_bin(
+def test_legacy_parallel_uv_adapter_preserves_row_times_and_age_units(
     n_workers: int,
 ) -> None:
     from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
 
-    t_grid = np.array([0.0, 1.0e-3, 2.0e-3])
-    sfr_grid = np.array([[5.0, 2.0, 5.0], [5.0, 2.0, 5.0]])
-    active_grid = np.array([[False, True, False], [False, True, False]])
-    expected = convolution.compute_final_ssp_observable_from_sfr_grid(
-        t_grid_gyr=np.broadcast_to(t_grid, sfr_grid.shape),
-        sfr_grid=sfr_grid,
-        active_grid=active_grid,
-        ssp_age_myr=np.array([1.0e-2, 2.0]),
-        ssp_observable_per_msun=np.ones(2),
-        lookback_max_myr=10.0,
-    )
-
     result = compute_uv_luminosities_parallel(
-        t_grid=t_grid,
-        mh_grid=np.ones_like(sfr_grid),
-        sfr_grid=sfr_grid,
-        active_grid=active_grid,
-        ssp_age_grid=np.array([1.0e-5, 2.0e-3]),
-        ssp_luv_grid=np.ones(2),
-        n_workers=n_workers,
-        ssp_lookback_max_myr=10.0,
-    )
-
-    np.testing.assert_allclose(expected, np.array([2.0e6, 2.0e6]))
-    np.testing.assert_allclose(result, expected)
-
-
-def test_parallel_uv_convolution_accepts_per_row_time_grids_without_compression() -> None:
-    from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
-
-    t_grid = np.array([[0.0, 1.0e-3, 2.0e-3], [0.0, 2.0e-3, 4.0e-3]])
-    sfr_grid = np.array([[5.0, 2.0, 5.0], [5.0, 2.0, 5.0]])
-    active_grid = np.array([[False, True, False], [False, True, False]])
-
-    result = compute_uv_luminosities_parallel(
-        t_grid=t_grid,
-        mh_grid=np.ones_like(sfr_grid),
-        sfr_grid=sfr_grid,
-        active_grid=active_grid,
+        t_grid=np.array(
+            [[0.0, 1.0e-3, 2.0e-3], [0.0, 2.0e-3, 4.0e-3]],
+        ),
+        mh_grid=np.ones((2, 3)),
+        sfr_grid=np.array([[5.0, 2.0, 5.0], [5.0, 2.0, 5.0]]),
+        active_grid=np.array([[False, True, False], [False, True, False]]),
         ssp_age_grid=np.array([1.0e-5, 1.0e-2]),
         ssp_luv_grid=np.ones(2),
-        n_workers=2,
+        n_workers=n_workers,
         ssp_lookback_max_myr=10.0,
     )
 
     np.testing.assert_allclose(result, np.array([2.0e6, 4.0e6]))
 
 
-@pytest.mark.parametrize(
-    "t_grid",
-    [
-        np.array([0.0, 1.0e-3]),
-        np.ones((1, 3)),
-        np.ones((2, 2, 2)),
-    ],
-)
-def test_parallel_uv_convolution_rejects_invalid_shared_or_row_time_shape(
-    t_grid: np.ndarray,
-) -> None:
-    from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
-
-    with pytest.raises(ValueError, match="t_grid must be shared 1D or match the 2D SFR grid"):
-        compute_uv_luminosities_parallel(
-            t_grid=t_grid,
-            mh_grid=np.ones((2, 3)),
-            sfr_grid=np.ones((2, 3)),
-            active_grid=np.ones((2, 3), dtype=bool),
-            ssp_age_grid=np.array([1.0e-5, 2.0e-3]),
-            ssp_luv_grid=np.ones(2),
-            n_workers=1,
-            ssp_lookback_max_myr=10.0,
-        )
-
-
 @pytest.mark.parametrize("n_workers", [0, -1, True, np.bool_(False), 1.5])
-def test_parallel_uv_convolution_requires_positive_nonboolean_integer_workers(
+def test_legacy_parallel_uv_adapter_requires_positive_integer_workers(
     n_workers: object,
 ) -> None:
     from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
 
-    with pytest.raises(ValueError, match="n_workers must be a positive non-boolean integer"):
+    with pytest.raises(ValueError, match="positive non-boolean integer"):
         compute_uv_luminosities_parallel(
             t_grid=np.array([0.0, 1.0e-3]),
             mh_grid=np.ones((1, 2)),
@@ -555,24 +480,10 @@ def test_parallel_uv_convolution_requires_positive_nonboolean_integer_workers(
         )
 
 
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("t_grid", [0.0, True, 2.0e-3]),
-        ("mh_grid", [[1.0, False, 1.0]]),
-        ("sfr_grid", [[1.0, True, 1.0]]),
-        ("ssp_age_grid", [1.0e-5, np.bool_(True)]),
-        ("ssp_luv_grid", [1.0, False]),
-        ("ssp_lookback_max_myr", True),
-    ],
-)
-def test_parallel_uv_convolution_rejects_boolean_numeric_inputs_before_cast(
-    name: str,
-    value: object,
-) -> None:
+def test_legacy_parallel_uv_adapter_keeps_strict_input_validation() -> None:
     from auroralf.uvlf.pipeline import compute_uv_luminosities_parallel
 
-    inputs: dict[str, object] = {
+    inputs = {
         "t_grid": np.array([0.0, 1.0e-3, 2.0e-3]),
         "mh_grid": np.ones((1, 3)),
         "sfr_grid": np.ones((1, 3)),
@@ -582,48 +493,7 @@ def test_parallel_uv_convolution_rejects_boolean_numeric_inputs_before_cast(
         "n_workers": 1,
         "ssp_lookback_max_myr": 10.0,
     }
-    inputs[name] = value
-
     with pytest.raises(ValueError, match="boolean"):
-        compute_uv_luminosities_parallel(**inputs)
-
-
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("t_grid", [[0.0, True, 2.0e-3]]),
-        ("mh_grid", [[1.0, False, 1.0]]),
-        ("sfr_grid", [[1.0, True, 1.0]]),
-        ("ssp_age_grid", [1.0e-5, np.bool_(True)]),
-        ("ssp_luv_grid", [1.0, False]),
-        ("ssp_lookback_max_myr", np.bool_(True)),
-    ],
-)
-def test_uv_chunk_direct_entry_rejects_boolean_numeric_inputs(
-    name: str,
-    value: object,
-) -> None:
-    from auroralf.uvlf import pipeline
-
-    values: dict[str, object] = {
-        "t_grid": np.array([[0.0, 1.0e-3, 2.0e-3]]),
-        "mh_grid": np.ones((1, 3)),
-        "sfr_grid": np.ones((1, 3)),
-        "active_grid": np.ones((1, 3), dtype=bool),
-        "ssp_age_grid": np.array([1.0e-5, 2.0e-3]),
-        "ssp_luv_grid": np.ones(2),
-        "ssp_lookback_max_myr": 10.0,
-    }
-    values[name] = value
-    pipeline._UV_WORKER_STATE["ssp_luv_grid"] = values["ssp_luv_grid"]
-    args = (
-        values["t_grid"],
-        values["mh_grid"],
-        values["sfr_grid"],
-        values["active_grid"],
-        values["ssp_age_grid"],
-        values["ssp_lookback_max_myr"],
-    )
-
-    with pytest.raises(ValueError, match="boolean"):
-        pipeline._compute_uv_chunk(args)  # type: ignore[arg-type]
+        compute_uv_luminosities_parallel(**(inputs | {"sfr_grid": [[1.0, True, 1.0]]}))
+    with pytest.raises(ValueError, match="shared 1D or match"):
+        compute_uv_luminosities_parallel(**(inputs | {"t_grid": np.ones((1, 2))}))

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import math
 from numbers import Integral, Real
@@ -23,6 +22,10 @@ from auroralf.results import (
     UVLFRunResult,
 )
 from auroralf.uvlf.dust import compute_dust_attenuated_uvlf
+from ._file_ops import (
+    file_identity as _file_identity,
+    sha256_open_descriptor as _sha256_descriptor,
+)
 from .hdf5 import read_uvlf_artifact, write_uvlf_artifact_atomic
 from .schema import (
     ArtifactProvenance,
@@ -876,27 +879,6 @@ def _validate_global_identity(payload: dict[str, np.ndarray], config: UVLFRunCon
             ("regulator_metallicity_scatter_dex", regulator.metallicity_scatter_dex),
         ):
             _require_equal(_scalar_float(payload, key), expected, name=key)
-
-
-def _file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        file_stat.st_dev,
-        file_stat.st_ino,
-        file_stat.st_size,
-        file_stat.st_mtime_ns,
-        file_stat.st_ctime_ns,
-    )
-
-
-def _sha256_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    offset = 0
-    while True:
-        block = os.pread(descriptor, 1024 * 1024, offset)
-        if not block:
-            return digest.hexdigest()
-        digest.update(block)
-        offset += len(block)
 
 
 def _verify_open_npz_stability(

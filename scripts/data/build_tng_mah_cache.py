@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from auroralf.constants import PLANCK15_H, PLANCK15_OMEGA_B, PLANCK15_OMEGA_M
 from auroralf.file_version import (
     SourceFileProvenance,
     capture_source_file_provenance,
@@ -28,9 +29,9 @@ from auroralf.mah.tng import TNG_MAH_CACHE_SCHEMA_VERSION
 
 DEFAULT_SIMULATION = "TNG100-1-Dark"
 DEFAULT_API_BASE = "https://www.tng-project.org/api"
-DEFAULT_HUBBLE = 0.6774
-DEFAULT_OMEGA_M = 0.3089
-DEFAULT_OMEGA_B = 0.0486
+DEFAULT_HUBBLE = PLANCK15_H
+DEFAULT_OMEGA_M = PLANCK15_OMEGA_M
+DEFAULT_OMEGA_B = PLANCK15_OMEGA_B
 DEFAULT_MASS_FIELD = "Group_M_Crit200"
 DEFAULT_MISSING_MASS_RATIO_FLOOR = 1.0e-6
 TNG_CACHE_CREATOR_VERSION = "auroralf.build_tng_mah_cache.v2"

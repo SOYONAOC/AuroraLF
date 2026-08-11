@@ -4,10 +4,10 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from auroralf.constants import SOLAR_METALLICITY_MASS_FRACTION
 from auroralf.mah.models import Cosmology
 
-
-SOLAR_METALLICITY_MASS_FRACTION = 0.0142
+from ._stellar_mass import cumulative_surviving_stellar_mass_msun
 
 
 @dataclass(frozen=True)
@@ -59,8 +59,6 @@ def _validate_parameters(parameters: RegulatorMetallicityParameters) -> None:
         raise ValueError("gas_fraction_mass_scale_msun must be positive")
     if parameters.gas_fraction_redshift_scale <= 0.0:
         raise ValueError("gas_fraction_redshift_scale must be positive")
-    if not 0.0 <= parameters.returned_fraction < 1.0:
-        raise ValueError("returned_fraction must lie in [0, 1)")
     if parameters.metal_yield < 0.0:
         raise ValueError("metal_yield must be non-negative")
     if parameters.inflow_metallicity_zsun < 0.0:
@@ -165,14 +163,6 @@ def compute_regulator_metallicity(
     baryon_fraction = cosmology.omega_b / cosmology.omega_m
 
     t_grid = np.asarray(t_grid_gyr, dtype=float)
-    if t_grid.ndim != 2:
-        raise ValueError("t_grid_gyr must be a 2D array")
-    if t_grid.shape[1] < 2:
-        raise ValueError("t_grid_gyr must contain at least two time steps")
-    if not np.all(np.isfinite(t_grid)):
-        raise ValueError("t_grid_gyr must contain finite values")
-    if not np.all(np.diff(t_grid, axis=1) >= 0.0):
-        raise ValueError("t_grid_gyr must be monotonic non-decreasing along the time axis")
     shape = t_grid.shape
 
     z = _as_matching_float_grid("z_grid", z_grid, shape)
@@ -181,26 +171,18 @@ def compute_regulator_metallicity(
     active = _as_matching_bool_grid("active_grid", active_grid, shape)
     if np.any(mh <= 0.0):
         raise ValueError("mh_grid must contain positive halo masses")
-    invalid_active_sfr = active & (sfr < 0.0)
-    if np.any(invalid_active_sfr):
-        raise ValueError("sfr_grid must be non-negative for active source times")
-
-    dt_gyr = np.zeros(shape, dtype=float)
-    dt_gyr[:, 1:] = np.diff(t_grid, axis=1)
-    formed_stellar_mass = np.where(
-        active & (dt_gyr > 0.0) & (sfr > 0.0),
-        sfr * dt_gyr * 1.0e9,
-        0.0,
+    stellar_mass = cumulative_surviving_stellar_mass_msun(
+        t_grid_gyr=t_grid,
+        sfr_grid=sfr,
+        active_grid=active,
+        returned_fraction=float(params.returned_fraction),
     )
-    stellar_mass = (1.0 - float(params.returned_fraction)) * np.cumsum(formed_stellar_mass, axis=1)
 
     gas_fraction = _gas_fraction_grid(mh, z, params)
     gas_mass = gas_fraction * baryon_fraction * mh
     metal_loading = _metal_loading_grid(mh, z, params)
 
-    denominator_stellar_mass = stellar_mass
-    if params.stellar_mass_floor_msun > 0.0:
-        denominator_stellar_mass = np.maximum(denominator_stellar_mass, float(params.stellar_mass_floor_msun))
+    denominator_stellar_mass = np.maximum(stellar_mass, float(params.stellar_mass_floor_msun))
 
     gas_to_stellar = np.full(shape, np.inf, dtype=float)
     positive_stellar = denominator_stellar_mass > 0.0

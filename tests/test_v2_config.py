@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 import tomllib
 
@@ -99,6 +99,7 @@ def _star_formation(**overrides: object) -> StarFormationConfig:
 def _stellar_population(tmp_path: Path, **overrides: object) -> StellarPopulationConfig:
     values: dict[str, object] = {
         "imf_modes": ("canonical",),
+        "enable_archived_imf_gate": False,
         "canonical_ssp_path": tmp_path / "canonical.dat",
         "topheavy_ssp_path": tmp_path / "topheavy.hdf5",
         "topheavy_ssp_template_metallicity_zsun": 0.05,
@@ -157,7 +158,7 @@ def valid_run_config(tmp_path: Path, **overrides: object) -> UVLFRunConfig:
 def test_config_schema_version_and_frozen_model_conversion(tmp_path: Path) -> None:
     config = valid_run_config(tmp_path)
 
-    assert CONFIG_SCHEMA_VERSION == "2.0.0"
+    assert CONFIG_SCHEMA_VERSION == "2.1.0"
     with pytest.raises(FrozenInstanceError):
         config.run_id = "changed"  # type: ignore[misc]
     cosmology = config.cosmology.to_model()
@@ -304,9 +305,23 @@ def test_cross_config_metallicity_gate_requires_source_for_variant(tmp_path: Pat
     stellar = _stellar_population(
         tmp_path,
         imf_modes=("canonical", "mah_burst_mild_topheavy"),
+        enable_archived_imf_gate=True,
         birth_metallicity_topheavy_max_zsun=0.05,
     )
     with pytest.raises(ValueError, match="metallicity_source"):
+        valid_run_config(tmp_path, stellar_population=stellar)
+
+
+def test_run_config_rejects_archived_imf_gate_without_explicit_opt_in(
+    tmp_path: Path,
+) -> None:
+    stellar = _stellar_population(
+        tmp_path,
+        imf_modes=("canonical", "mah_burst_mild_topheavy"),
+        enable_archived_imf_gate=False,
+        birth_metallicity_topheavy_max_zsun=None,
+    )
+    with pytest.raises(ValueError, match="IMF gate modes are archived"):
         valid_run_config(tmp_path, stellar_population=stellar)
 
 
@@ -343,7 +358,7 @@ def test_output_path_must_be_absolute_hdf5(path: Path) -> None:
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"schema_version": "2.0.1"}, "schema_version"),
+        ({"schema_version": "2.1.1"}, "schema_version"),
         ({"run_id": "bad id"}, "run_id"),
         ({"run_id": "x" * 129}, "run_id"),
         ({"redshifts": ()}, "redshifts"),
@@ -375,7 +390,7 @@ def test_run_config_requires_every_redshift_below_mah_start_redshift(tmp_path: P
 
 def _valid_toml() -> str:
     return """
-schema_version = "2.0.0"
+schema_version = "2.1.0"
 run_id = "toml-run"
 redshifts = [6.0, 8.0]
 base_seed = 42
@@ -412,6 +427,7 @@ metallicity_source = "none"
 
 [stellar_population]
 imf_modes = ["canonical"]
+enable_archived_imf_gate = false
 canonical_ssp_path = "ssp/canonical.dat"
 topheavy_ssp_path = "ssp/topheavy.hdf5"
 topheavy_ssp_template_metallicity_zsun = 0.05
@@ -527,7 +543,7 @@ def test_from_toml_symlink_resolves_relative_paths_from_real_config_parent(
     [
         (_valid_toml().replace("base_seed = 42\n", ""), "base_seed"),
         (_valid_toml().replace("h0_km_s_mpc = 67.4\n", ""), "cosmology.h0_km_s_mpc"),
-        (_valid_toml().replace("schema_version = \"2.0.0\"\n", ""), "schema_version"),
+        (_valid_toml().replace("schema_version = \"2.1.0\"\n", ""), "schema_version"),
     ],
 )
 def test_from_toml_reports_missing_required_keys_precisely(

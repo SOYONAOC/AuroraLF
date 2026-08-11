@@ -9,7 +9,6 @@ from multiprocessing.reduction import ForkingPickler
 import os
 import pickle
 from pathlib import Path
-from types import MappingProxyType
 import weakref
 
 import numpy as np
@@ -38,8 +37,6 @@ from auroralf.uvlf.pipeline import (
     HaloModeEvaluation,
     LoadedSSPKernels,
     SharedHaloBatch,
-    _deep_freeze,
-    _deep_thaw,
     evaluate_shared_halo_batch,
 )
 from auroralf.uvlf.runner import run_uvlf_streaming
@@ -70,6 +67,7 @@ def _config(
         star_formation=StarFormationConfig(enable_time_delay=False),
         stellar_population=StellarPopulationConfig(
             imf_modes=modes,
+            enable_archived_imf_gate=any(mode != "canonical" for mode in modes),
             canonical_ssp_path=canonical.resolve(),
             topheavy_ssp_path=topheavy.resolve(),
             popiii_ssp_path=popiii.resolve(),
@@ -105,38 +103,7 @@ def _fake_shared(
     sfr = np.tile(np.array([0.1, 0.2]), (n_tracks, 1))
     active = np.ones_like(mass_grid, dtype=bool)
     birth = np.full_like(mass_grid, 0.01)
-    halo_ids = np.repeat(np.arange(n_tracks), 2)
-    tracks = {
-        "halo_id": halo_ids,
-        "t_gyr": time.reshape(-1),
-        "z": z_grid.reshape(-1),
-        "Mh": mass_grid.reshape(-1),
-        "dMh_dt_raw": rate.reshape(-1),
-        "dMh_dt_sfr": rate.reshape(-1),
-        "dMh_dt_clipped": np.zeros(2 * n_tracks, dtype=bool),
-        "active_flag": active.reshape(-1),
-    }
-    histories = HaloHistoryResult(
-        tracks=tracks,
-        metadata={
-            "negative_dmhdt_clip_count": 0,
-            "negative_dmhdt_total_count": 2 * n_tracks,
-            "negative_dmhdt_clip_fraction": 0.0,
-            "time_grid_mode": "uniform_in_t",
-            "dt_gyr_median": 0.25,
-        },
-    )
-    sfr_tracks = dict(tracks)
-    sfr_tracks["SFR"] = sfr.reshape(-1)
-    sfr_tracks["SFR_popiii"] = np.zeros(2 * n_tracks)
-    sfr_tracks["fstar_popiii"] = np.zeros(2 * n_tracks)
-    sfr_tracks["popiii_duty_cycle"] = np.zeros(2 * n_tracks)
-    sfr_tracks["popiii_lower_mass_msun"] = np.full(2 * n_tracks, np.nan)
-    sfr_tracks["popiii_upper_mass_msun"] = np.full(2 * n_tracks, np.nan)
-    sfr_tracks["popiii_source_flag"] = np.zeros(2 * n_tracks, dtype=bool)
     return SharedHaloBatch(
-        histories=histories,
-        sfr_tracks=sfr_tracks,
         popiii_enabled=False,
         redshift_grid=np.array([10.0, redshift]),
         floor_mass_msun=np.array([0.8 * mass_msun, mass_msun]),
@@ -606,14 +573,63 @@ def _assert_irreversibly_readonly(array: np.ndarray) -> None:
         current = current.base
 
 
-def test_shared_pipeline_dataclass_arrays_are_irreversibly_immutable_and_defensive(
+def test_shared_batch_default_is_defensive_and_internal_view_policy_avoids_copies() -> None:
+    shared = _fake_shared(mass_msun=1.0e10, redshift=6.0, n_tracks=2)
+    assert not hasattr(shared, "histories")
+    assert not hasattr(shared, "sfr_tracks")
+    arrays = [
+        getattr(shared, field.name)
+        for field in fields(shared)
+        if isinstance(getattr(shared, field.name), np.ndarray)
+    ]
+    assert arrays
+    for array in arrays:
+        _assert_irreversibly_readonly(array)
+
+    source_sfr = np.array(shared.sfr_msun_per_yr_grid, copy=True)
+    source_active = np.array(shared.active_grid, copy=True)
+    source_birth = np.array(shared.birth_metallicity_zsun_grid, copy=True)
+    viewed_shared = replace(
+        shared,
+        sfr_msun_per_yr_grid=source_sfr,
+        active_grid=source_active,
+        birth_metallicity_zsun_grid=source_birth,
+        _array_policy="view",
+    )
+    for source, readonly in (
+        (source_sfr, viewed_shared.sfr_msun_per_yr_grid),
+        (source_active, viewed_shared.active_grid),
+        (source_birth, viewed_shared.birth_metallicity_zsun_grid),
+    ):
+        assert source.flags.writeable is True
+        assert readonly.flags.writeable is False
+        assert np.shares_memory(source, readonly)
+        with pytest.raises(ValueError, match="read-only"):
+            readonly.flat[0] = readonly.flat[0]
+
+    defensive_source = np.array(shared.sfr_msun_per_yr_grid, copy=True)
+    defensive_shared = replace(shared, sfr_msun_per_yr_grid=defensive_source)
+    defensive_source[...] = 99.0
+    assert not np.shares_memory(
+        defensive_source,
+        defensive_shared.sfr_msun_per_yr_grid,
+    )
+    assert not np.any(defensive_shared.sfr_msun_per_yr_grid == 99.0)
+
+    with pytest.raises(TypeError, match="_array_policy.*str"):
+        replace(shared, _array_policy=True)
+    with pytest.raises(ValueError, match="_array_policy.*copy.*view.*mutable"):
+        replace(shared, _array_policy="unknown")
+
+
+def test_kernel_and_evaluation_arrays_remain_irreversibly_immutable_and_defensive(
     tmp_path: Path,
 ) -> None:
     shared = _fake_shared(mass_msun=1.0e10, redshift=6.0, n_tracks=2)
     kernels = _fake_kernels(tmp_path)
     evaluation = _fake_evaluation(shared, "mah_burst_mild_topheavy")
 
-    for instance in (shared, kernels, evaluation):
+    for instance in (kernels, evaluation):
         arrays = [
             getattr(instance, field.name)
             for field in fields(instance)
@@ -622,22 +638,6 @@ def test_shared_pipeline_dataclass_arrays_are_irreversibly_immutable_and_defensi
         assert arrays
         for array in arrays:
             _assert_irreversibly_readonly(array)
-
-    source_sfr = np.array(shared.sfr_msun_per_yr_grid, copy=True)
-    source_active = np.array(shared.active_grid, copy=True)
-    source_birth = np.array(shared.birth_metallicity_zsun_grid, copy=True)
-    defensive_shared = replace(
-        shared,
-        sfr_msun_per_yr_grid=source_sfr,
-        active_grid=source_active,
-        birth_metallicity_zsun_grid=source_birth,
-    )
-    source_sfr[...] = 99.0
-    source_active[...] = False
-    source_birth[...] = 99.0
-    assert not np.any(defensive_shared.sfr_msun_per_yr_grid == 99.0)
-    assert np.all(defensive_shared.active_grid)
-    assert not np.any(defensive_shared.birth_metallicity_zsun_grid == 99.0)
 
     source_age = np.array(kernels.canonical_age_myr, copy=True)
     defensive_kernels = replace(kernels, canonical_age_myr=source_age)
@@ -651,144 +651,6 @@ def test_shared_pipeline_dataclass_arrays_are_irreversibly_immutable_and_defensi
     )
     source_total[...] = 99.0
     assert not np.any(defensive_evaluation.uv_luminosity_erg_per_s_hz == 99.0)
-
-
-def test_shared_batch_recursively_freezes_histories_tracks_metadata_and_sfr_tracks() -> None:
-    base = _fake_shared(mass_msun=1.0e10, redshift=6.0, n_tracks=2)
-    source_tracks = {
-        key: np.array(value, copy=True) for key, value in base.histories.tracks.items()
-    }
-    source_buffer = bytearray(b"abc")
-    source_view_buffer = bytearray(b"xyz")
-    source_set = {np.int64(1), np.int64(2)}
-    source_metadata = {
-        **dict(base.histories.metadata),
-        "nested": {
-            "items": [np.array([1.0, 2.0])],
-            "set_values": source_set,
-            "frozen_values": frozenset({np.int64(3), np.int64(4)}),
-            "buffer": source_buffer,
-            "view": memoryview(source_view_buffer),
-            "numpy_scalar": np.float64(1.5),
-            "numpy_scalars": [
-                np.str_("value"),
-                np.bool_(True),
-                np.int64(7),
-                np.float32(2.5),
-            ],
-        },
-    }
-    source_sfr_tracks = {
-        key: np.array(value, copy=True) for key, value in base.sfr_tracks.items()
-    }
-    shared = replace(
-        base,
-        histories=HaloHistoryResult(tracks=source_tracks, metadata=source_metadata),
-        sfr_tracks=source_sfr_tracks,
-    )
-
-    assert isinstance(shared.histories.tracks, MappingProxyType)
-    assert isinstance(shared.histories.metadata, MappingProxyType)
-    assert isinstance(shared.sfr_tracks, MappingProxyType)
-    assert isinstance(shared.histories.metadata["nested"], MappingProxyType)
-    assert isinstance(shared.histories.metadata["nested"]["items"], tuple)
-    assert shared.histories.metadata["nested"]["set_values"] == frozenset({1, 2})
-    assert shared.histories.metadata["nested"]["frozen_values"] == frozenset({3, 4})
-    assert shared.histories.metadata["nested"]["buffer"] == b"abc"
-    assert shared.histories.metadata["nested"]["view"] == b"xyz"
-    assert type(shared.histories.metadata["nested"]["numpy_scalar"]) is float
-    assert tuple(
-        type(value)
-        for value in shared.histories.metadata["nested"]["numpy_scalars"]
-    ) == (str, bool, int, float)
-    _assert_irreversibly_readonly(shared.histories.tracks["Mh"])
-    _assert_irreversibly_readonly(shared.sfr_tracks["SFR"])
-    _assert_irreversibly_readonly(
-        shared.histories.metadata["nested"]["items"][0]
-    )
-    with pytest.raises(TypeError):
-        shared.sfr_tracks["new"] = np.array([1.0])  # type: ignore[index]
-    with pytest.raises(ValueError):
-        shared.sfr_tracks["SFR"][0] = 9.0
-    with pytest.raises(ValueError):
-        shared.histories.tracks["Mh"][0] = 9.0
-
-    source_tracks["Mh"][0] = 9.0
-    source_sfr_tracks["SFR"][0] = 9.0
-    source_metadata["nested"]["items"][0][0] = 9.0
-    source_set.add(9)
-    source_buffer[0] = ord("z")
-    source_view_buffer[0] = ord("q")
-    assert shared.histories.tracks["Mh"][0] != 9.0
-    assert shared.sfr_tracks["SFR"][0] != 9.0
-    assert shared.histories.metadata["nested"]["items"][0][0] != 9.0
-    assert shared.histories.metadata["nested"]["set_values"] == frozenset({1, 2})
-    assert shared.histories.metadata["nested"]["buffer"] == b"abc"
-    assert shared.histories.metadata["nested"]["view"] == b"xyz"
-
-    thawed = _deep_thaw(shared.histories.metadata)
-    assert isinstance(thawed, dict)
-    assert isinstance(thawed["nested"], dict)
-    assert isinstance(thawed["nested"]["items"], list)
-    assert isinstance(thawed["nested"]["set_values"], set)
-    thawed["nested"]["items"][0][0] = 11.0
-    thawed["nested"]["set_values"].add(11)
-    assert shared.histories.metadata["nested"]["items"][0][0] != 11.0
-    assert shared.histories.metadata["nested"]["set_values"] == frozenset({1, 2})
-
-
-def test_shared_batch_rejects_unknown_nested_metadata_objects() -> None:
-    class MutableBox:
-        def __init__(self) -> None:
-            self.values = []
-
-    base = _fake_shared(mass_msun=1.0e10, redshift=6.0, n_tracks=1)
-    metadata = {**dict(base.histories.metadata), "unknown": MutableBox()}
-    histories = HaloHistoryResult(
-        tracks={
-            key: np.array(value, copy=True)
-            for key, value in base.histories.tracks.items()
-        },
-        metadata=metadata,
-    )
-
-    with pytest.raises(TypeError, match="unknown|unsupported"):
-        replace(base, histories=histories)
-
-
-@pytest.mark.parametrize(
-    "value",
-    [np.longdouble("1.25"), np.clongdouble("1.25+0.5j")],
-)
-def test_deep_freeze_and_thaw_reject_extended_numpy_scalars_without_recursion(
-    value: np.generic,
-) -> None:
-    expected_type = type(value).__name__
-    expected_dtype = str(value.dtype)
-
-    for operation in (_deep_freeze, _deep_thaw):
-        with pytest.raises(
-            TypeError,
-            match=f"{expected_type}|{expected_dtype}",
-        ):
-            operation(value)
-
-
-def test_deep_freeze_and_thaw_continue_to_normalize_ordinary_numpy_scalars() -> None:
-    values = (np.str_("x"), np.bool_(True), np.int64(7), np.float64(2.5))
-
-    assert tuple(type(_deep_freeze(value)) for value in values) == (
-        str,
-        bool,
-        int,
-        float,
-    )
-    assert tuple(type(_deep_thaw(value)) for value in values) == (
-        str,
-        bool,
-        int,
-        float,
-    )
 
 
 def _popiii_enabled_shared() -> SharedHaloBatch:
@@ -805,16 +667,8 @@ def _popiii_enabled_shared() -> SharedHaloBatch:
     popiii_duty[0, -1] = 0.5
     popiii_lower[0, -1] = 0.5 * base.halo_mass_msun_grid[0, -1]
     popiii_upper[0, -1] = 1.5 * base.halo_mass_msun_grid[0, -1]
-    sfr_tracks = {key: np.array(value, copy=True) for key, value in base.sfr_tracks.items()}
-    sfr_tracks["SFR_popiii"] = popiii_sfr.reshape(-1)
-    sfr_tracks["fstar_popiii"] = popiii_fstar.reshape(-1)
-    sfr_tracks["popiii_duty_cycle"] = popiii_duty.reshape(-1)
-    sfr_tracks["popiii_lower_mass_msun"] = popiii_lower.reshape(-1)
-    sfr_tracks["popiii_upper_mass_msun"] = popiii_upper.reshape(-1)
-    sfr_tracks["popiii_source_flag"] = popiii_source.reshape(-1)
     return replace(
         base,
-        sfr_tracks=sfr_tracks,
         popiii_enabled=True,
         popiii_sfr_msun_per_yr_grid=popiii_sfr,
         popiii_source_grid=popiii_source,
@@ -851,13 +705,8 @@ def test_shared_batch_enforces_popiii_enabled_and_physical_source_invariants() -
         replace(enabled, popiii_fstar_grid=fstar)
     upper = np.array(enabled.popiii_upper_mass_msun_grid, copy=True)
     upper[source] = 0.5 * enabled.halo_mass_msun_grid[source]
-    soft_tracks = {
-        key: np.array(value, copy=True) for key, value in enabled.sfr_tracks.items()
-    }
-    soft_tracks["popiii_upper_mass_msun"] = upper.reshape(-1)
     soft_suppression = replace(
         enabled,
-        sfr_tracks=soft_tracks,
         popiii_upper_mass_msun_grid=upper,
     )
     np.testing.assert_array_equal(
@@ -867,35 +716,18 @@ def test_shared_batch_enforces_popiii_enabled_and_physical_source_invariants() -
     with pytest.raises(ValueError, match="source.*mass scales.*positive"):
         nonpositive_upper = np.array(enabled.popiii_upper_mass_msun_grid, copy=True)
         nonpositive_upper[source] = 0.0
-        nonpositive_tracks = {
-            key: np.array(value, copy=True) for key, value in enabled.sfr_tracks.items()
-        }
-        nonpositive_tracks["popiii_upper_mass_msun"] = nonpositive_upper.reshape(-1)
         replace(
             enabled,
-            sfr_tracks=nonpositive_tracks,
             popiii_upper_mass_msun_grid=nonpositive_upper,
         )
-    mismatched_tracks = {
-        key: np.array(value, copy=True) for key, value in enabled.sfr_tracks.items()
-    }
-    mismatched_tracks["SFR_popiii"][0] = 99.0
-    with pytest.raises(ValueError, match="SFR_popiii.*shared grid"):
-        replace(enabled, sfr_tracks=mismatched_tracks)
 
     disabled = _fake_shared(mass_msun=1.0e10, redshift=6.0, n_tracks=2)
     nonzero = np.array(disabled.popiii_sfr_msun_per_yr_grid, copy=True)
     nonzero[0, -1] = 0.1
     disabled_source = disabled.active_grid & (nonzero > 0.0)
-    disabled_tracks = {
-        key: np.array(value, copy=True) for key, value in disabled.sfr_tracks.items()
-    }
-    disabled_tracks["SFR_popiii"] = nonzero.reshape(-1)
-    disabled_tracks["popiii_source_flag"] = disabled_source.reshape(-1)
     with pytest.raises(ValueError, match="disabled.*SFR"):
         replace(
             disabled,
-            sfr_tracks=disabled_tracks,
             popiii_sfr_msun_per_yr_grid=nonzero,
             popiii_source_grid=disabled_source,
         )
@@ -1006,6 +838,7 @@ def _real_config(
         star_formation=StarFormationConfig(enable_time_delay=False),
         stellar_population=StellarPopulationConfig(
             imf_modes=modes,
+            enable_archived_imf_gate=any(mode != "canonical" for mode in modes),
             canonical_ssp_path=(project_root / DEFAULT_CANONICAL_SSP_FILE).resolve(),
             topheavy_ssp_path=(project_root / DEFAULT_MILD_TOPHEAVY_SSP_FILE).resolve(),
             popiii_ssp_path=(project_root / DEFAULT_POPIII_UV_SSP_FILE).resolve(),
@@ -1025,6 +858,75 @@ def _real_config(
             apply_dust=False,
         ),
         output=OutputConfig((tmp_path / "real-not-written.h5").resolve()),
+    )
+
+
+def test_compatibility_wrapper_returns_original_sources_and_independent_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import auroralf.uvlf.pipeline as pipeline
+
+    config = _real_config(tmp_path, modes=("canonical",), n_tracks=1)
+    captured: dict[str, object] = {}
+    real_prepare = pipeline.prepare_shared_halo_batch
+    real_evaluate = pipeline.evaluate_shared_halo_batch
+
+    def prepare_spy(**kwargs: object) -> SharedHaloBatch:
+        shared = real_prepare(**kwargs)
+        sources = kwargs["_mutable_result_sources"]
+        assert isinstance(sources, dict)
+        captured.update(sources)
+        captured["shared"] = shared
+        return shared
+
+    def evaluate_spy(*args: object, **kwargs: object) -> HaloModeEvaluation:
+        evaluation = real_evaluate(*args, **kwargs)
+        captured["evaluation"] = evaluation
+        return evaluation
+
+    monkeypatch.setattr(pipeline, "prepare_shared_halo_batch", prepare_spy)
+    monkeypatch.setattr(pipeline, "evaluate_shared_halo_batch", evaluate_spy)
+    result = pipeline.run_halo_uv_pipeline(
+        n_tracks=1,
+        z_final=6.0,
+        Mh_final=1.0e9,
+        cosmology=config.cosmology.to_model(),
+        random_seeds=derive_pipeline_random_seeds(
+            config.base_seed,
+            redshift=6.0,
+            mass_index=0,
+        ),
+        z_start_max=config.mah.z_start_max,
+        n_grid=config.mah.n_time_steps,
+        ssp_file=config.stellar_population.canonical_ssp_path,
+        topheavy_ssp_file=config.stellar_population.topheavy_ssp_path,
+        popiii_ssp_file=config.stellar_population.popiii_ssp_path,
+        imf_mode="canonical",
+        enable_time_delay=False,
+        workers=1,
+    )
+
+    assert type(result.histories) is HaloHistoryResult
+    assert result.histories is captured["histories"]
+    assert result.sfr_tracks is captured["sfr_tracks"]
+    assert result.metadata["negative_dmhdt_clip_count"] == (
+        result.histories.metadata["negative_dmhdt_clip_count"]
+    )
+    shared = captured["shared"]
+    evaluation = captured["evaluation"]
+    assert isinstance(shared, SharedHaloBatch)
+    assert isinstance(evaluation, HaloModeEvaluation)
+    assert shared.sfr_msun_per_yr_grid.flags.writeable is True
+    assert np.shares_memory(
+        shared.sfr_msun_per_yr_grid,
+        result.sfr_tracks["SFR"],
+    )
+    assert not np.shares_memory(result.redshift_grid, shared.redshift_grid)
+    assert not np.shares_memory(result.active_grid, shared.active_grid)
+    assert not np.shares_memory(
+        result.uv_luminosities,
+        evaluation.uv_luminosity_erg_per_s_hz,
     )
 
 
@@ -1308,11 +1210,33 @@ def test_ipc_roundtrip_reconstructs_strict_immutable_mass_results() -> None:
         _assert_array_and_base_chain_are_immutable(
             restored_mode.uv_luminosity_erg_per_s_hz
         )
+    object.__setattr__(
+        mode,
+        "uv_luminosity_erg_per_s_hz",
+        np.array([1.0e28], dtype=float),
+    )
     for restored_result in _ipc_roundtrips(result):
         assert type(restored_result) is runner._MassTaskResult
         _assert_array_and_base_chain_are_immutable(
             restored_result.mode_results[0].uv_luminosity_erg_per_s_hz
         )
+    object.__setattr__(
+        mode,
+        "uv_luminosity_erg_per_s_hz",
+        np.array([-1.0], dtype=float),
+    )
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        replace(result, mode_results=(mode,))
+    spec = runner._MassTaskSpec(
+        result.redshift,
+        result.mass_index,
+        result.halo_mass_msun,
+        result.mass_weight_per_mpc3,
+    )
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        runner._validate_scheduled_result(spec, result)
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        pickle.loads(pickle.dumps(result, protocol=5))
 
 
 def test_ipc_roundtrip_reconstructs_loaded_kernels_and_worker_context(
@@ -1354,30 +1278,38 @@ def test_ipc_roundtrip_reconstructs_loaded_kernels_and_worker_context(
     runner._clear_worker_context_for_tests()
 
 
-def test_scheduled_result_validation_freshly_rebuilds_exact_mutated_result() -> None:
+def test_mass_task_and_scheduled_validation_reuse_validated_nested_results() -> None:
     import auroralf.uvlf.runner as runner
 
     spec = runner._MassTaskSpec(6.0, 0, 1.0e10, 1.0e-4)
     result = _fake_parallel_task_result(runner, 0)
-    object.__setattr__(
-        result.mode_results[0],
-        "uv_luminosity_erg_per_s_hz",
-        np.array([1.0e28], dtype=float),
-    )
+    mode_result = result.mode_results[0]
+    luminosity = mode_result.uv_luminosity_erg_per_s_hz
+    reconstructed = replace(result, mode_results=(mode_result,))
 
-    normalized = runner._validate_scheduled_result(spec, result)
+    validated = runner._validate_scheduled_result(spec, reconstructed)
 
-    assert normalized is not result
-    assert normalized.mode_results[0] is not result.mode_results[0]
-    _assert_array_and_base_chain_are_immutable(
-        normalized.mode_results[0].uv_luminosity_erg_per_s_hz
-    )
-    object.__setattr__(result, "mass_index", True)
+    assert reconstructed.mode_results[0] is mode_result
+    assert validated is reconstructed
+    assert validated.mode_results[0] is mode_result
+    assert validated.mode_results[0].uv_luminosity_erg_per_s_hz is luminosity
+    _assert_array_and_base_chain_are_immutable(luminosity)
+    object.__setattr__(reconstructed, "mass_index", True)
     with pytest.raises(TypeError, match="mass_index.*integer non-boolean"):
-        runner._validate_scheduled_result(spec, result)
+        runner._validate_scheduled_result(spec, reconstructed)
+    with pytest.raises(TypeError, match="mass task must return exactly"):
+        runner._validate_scheduled_result(spec, object())
+    for field_name, value, message in (
+        ("redshift", 7.0, "redshift does not match"),
+        ("halo_mass_msun", 2.0e10, "halo mass does not match"),
+        ("mass_weight_per_mpc3", 2.0e-4, "mass weight does not match"),
+    ):
+        mismatched = replace(result, **{field_name: value})
+        with pytest.raises(RuntimeError, match=message):
+            runner._validate_scheduled_result(spec, mismatched)
 
 
-def test_serial_observer_receives_normalized_immutable_result_before_histogram_consumption(
+def test_serial_observer_receives_immutable_result_before_histogram_consumption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1394,18 +1326,6 @@ def test_serial_observer_receives_normalized_immutable_result_before_histogram_c
     events: list[tuple[object, ...]] = []
     _install_fake_science(monkeypatch, tmp_path, events)
     baseline = runner.run_uvlf_streaming(config)
-    real_run_mass_task = runner._run_mass_task
-
-    def malicious_run_mass_task(spec):  # type: ignore[no-untyped-def]
-        result = real_run_mass_task(spec)
-        object.__setattr__(
-            result.mode_results[0],
-            "uv_luminosity_erg_per_s_hz",
-            np.array(result.mode_results[0].uv_luminosity_erg_per_s_hz, copy=True),
-        )
-        return result
-
-    monkeypatch.setattr(runner, "_run_mass_task", malicious_run_mass_task)
     observed_count = 0
 
     def observer(result) -> None:  # type: ignore[no-untyped-def]
@@ -1551,7 +1471,15 @@ def test_bounded_parallel_scheduler_handles_slow_first_reverse_completion_lazily
         first.set_result(_fake_parallel_task_result(runner, 0))
         return {first}, future_set - {first}
 
+    real_validate = runner._validate_scheduled_result
+    validation_calls: list[int] = []
+
+    def validate_once(spec, result):  # type: ignore[no-untyped-def]
+        validation_calls.append(spec.mass_index)
+        return real_validate(spec, result)
+
     monkeypatch.setattr(runner, "wait", fake_wait)
+    monkeypatch.setattr(runner, "_validate_scheduled_result", validate_once)
     snapshots = []
     ordered = runner._ordered_parallel_results(
         specs(),
@@ -1570,6 +1498,7 @@ def test_bounded_parallel_scheduler_handles_slow_first_reverse_completion_lazily
     assert max(snapshot.running_count for snapshot in snapshots) <= 4
     assert max(snapshot.completed_waiting_count for snapshot in snapshots) <= 4
     assert wait_calls >= 2
+    assert sorted(validation_calls) == list(range(9))
 
 
 def test_bounded_parallel_scheduler_cancels_pending_futures_on_task_exception() -> None:

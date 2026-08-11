@@ -1,11 +1,11 @@
-schema_version = "2.0.0"
+schema_version = "2.1.0"
 run_id = "uvlf-v2-production"
 redshifts = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
 base_seed = 42
 
 [cosmology]
-h0_km_s_mpc = 67.4
-omega_m = 0.315
+h0_km_s_mpc = 67.66
+omega_m = 0.30966
 omega_b = 0.04897
 
 [mah]
@@ -52,7 +52,8 @@ stellar_mass_floor_msun = 0.0
 metallicity_scatter_dex = 0.0
 
 [stellar_population]
-imf_modes = ["canonical", "z10_mild_topheavy", "mah_burst_mild_topheavy"]
+imf_modes = ["canonical"]
+enable_archived_imf_gate = false
 canonical_ssp_path = "../../external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
 topheavy_ssp_path = "../../external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5"
 topheavy_ssp_template_metallicity_zsun = 0.05

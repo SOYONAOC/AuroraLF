@@ -4,17 +4,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from auroralf.mah.models import (
+from auroralf.constants import (
+    BOLTZMANN_CONSTANT_J_K,
     GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN,
     KM_PER_MPC,
+    PROTON_MASS_KG,
     SECONDS_PER_GYR,
+    YEARS_PER_GYR,
+)
+from auroralf.mah.models import (
     Cosmology,
 )
+from auroralf.mah.physics import compute_bryan_norman_virial_terms
 
 
-PROTON_MASS_KG = 1.67262192369e-27
-BOLTZMANN_CONSTANT_J_K = 1.380649e-23
-YEARS_PER_GYR = 1.0e9
 EPSILON_0 = 0.12
 CHARACTERISTIC_MASS = 10.0**11.7
 BETA_STAR = 0.66
@@ -330,19 +333,16 @@ def compute_sfr_from_tracks(
     mdot = np.asarray(sorted_tracks["dMh_dt_sfr"], dtype=float)
 
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-        hubble = cosmology.h0_km_s_mpc * np.sqrt(
-            cosmology.omega_m * (1.0 + z) ** 3 + cosmology.omega_lambda
+        expansion_squared, _, delta_vir = compute_bryan_norman_virial_terms(
+            z,
+            cosmology=cosmology,
         )
+        hubble = cosmology.h0_km_s_mpc * np.sqrt(expansion_squared)
         rho_crit = cosmology.rhocrit * (hubble / cosmology.h0_km_s_mpc) ** 2
-        omega_m_z = cosmology.omega_m * (1.0 + z) ** 3 / (
-            cosmology.omega_m * (1.0 + z) ** 3 + cosmology.omega_lambda
-        )
-        delta = omega_m_z - 1.0
-        delta_vir = 18.0 * np.pi**2 + 82.0 * delta - 39.0 * delta**2
         rho_vir = delta_vir * rho_crit
 
         # Use Msun and Mpc consistently so virial quantities remain numerically stable.
-        r_vir = (3.0 * mass / (4.0 * np.pi * delta_vir * rho_crit)) ** (1.0 / 3.0)
+        r_vir = (3.0 * mass / (4.0 * np.pi * rho_vir)) ** (1.0 / 3.0)
         v_c = np.sqrt(GRAVITATIONAL_CONSTANT_MPC_KMS2_MSUN * mass / r_vir)
         t_vir = mu * PROTON_MASS_KG * (v_c * 1.0e3) ** 2 / (2.0 * BOLTZMANN_CONSTANT_J_K)
         tau_del = r_vir * KM_PER_MPC / v_c / SECONDS_PER_GYR
@@ -436,11 +436,7 @@ def compute_sfr_from_tracks(
         sfr[active] = baryon_fraction * fstar_now[active] * mdot[active] / YEARS_PER_GYR
 
     output = {name: values.copy() for name, values in sorted_tracks.items()}
-    output["r_vir"] = r_vir
-    output["V_c"] = v_c
-    output["T_vir"] = t_vir
-    output["tau_del"] = tau_del
-    output["td_burst"] = td_burst
+    output.update(core_virial_quantities)
     output["t_src"] = t_src
     output["Mh_src"] = mh_src
     output["dMh_dt_sfr_src"] = mdot_src

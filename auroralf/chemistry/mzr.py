@@ -4,8 +4,9 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from auroralf.constants import SOLAR_OXYGEN_ABUNDANCE
+from ._stellar_mass import cumulative_surviving_stellar_mass_msun
 
-SOLAR_OXYGEN_ABUNDANCE = 8.69
 MZR_RELATION_FIRE2_HIGHZ = "fire2_highz"
 MZR_RELATION_JADES_LOWMASS = "jades_lowmass"
 MZR_RELATIONS = (MZR_RELATION_FIRE2_HIGHZ, MZR_RELATION_JADES_LOWMASS)
@@ -56,8 +57,6 @@ def jades_lowmass_mzr_oh12(logmstar: np.ndarray | float) -> np.ndarray:
 def _validate_mzr_parameters(parameters: MZRBirthMetallicityParameters) -> None:
     if parameters.relation not in MZR_RELATIONS:
         raise ValueError(f"relation must be one of {MZR_RELATIONS}, got {parameters.relation!r}")
-    if not 0.0 <= parameters.returned_fraction < 1.0:
-        raise ValueError("returned_fraction must lie in [0, 1)")
     if parameters.scatter_dex < 0.0:
         raise ValueError("scatter_dex must be non-negative")
     if parameters.stellar_mass_floor_msun <= 0.0:
@@ -66,7 +65,6 @@ def _validate_mzr_parameters(parameters: MZRBirthMetallicityParameters) -> None:
 
 def _mzr_oxygen_abundance(
     logmstar: np.ndarray,
-    z_grid: np.ndarray,
     parameters: MZRBirthMetallicityParameters,
 ) -> np.ndarray:
     if parameters.relation == MZR_RELATION_FIRE2_HIGHZ:
@@ -97,61 +95,28 @@ def compute_mzr_birth_metallicity(
     _validate_mzr_parameters(params)
 
     t_grid = np.asarray(t_grid_gyr, dtype=float)
-    if t_grid.ndim != 2:
-        raise ValueError("t_grid_gyr must be a 2D array")
-    if t_grid.shape[1] < 2:
-        raise ValueError("t_grid_gyr must contain at least two time steps")
-    shape = t_grid.shape
-
     z = np.asarray(z_grid, dtype=float)
     sfr = np.asarray(sfr_grid, dtype=float)
     active = np.asarray(active_grid, dtype=bool)
+    stellar_mass = cumulative_surviving_stellar_mass_msun(
+        t_grid_gyr=t_grid,
+        sfr_grid=sfr,
+        active_grid=active,
+        returned_fraction=float(params.returned_fraction),
+    )
+    shape = stellar_mass.shape
     if z.shape != shape:
         raise ValueError(f"z_grid must have shape {shape}, got {z.shape}")
-    if sfr.shape != shape:
-        raise ValueError(f"sfr_grid must have shape {shape}, got {sfr.shape}")
-    if active.shape != shape:
-        raise ValueError(f"active_grid must have shape {shape}, got {active.shape}")
-    if not np.all(np.diff(t_grid, axis=1) >= 0.0):
-        raise ValueError("t_grid_gyr must be monotonic non-decreasing along the time axis")
-    invalid_active_sfr = active & (~np.isfinite(sfr) | (sfr < 0.0))
-    if np.any(invalid_active_sfr):
-        raise ValueError("sfr_grid must be finite and non-negative for active source times")
-
-    stellar_mass = np.zeros(shape, dtype=float)
     birth_zsun = np.zeros(shape, dtype=float)
-    rng = np.random.default_rng(random_seed)
-    surviving_fraction = 1.0 - float(params.returned_fraction)
-
-    for halo_index in range(shape[0]):
-        cumulative_stellar_mass = 0.0
-        for step_index in range(shape[1]):
-            if step_index > 0:
-                dt_gyr = float(t_grid[halo_index, step_index] - t_grid[halo_index, step_index - 1])
-                if dt_gyr < 0.0:
-                    raise ValueError("t_grid_gyr must be monotonic non-decreasing along the time axis")
-                if dt_gyr > 0.0 and bool(active[halo_index, step_index]):
-                    cumulative_stellar_mass += (
-                        surviving_fraction
-                        * float(sfr[halo_index, step_index])
-                        * dt_gyr
-                        * 1.0e9
-                    )
-
-            stellar_mass[halo_index, step_index] = cumulative_stellar_mass
-            if not bool(active[halo_index, step_index]):
-                continue
-            mzr_mass = max(cumulative_stellar_mass, float(params.stellar_mass_floor_msun))
-            logmstar = np.array([np.log10(mzr_mass)], dtype=float)
-            oh12 = _mzr_oxygen_abundance(
-                logmstar,
-                np.array([z[halo_index, step_index]], dtype=float),
-                params,
-            )
-            metallicity_zsun = float(10.0 ** (oh12[0] - SOLAR_OXYGEN_ABUNDANCE))
-            if params.scatter_dex > 0.0:
-                metallicity_zsun *= float(10.0 ** rng.normal(loc=0.0, scale=float(params.scatter_dex)))
-            birth_zsun[halo_index, step_index] = metallicity_zsun
+    mzr_mass = np.maximum(stellar_mass[active], float(params.stellar_mass_floor_msun))
+    oh12 = _mzr_oxygen_abundance(np.log10(mzr_mass), params)
+    birth_zsun[active] = np.power(10.0, oh12 - SOLAR_OXYGEN_ABUNDANCE)
+    if params.scatter_dex > 0.0:
+        rng = np.random.default_rng(random_seed)
+        birth_zsun[active] *= np.power(
+            10.0,
+            rng.normal(loc=0.0, scale=float(params.scatter_dex), size=np.count_nonzero(active)),
+        )
 
     return MZRBirthMetallicityResult(
         stellar_mass_msun_grid=stellar_mass,

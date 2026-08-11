@@ -7,8 +7,14 @@ import re
 import tomllib
 from typing import Any, Mapping
 
+import astropy.units as u
 import numpy as np
 
+from auroralf.constants import (
+    PLANCK18_H0_KM_S_MPC,
+    PLANCK18_OMEGA_B,
+    PLANCK18_OMEGA_M,
+)
 from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
 from auroralf.chemistry.mzr import MZR_RELATIONS
 from auroralf.mah import (
@@ -17,7 +23,6 @@ from auroralf.mah import (
     validate_thesan_time_grid_mode,
     validate_tng_time_grid_mode,
 )
-from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 from auroralf.mah.sampling import validate_parameter_sampler
 from auroralf.sfr import PopIIISFRParameters, SFRModelParameters
 from auroralf.sfr.popiii import POPIII_UPPER_MASS_MODES
@@ -25,7 +30,7 @@ from auroralf.uvlf.hmf_sampling import validate_mass_function_model
 from auroralf.uvlf.imf import IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 
 
-CONFIG_SCHEMA_VERSION = "2.0.0"
+CONFIG_SCHEMA_VERSION = "2.1.0"
 _UINT64_MAX = 2**64 - 1
 _RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -89,9 +94,9 @@ def _normalize_float_tuple(name: str, values: object, *, nonnegative: bool = Fal
 
 @dataclass(frozen=True, slots=True)
 class CosmologyConfig:
-    h0_km_s_mpc: float = 67.4
-    omega_m: float = 0.315
-    omega_b: float = 0.04897
+    h0_km_s_mpc: float = PLANCK18_H0_KM_S_MPC
+    omega_m: float = PLANCK18_OMEGA_M
+    omega_b: float = PLANCK18_OMEGA_B
 
     def __post_init__(self) -> None:
         h0 = _strict_float("h0_km_s_mpc", self.h0_km_s_mpc)
@@ -109,7 +114,7 @@ class CosmologyConfig:
 
     def to_model(self) -> Cosmology:
         return Cosmology(
-            h0=self.h0_km_s_mpc * SECONDS_PER_GYR / KM_PER_MPC,
+            h0=(self.h0_km_s_mpc * u.km / (u.s * u.Mpc)).to_value(u.Gyr**-1),
             omega_m=self.omega_m,
             omega_b=self.omega_b,
             omega_lambda=1.0 - self.omega_m,
@@ -361,6 +366,7 @@ class StarFormationConfig:
 @dataclass(frozen=True, slots=True)
 class StellarPopulationConfig:
     imf_modes: tuple[str, ...] = (IMF_MODE_CANONICAL,)
+    enable_archived_imf_gate: bool = False
     canonical_ssp_path: Path = _PROJECT_ROOT / "external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
     topheavy_ssp_path: Path = _PROJECT_ROOT / "external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5"
     topheavy_ssp_template_metallicity_zsun: float | None = 0.05
@@ -392,6 +398,9 @@ class StellarPopulationConfig:
             raise ValueError("canonical IMF mode must be first")
         if len(set(normalized_modes)) != len(normalized_modes):
             raise ValueError("imf_modes must be unique")
+        archive_gate = _strict_bool(
+            "enable_archived_imf_gate", self.enable_archived_imf_gate
+        )
         canonical_path = _strict_absolute_path("canonical_ssp_path", self.canonical_ssp_path)
         topheavy_path = _strict_absolute_path("topheavy_ssp_path", self.topheavy_ssp_path)
         popiii_path = _strict_absolute_path("popiii_ssp_path", self.popiii_ssp_path)
@@ -449,6 +458,7 @@ class StellarPopulationConfig:
             raise ValueError("popiii_upper_mass_msun must be positive when provided")
         for name, value in (
             ("imf_modes", normalized_modes),
+            ("enable_archived_imf_gate", archive_gate),
             ("canonical_ssp_path", canonical_path),
             ("topheavy_ssp_path", topheavy_path),
             ("topheavy_ssp_template_metallicity_zsun", template_z),
@@ -599,6 +609,12 @@ class UVLFRunConfig:
             if type(value) is not expected:
                 raise TypeError(f"{name} must be exactly {expected.__name__}")
         has_variant = len(self.stellar_population.imf_modes) > 1
+        if has_variant and not self.stellar_population.enable_archived_imf_gate:
+            raise ValueError(
+                "variant IMF gate modes are archived; set "
+                "stellar_population.enable_archived_imf_gate=true only for "
+                "explicit historical reproduction"
+            )
         has_birth_gate = self.stellar_population.birth_metallicity_topheavy_max_zsun is not None
         if has_variant and has_birth_gate and self.star_formation.metallicity_source == "none":
             raise ValueError(
@@ -665,6 +681,7 @@ _STAR_FORMATION_REQUIRED = {
 _STAR_FORMATION_OPTIONAL = {"mzr", "regulator"}
 _STELLAR_POPULATION_REQUIRED = {
     "imf_modes",
+    "enable_archived_imf_gate",
     "canonical_ssp_path",
     "topheavy_ssp_path",
     "historical_topheavy_redshift_min",
@@ -870,6 +887,7 @@ def _decode_run_config(root: Mapping[str, Any], base_directory: Path) -> UVLFRun
         ),
         stellar_population=StellarPopulationConfig(
             imf_modes=tuple(imf_mode_values),
+            enable_archived_imf_gate=stellar_table["enable_archived_imf_gate"],
             canonical_ssp_path=_resolve_toml_path(
                 "stellar_population.canonical_ssp_path",
                 stellar_table["canonical_ssp_path"],

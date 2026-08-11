@@ -1,3 +1,10 @@
+"""Archived Pop II IMF-gate implementation.
+
+The SFRIIIII production configuration uses only the canonical IMF. These modes
+and selectors remain importable for exact historical reproduction; high-level
+run configuration requires an explicit ``enable_archived_imf_gate`` opt-in.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +36,7 @@ DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
 
 @dataclass(frozen=True)
 class IMFTransitionParameters:
-    """Parameters for selecting a mild top-heavy Pop II SSP from halo histories.
+    """Archived parameters for selecting a mild top-heavy Pop II SSP.
 
     The MAH-burst mode marks a star-forming time step as mild top-heavy when the
     halo growth time ``Mh / dMh_dt_sfr`` is shorter than ``growth_time_threshold_myr``.

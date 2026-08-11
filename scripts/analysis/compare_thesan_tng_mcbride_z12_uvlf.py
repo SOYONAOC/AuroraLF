@@ -14,8 +14,13 @@ Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
 
+from auroralf.constants import (
+    PLANCK15_H0_GYR,
+    PLANCK15_OMEGA_B,
+    PLANCK15_OMEGA_LAMBDA,
+    PLANCK15_OMEGA_M,
+)
 from auroralf.mah import Cosmology
-from auroralf.mah.models import KM_PER_MPC, SECONDS_PER_GYR
 from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.uvlf.hmf_sampling import sample_uvlf_from_hmf, uv_luminosity_to_muv
 from auroralf.uvlf.pipeline import run_halo_uv_pipeline
@@ -359,10 +364,10 @@ def make_plot(fixed_rows: list[dict[str, Any]], bin_rows: list[dict[str, Any]], 
 
 def main() -> None:
     cosmology = Cosmology(
-        h0=67.74 * SECONDS_PER_GYR / KM_PER_MPC,
-        omega_m=0.3089,
-        omega_b=0.0486,
-        omega_lambda=0.6911,
+        h0=PLANCK15_H0_GYR,
+        omega_m=PLANCK15_OMEGA_M,
+        omega_b=PLANCK15_OMEGA_B,
+        omega_lambda=PLANCK15_OMEGA_LAMBDA,
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     fixed_rows = run_fixed_mass_scan(cosmology=cosmology)

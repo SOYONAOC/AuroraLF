@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +58,104 @@ def test_mzr_birth_metallicity_uses_cumulative_stellar_mass() -> None:
     expected_zsun = 10.0 ** (expected_oh12 - 8.69)
     np.testing.assert_allclose(result.birth_metallicity_zsun_grid[0, 1:], expected_zsun)
     np.testing.assert_array_equal(result.active_grid, history["active_grid"])
+
+
+def test_mzr_vectorized_history_preserves_seeded_scatter_and_active_only_validation() -> None:
+    t_grid = np.array(
+        [
+            [0.1, 0.2, 0.2, 0.4, 0.5],
+            [0.05, 0.05, 0.15, 0.3, 0.3],
+        ],
+        dtype=float,
+    )
+    active = np.array(
+        [
+            [False, True, True, False, True],
+            [True, False, True, True, False],
+        ],
+        dtype=bool,
+    )
+    result = compute_mzr_birth_metallicity(
+        t_grid_gyr=t_grid,
+        z_grid=np.array(
+            [
+                [16.0, 14.0, 13.0, 10.0, 8.0],
+                [18.0, 17.0, 14.0, 11.0, 9.0],
+            ],
+            dtype=float,
+        ),
+        sfr_grid=np.array(
+            [
+                [np.nan, 1.0, 2.0, -99.0, 0.5],
+                [0.25, np.nan, 1.5, 2.0, -np.inf],
+            ],
+            dtype=float,
+        ),
+        active_grid=active,
+        parameters=MZRBirthMetallicityParameters(
+            relation="fire2_highz",
+            returned_fraction=0.37,
+            scatter_dex=0.23,
+            stellar_mass_floor_msun=1.0e6,
+        ),
+        random_seed=12345,
+    )
+
+    np.testing.assert_array_equal(
+        result.stellar_mass_msun_grid,
+        np.array(
+            [
+                [0.0, 6.3e7, 6.3e7, 6.3e7, 9.45e7],
+                [0.0, 0.0, 9.45e7, 2.835e8, 2.835e8],
+            ],
+            dtype=float,
+        ),
+    )
+    np.testing.assert_array_equal(
+        result.birth_metallicity_zsun_grid,
+        np.array(
+            [
+                [0.0, 0.018124926116579773, 0.07523389535089041, 0.0, 0.02822653503987153],
+                [0.007250870620796875, 0.0, 0.04301112563548344, 0.04539846443042604, 0.0],
+            ],
+            dtype=float,
+        ),
+    )
+    np.testing.assert_array_equal(result.active_grid, active)
+
+
+@pytest.mark.parametrize("invalid_sfr", [-1.0, np.nan, np.inf])
+def test_mzr_rejects_invalid_sfr_at_active_source_times(invalid_sfr: float) -> None:
+    with pytest.raises(ValueError, match="sfr_grid must be finite and non-negative"):
+        compute_mzr_birth_metallicity(
+            t_grid_gyr=np.array([[0.0, 0.1]], dtype=float),
+            z_grid=np.array([[12.0, 10.0]], dtype=float),
+            sfr_grid=np.array([[0.0, invalid_sfr]], dtype=float),
+            active_grid=np.array([[False, True]], dtype=bool),
+        )
+
+
+def test_mzr_rejects_invalid_returned_fraction_in_shared_stellar_mass_integrator() -> None:
+    with pytest.raises(ValueError, match="returned_fraction must lie in"):
+        compute_mzr_birth_metallicity(
+            t_grid_gyr=np.array([[0.0, 0.1]], dtype=float),
+            z_grid=np.array([[12.0, 10.0]], dtype=float),
+            sfr_grid=np.array([[0.0, 1.0]], dtype=float),
+            active_grid=np.array([[False, True]], dtype=bool),
+            parameters=MZRBirthMetallicityParameters(returned_fraction=1.0),
+        )
+
+
+def test_regulator_still_rejects_nonfinite_sfr_at_inactive_source_times() -> None:
+    with pytest.raises(ValueError, match="sfr_grid must contain finite values"):
+        compute_regulator_metallicity(
+            t_grid_gyr=np.array([[0.0, 0.1]], dtype=float),
+            z_grid=np.array([[12.0, 10.0]], dtype=float),
+            mh_grid=np.array([[1.0e9, 2.0e9]], dtype=float),
+            sfr_grid=np.array([[np.nan, 1.0]], dtype=float),
+            active_grid=np.array([[False, True]], dtype=bool),
+            cosmology=Cosmology(),
+        )
 
 
 def test_regulator_metallicity_uses_cumulative_stellar_and_halo_gas_mass() -> None:

@@ -40,7 +40,7 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
     config = tmp_path / "run.toml"
     config.write_text(
         f'''
-schema_version = "2.0.0"
+schema_version = "2.1.0"
 run_id = "cli-reduced"
 redshifts = [10.0]
 base_seed = 20260711
@@ -77,6 +77,7 @@ metallicity_source = "none"
 
 [stellar_population]
 imf_modes = ["canonical"]
+enable_archived_imf_gate = false
 canonical_ssp_path = "{CANONICAL_SSP}"
 topheavy_ssp_path = "{CANONICAL_SSP}"
 topheavy_ssp_template_metallicity_zsun = 0.05
@@ -149,17 +150,14 @@ def test_cli_flags_are_mutually_exclusive_and_slurm_is_required(tmp_path: Path) 
     assert "requires a SLURM allocation" in completed.stderr
 
 
-def test_production_config_is_strict_and_uses_unified_modes() -> None:
+def test_production_config_is_strict_and_archives_imf_gate() -> None:
     from auroralf import UVLFRunConfig
 
     config = UVLFRunConfig.from_toml(PRODUCTION_CONFIG)
     assert config.mah.backend == "mcbride"
     assert config.star_formation.metallicity_source == "regulator"
-    assert config.stellar_population.imf_modes == (
-        "canonical",
-        "z10_mild_topheavy",
-        "mah_burst_mild_topheavy",
-    )
+    assert config.stellar_population.imf_modes == ("canonical",)
+    assert config.stellar_population.enable_archived_imf_gate is False
     assert config.stellar_population.source_redshift_gate_enabled is False
     assert config.stellar_population.birth_metallicity_topheavy_max_zsun == 0.05
     assert config.sampling.workers == 32

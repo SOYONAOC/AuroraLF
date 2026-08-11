@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +20,10 @@ from auroralf.results import (
     RedshiftResult,
     RunDiagnostics,
     UVLFRunResult,
+)
+from ._file_ops import (
+    file_identity as _file_identity,
+    sha256_open_descriptor as _hash_open_file_descriptor,
 )
 from .schema import (
     SCHEMA_NAME,
@@ -996,16 +999,6 @@ def _read_uvlf_shard_handle(
     )
 
 
-def _file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        file_stat.st_dev,
-        file_stat.st_ino,
-        file_stat.st_size,
-        file_stat.st_mtime_ns,
-        file_stat.st_ctime_ns,
-    )
-
-
 def _require_spool_owner(
     descriptor: int,
     path: Path,
@@ -1069,18 +1062,6 @@ def _require_spool_snapshot(
         raise ValueError("sample spool file identity changed")
     if digest != snapshot.sha256:
         raise ValueError("sample spool content changed")
-
-
-def _hash_open_file_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    offset = 0
-    while True:
-        block = os.pread(descriptor, 1024 * 1024, offset)
-        if not block:
-            break
-        digest.update(block)
-        offset += len(block)
-    return digest.hexdigest()
 
 
 def _read_hdf5_from_open_descriptor(
@@ -1452,17 +1433,6 @@ def _parse_marker_text(text: str) -> dict[str, object]:
     if type(payload["config_sha256"]) is not str or type(payload["artifact_sha256"]) is not str:
         raise TypeError("completion marker hashes must be strings")
     return payload
-
-
-def _validate_marker(path: Path) -> dict[str, object]:
-    marker = _marker_path(path)
-    if not marker.is_file():
-        raise FileNotFoundError(f"completion marker does not exist: {marker}")
-    try:
-        text = _read_stable_bytes(marker, label="completion marker").decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ValueError("completion marker is not valid UTF-8") from error
-    return _parse_marker_text(text)
 
 
 @dataclass(frozen=True, slots=True)

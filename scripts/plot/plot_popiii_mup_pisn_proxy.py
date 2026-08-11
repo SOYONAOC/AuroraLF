@@ -11,7 +11,7 @@ import numpy as np
 from astropy import units as u
 from astropy.cosmology import FlatLambdaCDM
 
-from auroralf.mah.models import PLANCK18_H0_KM_S_MPC, PLANCK18_OMEGA_B, PLANCK18_OMEGA_M
+from auroralf.constants import PLANCK18_H0_KM_S_MPC, PLANCK18_OMEGA_B, PLANCK18_OMEGA_M
 from auroralf.ssp import load_popiii_uv_luminosity_table
 
 

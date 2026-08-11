@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "retrieved_utc": "2026-08-07",
+  "record": {
+    "id": 20695048,
+    "doi": "10.5281/zenodo.20695048",
+    "concept_doi": "10.5281/zenodo.20695047",
+    "title": "Data for A Roadmap for Transient Hunters: Mapping Stellar Mass and Star Formation Rate Anisotropies in the Local Universe",
+    "publication_date": "2026-06-15",
+    "created": "2026-08-04T16:56:35.114871+00:00",
+    "updated": "2026-08-04T16:56:35.479290+00:00",
+    "license": "MIT",
+    "url": "https://zenodo.org/records/20695048"
+  },
+  "files": [
+    {
+      "name": "README.md",
+      "size_bytes": 3343,
+      "md5": "d37cf71a15d26c4a83f4b1809b0ffc39",
+      "url": "https://zenodo.org/api/records/20695048/files/README.md/content"
+    },
+    {
+      "name": "SFR.zip",
+      "size_bytes": 45531673,
+      "md5": "e089e1cd4d13c88ee2175a4d96f5d50b",
+      "url": "https://zenodo.org/api/records/20695048/files/SFR.zip/content"
+    },
+    {
+      "name": "MASS.zip",
+      "size_bytes": 42354838,
+      "md5": "e201eb108f150f304466262833915649",
+      "url": "https://zenodo.org/api/records/20695048/files/MASS.zip/content"
+    },
+    {
+      "name": "Model_training.csv",
+      "size_bytes": 64494350,
+      "md5": "72f2de3f988a1b8abad0ea301b1144d2",
+      "url": "https://zenodo.org/api/records/20695048/files/Model_training.csv/content"
+    },
+    {
+      "name": "regalade_knownSFR.csv",
+      "size_bytes": 7085868,
+      "md5": "25764998b46d0fa86d6d675a0b817191",
+      "url": "https://zenodo.org/api/records/20695048/files/regalade_knownSFR.csv/content"
+    },
+    {
+      "name": "code.zip",
+      "size_bytes": 29054277,
+      "md5": "b203dd9d00212d5c46fb6728023db36c",
+      "url": "https://zenodo.org/api/records/20695048/files/code.zip/content"
+    },
+    {
+      "name": "Tobe_predicted.csv",
+      "size_bytes": 40253230,
+      "md5": "afa927ec8741657c027c313b6d051710",
+      "url": "https://zenodo.org/api/records/20695048/files/Tobe_predicted.csv/content"
+    },
+    {
+      "name": "Allgalaxy_final_version.csv",
+      "size_bytes": 32156094,
+      "md5": "a551b681d9b8d48730d017f1c7997f2e",
+      "url": "https://zenodo.org/api/records/20695048/files/Allgalaxy_final_version.csv/content"
+    }
+  ]
+}

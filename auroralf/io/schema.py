@@ -27,6 +27,10 @@ from auroralf.config import (
 )
 from auroralf.results import IMFModeResult, ModeRunDiagnostics, UVLFRunResult
 from auroralf.uvlf.imf import validate_imf_mode
+from ._file_ops import (
+    file_identity as _file_identity,
+    sha256_open_descriptor as _hash_open_file_descriptor,
+)
 
 
 SCHEMA_NAME = "auroralf.uvlf"
@@ -89,28 +93,6 @@ def _strict_int_array(name: str, value: object) -> np.ndarray:
     if array.ndim != 1 or array.size == 0:
         raise ValueError(f"{name} must be a non-empty 1D array")
     return _immutable_array(array)
-
-
-def _file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        file_stat.st_dev,
-        file_stat.st_ino,
-        file_stat.st_size,
-        file_stat.st_mtime_ns,
-        file_stat.st_ctime_ns,
-    )
-
-
-def _hash_open_file_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    offset = 0
-    while True:
-        block = os.pread(descriptor, 1024 * 1024, offset)
-        if not block:
-            break
-        digest.update(block)
-        offset += len(block)
-    return digest.hexdigest()
 
 
 def _stable_file_checksum(path: Path) -> tuple[str, int]:

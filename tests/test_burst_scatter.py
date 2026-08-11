@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import warnings
@@ -15,7 +14,6 @@ from auroralf.mah import Cosmology
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUN_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run" / "run_uvlf_compare_imf_no_delay_all_z.py"
 V2_RUN_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "run" / "run_uvlf_v2.py"
 PRODUCTION_CONFIG = PROJECT_ROOT / "configs" / "uvlf" / "production.toml"
 

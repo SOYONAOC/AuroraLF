@@ -41,9 +41,15 @@ def _resolve_redshift_grid(
             raise ValueError("uniform_in_t requires dt > 0")
         t_start = astro.age(z_start_max).value
         t_end = astro.age(z_final).value
-        steps = int(np.ceil((t_end - t_start) / dt))
-        time_gyr = t_start + np.arange(steps + 1, dtype=float) * dt
-        time_gyr[-1] = t_end
+        step_ratio = float((t_end - t_start) / dt)
+        nearest_steps = int(round(step_ratio))
+        ratio_tolerance = 64.0 * np.finfo(float).eps * max(1.0, abs(step_ratio))
+        steps = (
+            nearest_steps
+            if abs(step_ratio - nearest_steps) <= ratio_tolerance
+            else int(np.ceil(step_ratio))
+        )
+        time_gyr = np.linspace(t_start, t_end, steps + 1, dtype=float)
         dense_redshift = np.linspace(z_start_max, z_final, 4096)
         dense_time = astro.age(dense_redshift).value
         redshift = np.interp(time_gyr, dense_time, dense_redshift)
