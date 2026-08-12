@@ -62,7 +62,12 @@ lock currently targets Python `>=3.13,<3.14`; SciPy is intentionally pinned to
 Core code:
 
 - `auroralf/constants.py`: Astropy-derived unit conversions, physical constants, production Planck18 cosmology, and TNG/THESAN simulation cosmology
-- `auroralf/uvlf/`: UV luminosity function pipeline, HMF weighting, dust mapping, and archived Pop II IMF gate logic
+- `auroralf/model_options.py`: dependency-light IMF/HMF mode names and validation shared by config, results, I/O, and implementations
+- `auroralf/driver.py`: single composition root that resolves every configured module switch, SSP kernel, and simulation-cache path before execution
+- `auroralf/run_plan.py`: immutable module-switch snapshot and validated worker execution contract
+- `auroralf/samples.py`: immutable halo-sample records shared by UVLF computation and persistence
+- `auroralf/uvlf/`: UVLF stages, HMF weighting, dust mapping, scheduler messages, and accumulation; archived IMF-gate symbols are not re-exported from the package API
+- `auroralf/io/`: artifact schema, HDF5 layout/codec, owned-file transactions, shards, and resume/merge workflows
 - `auroralf/mah/`: Monte Carlo halo assembly history generation
 - `auroralf/sfr/`: star-formation model utilities
 - `auroralf/chemistry/`: MZR prior 和 gas-regulator 金属丰度诊断
@@ -520,7 +525,7 @@ from auroralf.uvlf import run_halo_uv_pipeline
   - `"z10_mild_topheavy"`：archived historical mode
   - `"mah_burst_mild_topheavy"`：archived historical mode；满足 growth-time 与 birth-metallicity 条件时使用 mild top-heavy SSP
 - `imf_transition_parameters`
-  `auroralf.uvlf.IMFTransitionParameters`，默认
+  archived `auroralf.uvlf.imf.IMFTransitionParameters`，默认
   `source_redshift_gate_enabled=False`、`growth_time_threshold_myr=50.0`、
   `metallicity_topheavy_max_zsun=0.05`。`z_topheavy_min=10.0` 只在显式启用
   历史 source-redshift gate 时使用；若 `metallicity_topheavy_max_zsun` 设为

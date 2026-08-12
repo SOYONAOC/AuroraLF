@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Archived He II/Hebe diagnostic; not a production AuroraLF model."""
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from auroralf.mah import Cosmology
 from auroralf.seeding import derive_pipeline_random_seeds
 from auroralf.sfr import POPIII_UPPER_MASS_MODE_ATOMIC, POPIII_UPPER_MASS_MODE_FIXED, PopIIISFRParameters
-from auroralf.ssp import (
+from auroralf.archive.heii1640 import (
     DEFAULT_CASEB_HEII1640_ERG_PER_PHOTON,
     compute_final_ssp_heplus_rate_from_sfr_grid,
     heii1640_luminosity_from_heplus_rate,
@@ -36,7 +38,9 @@ HEBE_VELOCITY_SEPARATION_KMS = 126.0
 HEII1640_REST_A = 1640.42
 SPEED_OF_LIGHT_KMS = 299792.458
 
-DEFAULT_OUTPUT_PREFIX = PROJECT_ROOT / "outputs" / "popiii_heii_actual_sfh_vs_hebe"
+DEFAULT_OUTPUT_PREFIX = (
+    PROJECT_ROOT / "outputs" / "archived_heii" / "popiii_heii_actual_sfh_vs_hebe"
+)
 DEFAULT_HEBE_OBSERVATION_FILE = (
     PROJECT_ROOT
     / "external_data"
@@ -63,6 +67,11 @@ DEFAULT_EXTREME_POPIII_HEII1640_SSP_FILE = (
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare AuroraLF Pop III SFH-convolved HeII 1640 fluxes to the Hebe JWST fit."
+    )
+    parser.add_argument(
+        "--enable-archived-heii",
+        action="store_true",
+        help="Explicitly run the archived, non-production He II diagnostic.",
     )
     parser.add_argument("--z", type=float, default=10.583)
     parser.add_argument("--logM-min", type=float, default=6.0)
@@ -101,6 +110,11 @@ def _resolve_project_path(path: Path) -> Path:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    if not args.enable_archived_heii:
+        raise RuntimeError(
+            "This He II implementation is archived and excluded from production. "
+            "Pass --enable-archived-heii only for historical reproduction."
+        )
     if args.z <= 0.0:
         raise ValueError("--z must be positive")
     if args.logM_max <= args.logM_min:

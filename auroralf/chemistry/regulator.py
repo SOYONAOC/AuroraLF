@@ -1,3 +1,14 @@
+"""Archived algebraic gas-regulator metallicity diagnostic.
+
+The conceptual gas-regulator framework follows Lilly et al. (2013), DOI:
+10.1088/0004-637X/772/2/119, arXiv:1303.5059, and Peng & Maiolino (2014), DOI:
+10.1093/mnras/stu1288, arXiv:1402.5964.  AuroraLF's algebraic reservoir
+closure, loading scalings, default parameter values, and scatter are adapted
+project choices rather than a verbatim equation or calibrated parameter set
+from either paper.  This archived diagnostic never feeds metallicity back into
+the supplied SFR history.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -12,7 +23,7 @@ from ._stellar_mass import cumulative_surviving_stellar_mass_msun
 
 @dataclass(frozen=True)
 class RegulatorMetallicityParameters:
-    """Parameters for the algebraic gas-regulator metallicity closure."""
+    """AuroraLF parameters for the adapted gas-regulator closure."""
 
     solar_metallicity_mass_fraction: float = SOLAR_METALLICITY_MASS_FRACTION
     # Historical API name; physically this is f_res = Mgas / (fb Mh),
@@ -154,6 +165,8 @@ def compute_regulator_metallicity(
     The supplied SFR is treated as fixed. The closure uses cumulative surviving
     stellar mass, a halo-baryon gas reservoir, and an effective metal-loading
     term to assign source-time gas metallicity without feeding back on SFR.
+    The framework is literature-motivated, but this exact algebraic closure and
+    its defaults are AuroraLF choices; see the module provenance above.
     """
 
     if not isinstance(cosmology, Cosmology):

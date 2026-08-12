@@ -5,7 +5,7 @@ import pytest
 
 
 def test_required_burst_mass_from_heii_luminosity_uses_q_per_mass() -> None:
-    from scripts.analysis.plot_hebe_burst_mass_inversion import required_burst_mass_msun
+    from scripts.experiments.archived_plot_hebe_burst_mass_inversion import required_burst_mass_msun
 
     mass = required_burst_mass_msun(
         heii_luminosity_erg_s=np.array([8.54e40]),
@@ -17,7 +17,7 @@ def test_required_burst_mass_from_heii_luminosity_uses_q_per_mass() -> None:
 
 
 def test_caseb_heii_to_hgamma_ratio_uses_hbeta_and_caseb_balmer_ratio() -> None:
-    from scripts.analysis.plot_hebe_burst_mass_inversion import caseb_heii_to_hgamma_ratio
+    from scripts.experiments.archived_plot_hebe_burst_mass_inversion import caseb_heii_to_hgamma_ratio
 
     ratio = caseb_heii_to_hgamma_ratio(
         heii1640_luminosity_per_msun=np.array([6.0]),
@@ -29,7 +29,7 @@ def test_caseb_heii_to_hgamma_ratio_uses_hbeta_and_caseb_balmer_ratio() -> None:
 
 
 def test_hbeta_loader_reconstructs_nonmonotonic_schaerer_is5_age_grid(tmp_path) -> None:
-    from scripts.analysis.plot_hebe_burst_mass_inversion import _load_hbeta_luminosity_table
+    from scripts.experiments.archived_plot_hebe_burst_mass_inversion import _load_hbeta_luminosity_table
 
     table = tmp_path / "pop3_test_is5.22"
     table.write_text(
@@ -51,7 +51,7 @@ def test_hbeta_loader_reconstructs_nonmonotonic_schaerer_is5_age_grid(tmp_path) 
 
 
 def test_burst_mass_inversion_rejects_nonpositive_photon_rates() -> None:
-    from scripts.analysis.plot_hebe_burst_mass_inversion import required_burst_mass_msun
+    from scripts.experiments.archived_plot_hebe_burst_mass_inversion import required_burst_mass_msun
 
     with pytest.raises(ValueError, match="q_heplus_per_msun must be positive"):
         required_burst_mass_msun(
@@ -61,11 +61,16 @@ def test_burst_mass_inversion_rejects_nonpositive_photon_rates() -> None:
 
 
 def test_burst_mass_inversion_defaults_use_existing_observation_table(monkeypatch) -> None:
-    from scripts.analysis import plot_hebe_burst_mass_inversion
+    from scripts.experiments import archived_plot_hebe_burst_mass_inversion
 
-    monkeypatch.setattr("sys.argv", ["plot_hebe_burst_mass_inversion.py"])
-    args = plot_hebe_burst_mass_inversion._parse_args()
+    monkeypatch.setattr("sys.argv", ["archived_plot_hebe_burst_mass_inversion.py"])
+    args = archived_plot_hebe_burst_mass_inversion._parse_args()
 
     assert args.observation_file.name == "maiolino_rusta_2026_heii_constraints.csv"
     assert args.output_prefix.name == "hebe_burst_mass_inversion"
     assert args.hgamma_to_hbeta == pytest.approx(0.47)
+    assert args.enable_archived_heii is False
+    with pytest.raises(RuntimeError, match="He II implementation is archived"):
+        archived_plot_hebe_burst_mass_inversion._validate_args(args)
+    args.enable_archived_heii = True
+    archived_plot_hebe_burst_mass_inversion._validate_args(args)

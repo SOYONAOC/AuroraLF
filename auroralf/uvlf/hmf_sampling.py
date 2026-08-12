@@ -1,3 +1,13 @@
+"""HMF weighting and Monte-Carlo UVLF estimation.
+
+The production halo mass function is the Reed et al. (2007) fit, DOI:
+10.1111/j.1365-2966.2006.11204.x, arXiv:astro-ph/0607150, evaluated with the
+``hmf`` implementation described by Murray, Power & Robotham (2013), DOI:
+10.1016/j.ascom.2013.11.001, arXiv:1306.6721.  AuroraLF's mass interpolation,
+two-level Monte-Carlo sampling, binning, and weighting are numerical estimator
+choices and should not be attributed to Reed et al.
+"""
+
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -13,6 +23,16 @@ import numpy as np
 from hmf import MassFunction
 
 from auroralf.constants import AB_ZEROPOINT_LNU, PLANCK18_NS, PLANCK18_SIGMA8
+from auroralf.model_options import (
+    DEFAULT_IMF_TRANSITION_PARAMETERS,
+    DEFAULT_MASS_FUNCTION_MODEL,
+    IMF_MODE_CANONICAL,
+    IMFTransitionParameters,
+    MASS_FUNCTION_MODEL_HMF_REED07,
+    MASS_FUNCTION_MODELS,
+    validate_imf_mode,
+    validate_mass_function_model,
+)
 from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
 from auroralf.seeding import (
     derive_hmf_mass_seed,
@@ -51,7 +71,6 @@ from auroralf.cooling import (
     compute_atomic_cooling_mass_msun,
     compute_popiii_lw_minimum_mass_msun,
 )
-from .imf import DEFAULT_IMF_TRANSITION_PARAMETERS, IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 from .pipeline import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
     DEFAULT_POPIII_SSP_FILE,
@@ -65,14 +84,10 @@ from .pipeline import (
 
 LOGM_MIN = 9.0
 LOGM_MAX = 13.0
-MASS_FUNCTION_MODEL_HMF_REED07 = "hmf_reed07"
-MASS_FUNCTION_MODELS = (MASS_FUNCTION_MODEL_HMF_REED07,)
-DEFAULT_MASS_FUNCTION_MODEL = MASS_FUNCTION_MODEL_HMF_REED07
 DEFAULT_HMF_DLOG10M = 0.005
 MASS_FUNCTION_NS = PLANCK18_NS
 MASS_FUNCTION_SIGMA8 = PLANCK18_SIGMA8
 HMF_REED07_FITTING_FUNCTION = "Reed07"
-DEPRECATED_MASS_FUNCTION_MODELS = {"massfunc_st", "hmf_watson13_fof"}
 
 
 @dataclass(frozen=True)
@@ -90,19 +105,6 @@ def uv_luminosity_to_muv(luminosity_nu: np.ndarray | float) -> np.ndarray | floa
     if np.ndim(luminosity_nu) == 0:
         return float(muv)
     return muv
-
-
-def validate_mass_function_model(model: str) -> str:
-    normalized = str(model).strip().lower()
-    if normalized in DEPRECATED_MASS_FUNCTION_MODELS:
-        raise ValueError(
-            f"{normalized} is no longer supported for AuroraLF production runs; "
-            f"use {MASS_FUNCTION_MODEL_HMF_REED07}."
-        )
-    if normalized not in MASS_FUNCTION_MODELS:
-        choices = ", ".join(MASS_FUNCTION_MODELS)
-        raise ValueError(f"mass_function_model must be one of: {choices}")
-    return normalized
 
 
 def _strict_finite_real(name: str, value: object) -> float:
@@ -243,6 +245,12 @@ def prepare_reed07_hmf_interpolator(
     cosmology: Cosmology,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
 ) -> Reed07HMFInterpolator:
+    """Build an interpolator for the direct Reed et al. (2007) HMF fit.
+
+    ``hmf`` evaluates the fitting function; the explicit ``h`` conversions
+    below convert its native mass and density units to ``Msun`` and
+    ``Mpc^-3 Msun^-1``.  Grid padding/interpolation is AuroraLF numerics.
+    """
     log_min = _strict_finite_real(
         "log10_halo_mass_min_msun",
         log10_halo_mass_min_msun,
@@ -334,6 +342,7 @@ def compute_reed07_halo_mass_function_dndm(
     cosmology: Cosmology,
     hmf_dlog10m: float = DEFAULT_HMF_DLOG10M,
 ) -> np.ndarray | float:
+    """Evaluate ``dn/dM`` from Reed et al. (2007) through ``hmf``."""
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
     mass = np.asarray(halo_mass_msun, dtype=float)

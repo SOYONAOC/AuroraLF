@@ -8,40 +8,36 @@ from concurrent.futures import (
     ProcessPoolExecutor,
     wait,
 )
-from dataclasses import dataclass
 import multiprocessing as mp
-from numbers import Integral, Real
 import os
-from pathlib import Path
 import time
 
 import numpy as np
 
 from auroralf.config import UVLFRunConfig
-from auroralf.io.schema import HaloSampleTable
-from auroralf.chemistry import (
-    MZRBirthMetallicityParameters,
-    RegulatorMetallicityParameters,
-)
-from auroralf.mah import Cosmology
+from auroralf.driver import build_uvlf_run_plan
 from auroralf.mah.thesan import preload_thesan_mah_cache
 from auroralf.mah.tng import preload_tng_mah_cache
+from auroralf.run_plan import UVLFModuleSwitches, UVLFRunPlan
+from auroralf.samples import HaloSampleTable
 from auroralf.results import (
     IMFModeResult,
     ModeRunDiagnostics,
     RedshiftResult,
     RunDiagnostics,
     UVLFRunResult,
-    _require_nonnegative,
-    _working_float_1d,
 )
 from auroralf.seeding import derive_hmf_mass_seed, derive_pipeline_random_seeds
-from auroralf.sfr import PopIIISFRParameters, SFRModelParameters
+from .accumulation import (
+    _ModeAccumulatorState,
+    _consume_mass_task_result,
+    _observe_halo_samples,
+    _observed_uvlf as _accumulate_observed_uvlf,
+    _strict_nonnegative_float_1d,
+)
 from .dust import compute_dust_attenuated_uvlf
-from .hmf_sampling import prepare_reed07_hmf_interpolator, uv_luminosity_to_muv
-from .imf import IMFTransitionParameters, validate_imf_mode
+from .hmf_sampling import prepare_reed07_hmf_interpolator
 from .pipeline import (
-    LoadedSSPKernels,
     evaluate_shared_halo_batch,
     load_ssp_kernels,
     prepare_shared_halo_batch,
@@ -49,578 +45,52 @@ from .pipeline import (
 from .streaming import WeightedHistogramAccumulator
 
 
-def _strict_float_scalar(name: str, value: object) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise TypeError(f"{name} must be a real non-boolean value")
-    result = float(value)
-    if not np.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
-
-
-def _strict_int_scalar(name: str, value: object) -> int:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
-        raise TypeError(f"{name} must be an integer non-boolean value")
-    return int(value)
-
-
-def _immutable_float_vector(name: str, value: object) -> np.ndarray:
-    array = _working_float_1d(name, value)
-    if not np.all(np.isfinite(array)) or np.any(array < 0.0):
-        raise ValueError(f"{name} must be finite and non-negative")
-    immutable = np.frombuffer(array.tobytes(order="C"), dtype=array.dtype).reshape(
-        array.shape
-    )
-    immutable.flags.writeable = False
-    return immutable
-
-
-@dataclass(frozen=True, slots=True)
-class _MassTaskSpec:
-    redshift: float
-    mass_index: int
-    halo_mass_msun: float
-    mass_weight_per_mpc3: float
-
-    def __post_init__(self) -> None:
-        redshift = _strict_float_scalar("redshift", self.redshift)
-        mass_index = _strict_int_scalar("mass_index", self.mass_index)
-        halo_mass = _strict_float_scalar("halo_mass_msun", self.halo_mass_msun)
-        mass_weight = _strict_float_scalar(
-            "mass_weight_per_mpc3",
-            self.mass_weight_per_mpc3,
-        )
-        if redshift < 0.0:
-            raise ValueError("redshift must be non-negative")
-        if mass_index < 0:
-            raise ValueError("mass_index must be non-negative")
-        if halo_mass <= 0.0:
-            raise ValueError("halo_mass_msun must be positive")
-        if mass_weight < 0.0:
-            raise ValueError("mass_weight_per_mpc3 must be non-negative")
-        for name, normalized in (
-            ("redshift", redshift),
-            ("mass_index", mass_index),
-            ("halo_mass_msun", halo_mass),
-            ("mass_weight_per_mpc3", mass_weight),
-        ):
-            object.__setattr__(self, name, normalized)
-
-
-def _normalize_mass_mode_metadata(
+def _observed_uvlf(
     *,
-    imf_mode: str,
-    topheavy_source_count: object,
-    starforming_source_count: object,
-    popiii_source_count: object,
-    active_source_count: object,
-    evaluation_seconds: object,
-) -> tuple[str, dict[str, int], float]:
-    mode = validate_imf_mode(imf_mode)
-    counts = {
-        name: _strict_int_scalar(name, value)
-        for name, value in (
-            ("topheavy_source_count", topheavy_source_count),
-            ("starforming_source_count", starforming_source_count),
-            ("popiii_source_count", popiii_source_count),
-            ("active_source_count", active_source_count),
-        )
-    }
-    if any(count < 0 for count in counts.values()):
-        raise ValueError("mode source counts must be non-negative")
-    if counts["topheavy_source_count"] > counts["starforming_source_count"]:
-        raise ValueError("topheavy_source_count must not exceed starforming_source_count")
-    if counts["starforming_source_count"] > counts["active_source_count"]:
-        raise ValueError("starforming_source_count must not exceed active_source_count")
-    if counts["popiii_source_count"] > counts["active_source_count"]:
-        raise ValueError("popiii_source_count must not exceed active_source_count")
-    seconds = _strict_float_scalar("evaluation_seconds", evaluation_seconds)
-    if seconds < 0.0:
-        raise ValueError("evaluation_seconds must be non-negative")
-    return mode, counts, seconds
+    centers: np.ndarray,
+    intrinsic_phi: np.ndarray,
+    intrinsic_sigma: np.ndarray,
+    redshift: float,
+    apply_dust: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compatibility boundary that injects the configured dust transform."""
 
-
-@dataclass(frozen=True, slots=True)
-class _MassModeTaskResult:
-    imf_mode: str
-    uv_luminosity_erg_per_s_hz: np.ndarray
-    topheavy_source_count: int
-    starforming_source_count: int
-    popiii_source_count: int
-    active_source_count: int
-    evaluation_seconds: float
-
-    def __post_init__(self) -> None:
-        mode, counts, seconds = _normalize_mass_mode_metadata(
-            imf_mode=self.imf_mode,
-            topheavy_source_count=self.topheavy_source_count,
-            starforming_source_count=self.starforming_source_count,
-            popiii_source_count=self.popiii_source_count,
-            active_source_count=self.active_source_count,
-            evaluation_seconds=self.evaluation_seconds,
-        )
-        luminosity = _immutable_float_vector(
-            "uv_luminosity_erg_per_s_hz",
-            self.uv_luminosity_erg_per_s_hz,
-        )
-        object.__setattr__(self, "imf_mode", mode)
-        object.__setattr__(self, "uv_luminosity_erg_per_s_hz", luminosity)
-        object.__setattr__(self, "evaluation_seconds", seconds)
-        for name, count in counts.items():
-            object.__setattr__(self, name, count)
-
-    def __reduce_ex__(self, protocol: int) -> tuple[object, tuple[object, ...]]:
-        del protocol
-        return (
-            _rebuild_mass_mode_task_result,
-            (
-                self.imf_mode,
-                self.uv_luminosity_erg_per_s_hz,
-                self.topheavy_source_count,
-                self.starforming_source_count,
-                self.popiii_source_count,
-                self.active_source_count,
-                self.evaluation_seconds,
-            ),
-        )
-
-
-def _rebuild_mass_mode_task_result(
-    imf_mode: str,
-    uv_luminosity_erg_per_s_hz: object,
-    topheavy_source_count: object,
-    starforming_source_count: object,
-    popiii_source_count: object,
-    active_source_count: object,
-    evaluation_seconds: object,
-) -> _MassModeTaskResult:
-    return _MassModeTaskResult(
-        imf_mode=imf_mode,
-        uv_luminosity_erg_per_s_hz=uv_luminosity_erg_per_s_hz,
-        topheavy_source_count=topheavy_source_count,
-        starforming_source_count=starforming_source_count,
-        popiii_source_count=popiii_source_count,
-        active_source_count=active_source_count,
-        evaluation_seconds=evaluation_seconds,
-    )
-
-
-def _validate_mass_mode_task_result_integrity(
-    result: _MassModeTaskResult,
-) -> None:
-    if type(result) is not _MassModeTaskResult:
-        raise TypeError("mode_results entries must be exactly _MassModeTaskResult")
-    _normalize_mass_mode_metadata(
-        imf_mode=result.imf_mode,
-        topheavy_source_count=result.topheavy_source_count,
-        starforming_source_count=result.starforming_source_count,
-        popiii_source_count=result.popiii_source_count,
-        active_source_count=result.active_source_count,
-        evaluation_seconds=result.evaluation_seconds,
-    )
-    luminosity = result.uv_luminosity_erg_per_s_hz
-    if type(luminosity) is not np.ndarray or luminosity.dtype != np.dtype(float):
-        raise TypeError("uv_luminosity_erg_per_s_hz must be a normalized float array")
-    if luminosity.ndim != 1 or luminosity.size == 0:
-        raise ValueError("uv_luminosity_erg_per_s_hz must be a non-empty 1D array")
-    if not np.all(np.isfinite(luminosity)) or np.any(luminosity < 0.0):
-        raise ValueError("uv_luminosity_erg_per_s_hz must be finite and non-negative")
-    current: object = luminosity
-    while isinstance(current, np.ndarray):
-        if current.flags.writeable:
-            raise ValueError("uv_luminosity_erg_per_s_hz must be immutable")
-        current = current.base
-    if isinstance(current, memoryview) and not current.readonly:
-        raise ValueError("uv_luminosity_erg_per_s_hz must be immutable")
-
-@dataclass(frozen=True, slots=True)
-class _MassTaskResult:
-    redshift: float
-    mass_index: int
-    halo_mass_msun: float
-    mass_weight_per_mpc3: float
-    final_sfr_mean_msun_per_yr: float
-    final_popiii_sfr_mean_msun_per_yr: float
-    mode_results: tuple[_MassModeTaskResult, ...]
-    shared_preparation_seconds: float
-    worker_pid: int
-    worker_context_token: str
-    worker_initialization_load_count: int
-    final_sfr_msun_per_yr: np.ndarray | None = None
-    final_popiii_sfr_msun_per_yr: np.ndarray | None = None
-
-    def __post_init__(self) -> None:
-        spec = _MassTaskSpec(
-            redshift=self.redshift,
-            mass_index=self.mass_index,
-            halo_mass_msun=self.halo_mass_msun,
-            mass_weight_per_mpc3=self.mass_weight_per_mpc3,
-        )
-        final_sfr = _strict_float_scalar(
-            "final_sfr_mean_msun_per_yr",
-            self.final_sfr_mean_msun_per_yr,
-        )
-        final_popiii_sfr = _strict_float_scalar(
-            "final_popiii_sfr_mean_msun_per_yr",
-            self.final_popiii_sfr_mean_msun_per_yr,
-        )
-        if final_sfr < 0.0 or final_popiii_sfr < 0.0:
-            raise ValueError("final SFR means must be non-negative")
-        if type(self.mode_results) is not tuple or not self.mode_results:
-            raise TypeError("mode_results must be a non-empty tuple")
-        for result in self.mode_results:
-            _validate_mass_mode_task_result_integrity(result)
-        modes = tuple(result.imf_mode for result in self.mode_results)
-        if len(set(modes)) != len(modes):
-            raise ValueError("mode_results must contain unique IMF modes")
-        sample_count = self.mode_results[0].uv_luminosity_erg_per_s_hz.size
-        if any(
-            result.uv_luminosity_erg_per_s_hz.size != sample_count
-            for result in self.mode_results
-        ):
-            raise ValueError("mode_results luminosity arrays must have equal lengths")
-        if (self.final_sfr_msun_per_yr is None) != (
-            self.final_popiii_sfr_msun_per_yr is None
-        ):
-            raise ValueError("per-track final SFR arrays must be both present or both absent")
-        final_sfr_samples: np.ndarray | None = None
-        final_popiii_sfr_samples: np.ndarray | None = None
-        if self.final_sfr_msun_per_yr is not None:
-            final_sfr_samples = _immutable_float_vector(
-                "final_sfr_msun_per_yr",
-                self.final_sfr_msun_per_yr,
-            )
-            final_popiii_sfr_samples = _immutable_float_vector(
-                "final_popiii_sfr_msun_per_yr",
-                self.final_popiii_sfr_msun_per_yr,
-            )
-            if (
-                final_sfr_samples.size != sample_count
-                or final_popiii_sfr_samples.size != sample_count
-            ):
-                raise ValueError(
-                    "per-track final SFR arrays must match luminosity sample count"
-                )
-        seconds = _strict_float_scalar(
-            "shared_preparation_seconds",
-            self.shared_preparation_seconds,
-        )
-        if seconds < 0.0:
-            raise ValueError("shared_preparation_seconds must be non-negative")
-        worker_pid = _strict_int_scalar("worker_pid", self.worker_pid)
-        initialization_count = _strict_int_scalar(
-            "worker_initialization_load_count",
-            self.worker_initialization_load_count,
-        )
-        if worker_pid <= 0:
-            raise ValueError("worker_pid must be positive")
-        if type(self.worker_context_token) is not str or not self.worker_context_token:
-            raise TypeError("worker_context_token must be a non-empty string")
-        if initialization_count != 1:
-            raise ValueError("worker_initialization_load_count must equal 1")
-        for name in (
-            "redshift",
-            "mass_index",
-            "halo_mass_msun",
-            "mass_weight_per_mpc3",
-        ):
-            object.__setattr__(self, name, getattr(spec, name))
-        object.__setattr__(self, "final_sfr_mean_msun_per_yr", final_sfr)
-        object.__setattr__(
-            self,
-            "final_popiii_sfr_mean_msun_per_yr",
-            final_popiii_sfr,
-        )
-        object.__setattr__(self, "shared_preparation_seconds", seconds)
-        object.__setattr__(self, "worker_pid", worker_pid)
-        object.__setattr__(self, "final_sfr_msun_per_yr", final_sfr_samples)
-        object.__setattr__(
-            self,
-            "final_popiii_sfr_msun_per_yr",
-            final_popiii_sfr_samples,
-        )
-        object.__setattr__(
-            self,
-            "worker_initialization_load_count",
-            initialization_count,
-        )
-
-    def __reduce_ex__(self, protocol: int) -> tuple[object, tuple[object, ...]]:
-        del protocol
-        return (
-            _rebuild_mass_task_result,
-            (
-                self.redshift,
-                self.mass_index,
-                self.halo_mass_msun,
-                self.mass_weight_per_mpc3,
-                self.final_sfr_mean_msun_per_yr,
-                self.final_popiii_sfr_mean_msun_per_yr,
-                self.mode_results,
-                self.shared_preparation_seconds,
-                self.worker_pid,
-                self.worker_context_token,
-                self.worker_initialization_load_count,
-                self.final_sfr_msun_per_yr,
-                self.final_popiii_sfr_msun_per_yr,
-            ),
-        )
-
-
-def _rebuild_mass_task_result(
-    redshift: object,
-    mass_index: object,
-    halo_mass_msun: object,
-    mass_weight_per_mpc3: object,
-    final_sfr_mean_msun_per_yr: object,
-    final_popiii_sfr_mean_msun_per_yr: object,
-    mode_results: object,
-    shared_preparation_seconds: object,
-    worker_pid: object,
-    worker_context_token: object,
-    worker_initialization_load_count: object,
-    final_sfr_msun_per_yr: object = None,
-    final_popiii_sfr_msun_per_yr: object = None,
-) -> _MassTaskResult:
-    return _MassTaskResult(
+    return _accumulate_observed_uvlf(
+        centers=centers,
+        intrinsic_phi=intrinsic_phi,
+        intrinsic_sigma=intrinsic_sigma,
         redshift=redshift,
-        mass_index=mass_index,
-        halo_mass_msun=halo_mass_msun,
-        mass_weight_per_mpc3=mass_weight_per_mpc3,
-        final_sfr_mean_msun_per_yr=final_sfr_mean_msun_per_yr,
-        final_popiii_sfr_mean_msun_per_yr=final_popiii_sfr_mean_msun_per_yr,
-        mode_results=mode_results,
-        shared_preparation_seconds=shared_preparation_seconds,
-        worker_pid=worker_pid,
-        worker_context_token=worker_context_token,
-        worker_initialization_load_count=worker_initialization_load_count,
-        final_sfr_msun_per_yr=final_sfr_msun_per_yr,
-        final_popiii_sfr_msun_per_yr=final_popiii_sfr_msun_per_yr,
+        apply_dust=apply_dust,
+        dust_transform=compute_dust_attenuated_uvlf,
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _SchedulingSnapshot:
-    running_count: int
-    completed_waiting_count: int
-    total_occupancy: int
-    submitted_count: int
-    consumed_count: int
+from .runner_models import (
+    _strict_float_scalar,
+    _strict_int_scalar,
+    _MassTaskSpec,
+    _MassModeTaskResult,
+    _validate_mass_mode_task_result_integrity,
+    _MassTaskResult,
+    _SchedulingSnapshot,
+)
 
 
-@dataclass(frozen=True, slots=True)
-class _WorkerContext:
-    config: UVLFRunConfig
-    cosmology: Cosmology
-    kernels: LoadedSSPKernels
-    sfr_parameters: SFRModelParameters
-    popiii_parameters: PopIIISFRParameters
-    transition_parameters: IMFTransitionParameters
-    mzr_parameters: MZRBirthMetallicityParameters | None
-    regulator_parameters: RegulatorMetallicityParameters | None
-    resolved_simulation_cache_paths: tuple[tuple[float, Path], ...]
-    context_token: str
-    initialization_load_count: int
-    include_samples: bool
-
-    def __post_init__(self) -> None:
-        if type(self.config) is not UVLFRunConfig:
-            raise TypeError("config must be exactly UVLFRunConfig")
-        for name, value, expected in (
-            ("cosmology", self.cosmology, Cosmology),
-            ("kernels", self.kernels, LoadedSSPKernels),
-            ("sfr_parameters", self.sfr_parameters, SFRModelParameters),
-            ("popiii_parameters", self.popiii_parameters, PopIIISFRParameters),
-            (
-                "transition_parameters",
-                self.transition_parameters,
-                IMFTransitionParameters,
-            ),
-        ):
-            if type(value) is not expected:
-                raise TypeError(f"{name} must be exactly {expected.__name__}")
-        if self.mzr_parameters is not None and type(
-            self.mzr_parameters
-        ) is not MZRBirthMetallicityParameters:
-            raise TypeError("mzr_parameters must be exactly MZRBirthMetallicityParameters")
-        if self.regulator_parameters is not None and type(
-            self.regulator_parameters
-        ) is not RegulatorMetallicityParameters:
-            raise TypeError(
-                "regulator_parameters must be exactly RegulatorMetallicityParameters"
-            )
-        if type(self.resolved_simulation_cache_paths) is not tuple:
-            raise TypeError("resolved_simulation_cache_paths must be a tuple")
-        seen_redshifts: set[float] = set()
-        normalized_paths: list[tuple[float, Path]] = []
-        for item in self.resolved_simulation_cache_paths:
-            if type(item) is not tuple or len(item) != 2:
-                raise TypeError("resolved simulation cache entries must be (redshift, Path)")
-            redshift = _strict_float_scalar("resolved cache redshift", item[0])
-            path = item[1]
-            if not isinstance(path, Path) or not path.is_absolute():
-                raise ValueError("resolved simulation cache path must be an absolute Path")
-            if redshift in seen_redshifts:
-                raise ValueError("resolved simulation cache redshifts must be unique")
-            seen_redshifts.add(redshift)
-            normalized_paths.append((redshift, path))
-        expected_cache_redshifts = (
-            set(self.config.redshifts)
-            if self.config.mah.backend in ("tng", "thesan")
-            else set()
-        )
-        if seen_redshifts != expected_cache_redshifts:
-            raise ValueError(
-                "resolved simulation cache paths must cover every configured redshift "
-                "exactly for the active backend"
-            )
-        if type(self.context_token) is not str or not self.context_token:
-            raise TypeError("context_token must be a non-empty string")
-        if type(self.include_samples) is not bool:
-            raise TypeError("include_samples must be exactly bool")
-        load_count = _strict_int_scalar(
-            "initialization_load_count",
-            self.initialization_load_count,
-        )
-        if load_count != 1:
-            raise ValueError("initialization_load_count must equal 1")
-        object.__setattr__(
-            self,
-            "resolved_simulation_cache_paths",
-            tuple(normalized_paths),
-        )
-        object.__setattr__(self, "initialization_load_count", load_count)
-
-    def simulation_cache_path_for(self, redshift: float) -> Path | None:
-        for cache_redshift, path in self.resolved_simulation_cache_paths:
-            if cache_redshift == redshift:
-                return path
-        return None
-
-    def __reduce_ex__(self, protocol: int) -> tuple[object, tuple[object, ...]]:
-        del protocol
-        return (
-            _rebuild_worker_context,
-            (
-                self.config,
-                self.cosmology,
-                self.kernels,
-                self.sfr_parameters,
-                self.popiii_parameters,
-                self.transition_parameters,
-                self.mzr_parameters,
-                self.regulator_parameters,
-                self.resolved_simulation_cache_paths,
-                self.context_token,
-                self.initialization_load_count,
-                self.include_samples,
-            ),
-        )
-
-
-def _rebuild_worker_context(
-    config: object,
-    cosmology: object,
-    kernels: object,
-    sfr_parameters: object,
-    popiii_parameters: object,
-    transition_parameters: object,
-    mzr_parameters: object,
-    regulator_parameters: object,
-    resolved_simulation_cache_paths: object,
-    context_token: object,
-    initialization_load_count: object,
-    include_samples: object,
-) -> _WorkerContext:
-    return _WorkerContext(
-        config=config,
-        cosmology=cosmology,
-        kernels=kernels,
-        sfr_parameters=sfr_parameters,
-        popiii_parameters=popiii_parameters,
-        transition_parameters=transition_parameters,
-        mzr_parameters=mzr_parameters,
-        regulator_parameters=regulator_parameters,
-        resolved_simulation_cache_paths=resolved_simulation_cache_paths,
-        context_token=context_token,
-        initialization_load_count=initialization_load_count,
-        include_samples=include_samples,
-    )
-
-
-_WORKER_CONTEXT: _WorkerContext | None = None
+_WorkerContext = UVLFRunPlan
+_WORKER_CONTEXT: UVLFRunPlan | None = None
 
 
 def _build_worker_context(
     config: UVLFRunConfig,
     *,
     include_samples: bool = False,
-) -> _WorkerContext:
-    if type(config) is not UVLFRunConfig:
-        raise TypeError("config must be exactly UVLFRunConfig")
-    if type(include_samples) is not bool:
-        raise TypeError("include_samples must be exactly bool")
-    cosmology = config.cosmology.to_model()
-    resolved_cache_paths: list[tuple[float, Path]] = []
-    if config.mah.backend == "tng":
-        if config.mah.tng_cache_path is None:
-            raise RuntimeError("validated TNG config has no cache path")
-        for redshift in config.redshifts:
-            resolved_cache_paths.append(
-                (
-                    redshift,
-                    preload_tng_mah_cache(
-                        config.mah.tng_cache_path,
-                        z_final=redshift,
-                        cosmology=cosmology,
-                    ),
-                )
-            )
-    elif config.mah.backend == "thesan":
-        if config.mah.thesan_cache_path is None:
-            raise RuntimeError("validated THESAN config has no cache path")
-        for redshift in config.redshifts:
-            resolved_cache_paths.append(
-                (
-                    redshift,
-                    preload_thesan_mah_cache(
-                        config.mah.thesan_cache_path,
-                        z_final=redshift,
-                        cosmology=cosmology,
-                    ),
-                )
-            )
-    kernels = load_ssp_kernels(
-        ssp_file=config.stellar_population.canonical_ssp_path,
-        imf_modes=config.stellar_population.imf_modes,
-        topheavy_ssp_file=config.stellar_population.topheavy_ssp_path,
-        topheavy_ssp_metallicity=(
-            config.stellar_population.topheavy_ssp_template_metallicity_zsun
-        ),
-        enable_popiii=config.stellar_population.enable_popiii,
-        popiii_ssp_file=config.stellar_population.popiii_ssp_path,
-    )
-    return _WorkerContext(
-        config=config,
-        cosmology=cosmology,
-        kernels=kernels,
-        sfr_parameters=config.star_formation.to_model(),
-        popiii_parameters=config.stellar_population.to_popiii_model(),
-        transition_parameters=config.stellar_population.to_imf_transition_model(),
-        mzr_parameters=(
-            config.star_formation.mzr.to_model()
-            if config.star_formation.mzr is not None
-            else None
-        ),
-        regulator_parameters=(
-            config.star_formation.regulator.to_model()
-            if config.star_formation.regulator is not None
-            else None
-        ),
-        resolved_simulation_cache_paths=tuple(resolved_cache_paths),
-        context_token=f"{os.getpid()}-{time.time_ns()}-{id(config)}",
-        initialization_load_count=1,
+) -> UVLFRunPlan:
+    return build_uvlf_run_plan(
+        config,
         include_samples=include_samples,
+        ssp_kernel_loader=load_ssp_kernels,
+        tng_cache_loader=preload_tng_mah_cache,
+        thesan_cache_loader=preload_thesan_mah_cache,
     )
 
 
@@ -663,13 +133,13 @@ def _run_mass_task(spec: _MassTaskSpec) -> _MassTaskResult:
         mass_index=spec.mass_index,
         z_start_max=config.mah.z_start_max,
         n_grid=config.mah.n_time_steps,
-        enable_popiii=config.stellar_population.enable_popiii,
+        enable_popiii=context.switches.enable_popiii,
         popiii_sfr_parameters=context.popiii_parameters,
-        sampler=config.mah.sampler,
-        mah_backend=config.mah.backend,
+        sampler=context.switches.parameter_sampler,
+        mah_backend=context.switches.mah_backend,
         tng_mah_cache_path=(
             resolved_cache_path
-            if config.mah.backend == "tng"
+            if context.switches.mah_backend == "tng"
             else config.mah.tng_cache_path
         ),
         tng_mass_bin_width_dex=config.mah.tng_mass_bin_width_dex,
@@ -678,14 +148,14 @@ def _run_mass_task(spec: _MassTaskSpec) -> _MassTaskResult:
         tng_time_grid_mode=config.mah.tng_time_grid_mode,
         thesan_mah_cache_path=(
             resolved_cache_path
-            if config.mah.backend == "thesan"
+            if context.switches.mah_backend == "thesan"
             else config.mah.thesan_cache_path
         ),
         thesan_mass_bin_width_dex=config.mah.thesan_mass_bin_width_dex,
         thesan_min_candidates=config.mah.thesan_min_candidates,
         thesan_smoothing_myr=config.mah.thesan_smoothing_myr,
         thesan_time_grid_mode=config.mah.thesan_time_grid_mode,
-        enable_time_delay=config.star_formation.enable_time_delay,
+        enable_time_delay=context.switches.enable_time_delay,
         sfr_model_parameters=context.sfr_parameters,
         mzr_metallicity_parameters=context.mzr_parameters,
         regulator_metallicity_parameters=context.regulator_parameters,
@@ -713,7 +183,7 @@ def _run_mass_task(spec: _MassTaskSpec) -> _MassTaskResult:
         else None
     )
     mode_results: list[_MassModeTaskResult] = []
-    for mode in config.stellar_population.imf_modes:
+    for mode in context.switches.imf_modes:
         evaluation_started = time.perf_counter()
         evaluation = evaluate_shared_halo_batch(
             shared,
@@ -880,63 +350,6 @@ def _ordered_parallel_results(
         raise
 
 
-@dataclass
-class _ModeAccumulatorState:
-    histogram: WeightedHistogramAccumulator
-    sample_count: int = 0
-    valid_sample_count: int = 0
-    topheavy_source_count: int = 0
-    starforming_source_count: int = 0
-    popiii_source_count: int = 0
-    active_source_count: int = 0
-    sfrd_msun_per_yr_per_mpc3: float = 0.0
-    popiii_sfrd_msun_per_yr_per_mpc3: float = 0.0
-    evaluation_seconds: float = 0.0
-
-
-def _strict_nonnegative_float_1d(
-    name: str,
-    value: object,
-    *,
-    expected_shape: tuple[int, ...],
-) -> np.ndarray:
-    array = _working_float_1d(name, value)
-    if array.shape != expected_shape:
-        raise ValueError(f"{name} must have shape {expected_shape}, got {array.shape}")
-    _require_nonnegative(name, array)
-    return array
-
-
-def _observed_uvlf(
-    *,
-    centers: np.ndarray,
-    intrinsic_phi: np.ndarray,
-    intrinsic_sigma: np.ndarray,
-    redshift: float,
-    apply_dust: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    if not apply_dust:
-        return intrinsic_phi.copy(), intrinsic_sigma.copy()
-    dust = compute_dust_attenuated_uvlf(
-        intrinsic_muv=centers,
-        intrinsic_phi=intrinsic_phi,
-        z=redshift,
-        muv_obs=centers,
-    )
-    observed = _strict_nonnegative_float_1d(
-        "dust['phi_obs']",
-        dust["phi_obs"],
-        expected_shape=intrinsic_phi.shape,
-    )
-    fractional_sigma = np.divide(
-        intrinsic_sigma,
-        intrinsic_phi,
-        out=np.full_like(intrinsic_sigma, np.nan),
-        where=intrinsic_phi > 0.0,
-    )
-    return observed, observed * fractional_sigma
-
-
 def _iter_mass_task_specs(
     config: UVLFRunConfig,
     *,
@@ -993,89 +406,6 @@ def _iter_mass_task_specs(
         del log_mass, mass_msun, dndm, dndlogm, mass_weight
 
 
-def _consume_mass_task_result(
-    result: _MassTaskResult,
-    *,
-    config: UVLFRunConfig,
-    states: dict[str, _ModeAccumulatorState],
-) -> float:
-    expected_modes = config.stellar_population.imf_modes
-    actual_modes = tuple(mode_result.imf_mode for mode_result in result.mode_results)
-    if actual_modes != expected_modes:
-        raise RuntimeError(
-            f"mass task IMF mode order {actual_modes} does not match config {expected_modes}"
-        )
-    track_weight = (
-        result.mass_weight_per_mpc3 / config.sampling.n_tracks_per_halo_mass
-    )
-    for mode_result in result.mode_results:
-        if (
-            mode_result.uv_luminosity_erg_per_s_hz.size
-            != config.sampling.n_tracks_per_halo_mass
-        ):
-            raise RuntimeError(
-                "mass task luminosity count does not match n_tracks_per_halo_mass"
-            )
-        state = states[mode_result.imf_mode]
-        muv = np.asarray(
-            uv_luminosity_to_muv(mode_result.uv_luminosity_erg_per_s_hz),
-            dtype=float,
-        )
-        weights = np.full(muv.shape, track_weight)
-        state.histogram.update(muv, weights)
-        state.sample_count += int(muv.size)
-        state.valid_sample_count += int(np.count_nonzero(np.isfinite(muv)))
-        state.topheavy_source_count += mode_result.topheavy_source_count
-        state.starforming_source_count += mode_result.starforming_source_count
-        state.popiii_source_count += mode_result.popiii_source_count
-        state.active_source_count += mode_result.active_source_count
-        state.sfrd_msun_per_yr_per_mpc3 += (
-            result.final_sfr_mean_msun_per_yr * result.mass_weight_per_mpc3
-        )
-        state.popiii_sfrd_msun_per_yr_per_mpc3 += (
-            result.final_popiii_sfr_mean_msun_per_yr
-            * result.mass_weight_per_mpc3
-        )
-        state.evaluation_seconds += mode_result.evaluation_seconds
-    return result.shared_preparation_seconds
-
-
-def _observe_halo_samples(
-    result: _MassTaskResult,
-    *,
-    config: UVLFRunConfig,
-    observer: Callable[[HaloSampleTable], None],
-) -> None:
-    final_sfr = result.final_sfr_msun_per_yr
-    final_popiii_sfr = result.final_popiii_sfr_msun_per_yr
-    if final_sfr is None or final_popiii_sfr is None:
-        raise RuntimeError("sample-enabled mass result is missing per-track final SFR arrays")
-    track_count = config.sampling.n_tracks_per_halo_mass
-    if final_sfr.size != track_count or final_popiii_sfr.size != track_count:
-        raise RuntimeError("per-track final SFR count does not match config")
-    track_weight = result.mass_weight_per_mpc3 / track_count
-    for mode_result in result.mode_results:
-        luminosity = mode_result.uv_luminosity_erg_per_s_hz
-        if luminosity.size != track_count:
-            raise RuntimeError(
-                "mass task luminosity count does not match n_tracks_per_halo_mass"
-            )
-        observer(
-            HaloSampleTable(
-                redshift=result.redshift,
-                imf_mode=mode_result.imf_mode,
-                mass_index=np.full(track_count, result.mass_index, dtype=np.int64),
-                track_index=np.arange(track_count, dtype=np.int64),
-                halo_mass_msun=np.full(track_count, result.halo_mass_msun),
-                mass_weight_per_mpc3=np.full(track_count, track_weight),
-                uv_luminosity_erg_per_s_hz=luminosity,
-                muv=np.asarray(uv_luminosity_to_muv(luminosity), dtype=float),
-                sfr_msun_per_yr=final_sfr,
-                popiii_sfr_msun_per_yr=final_popiii_sfr,
-            )
-        )
-
-
 def run_uvlf_streaming(
     config: UVLFRunConfig,
     *,
@@ -1090,10 +420,14 @@ def run_uvlf_streaming(
     if _halo_sample_observer is not None and not callable(_halo_sample_observer):
         raise TypeError("_halo_sample_observer must be callable or None")
     started = time.perf_counter()
+    run_switches = UVLFModuleSwitches.from_config(
+        config,
+        include_samples=_halo_sample_observer is not None,
+    )
     cosmology = config.cosmology.to_model()
     redshift_results: list[RedshiftResult] = []
     all_diagnostics: list[ModeRunDiagnostics] = []
-    mode_count = len(config.stellar_population.imf_modes)
+    mode_count = len(run_switches.imf_modes)
     worker_count = min(
         config.sampling.workers,
         config.sampling.n_halo_mass_samples,
@@ -1119,7 +453,7 @@ def run_uvlf_streaming(
                         np.asarray(config.sampling.muv_bin_edges, dtype=float)
                     )
                 )
-                for mode in config.stellar_population.imf_modes
+                for mode in run_switches.imf_modes
             }
             hmf_seconds = [0.0]
             specs = _iter_mass_task_specs(
@@ -1170,7 +504,7 @@ def run_uvlf_streaming(
             shared_seconds += hmf_seconds[0]
 
             mode_results: list[IMFModeResult] = []
-            for mode in config.stellar_population.imf_modes:
+            for mode in run_switches.imf_modes:
                 state = states[mode]
                 histogram = state.histogram.finalize()
                 observed_phi, observed_sigma = _observed_uvlf(
@@ -1184,7 +518,7 @@ def run_uvlf_streaming(
                         copy=True,
                     ),
                     redshift=redshift,
-                    apply_dust=config.sampling.apply_dust,
+                    apply_dust=run_switches.apply_dust,
                 )
                 mode_results.append(
                     IMFModeResult(

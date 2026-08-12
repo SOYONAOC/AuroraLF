@@ -84,6 +84,15 @@ def _pisn_events_per_stellar_mass(
     pisn_min_msun: float,
     pisn_max_msun: float,
 ) -> float:
+    """Return the PISN-event count per unit formed stellar mass.
+
+    The numerator integrates a power-law IMF over the classical non-rotating,
+    zero-metallicity PISN progenitor interval of Heger & Woosley (2002), DOI:
+    10.1086/338487, arXiv:astro-ph/0107037.  A slope of 2.35 is the Salpeter
+    (1955) convention, DOI: 10.1086/145971.  The adopted IMF limits and the
+    conversion of UV-inferred Pop III star formation into a rate are explicit
+    AuroraLF proxy assumptions, not a full delay-time/explosion model.
+    """
     if not np.isfinite(imf_slope):
         raise ValueError("imf_slope must be finite")
     if imf_min_msun <= 0.0 or imf_max_msun <= imf_min_msun:

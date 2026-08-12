@@ -1,3 +1,12 @@
+"""Archived birth-metallicity priors from mass--metallicity relations.
+
+The ``jades_lowmass`` relation directly implements Curti et al. (2024), DOI:
+10.1051/0004-6361/202346698.  The historical ``fire2_highz`` function is an
+AuroraLF linear approximation retained for compatibility; it is *not* the
+redshift-dependent FIRE relation published by Ma et al. (2016).  These priors
+assign source-time metallicity along a fixed SFH and do not feed back on SFR.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -45,11 +54,18 @@ def equivalent_oxygen_abundance_from_zsun(
 
 
 def fire2_highz_mzr_oh12(logmstar: np.ndarray | float) -> np.ndarray:
+    """Return AuroraLF's archived high-z linear approximation.
+
+    Despite the historical API name, this is not the published Ma et al.
+    (2016) redshift-dependent FIRE equation.  The name and values are retained
+    only for exact reproduction of old AuroraLF diagnostics.
+    """
     logmstar_array = np.asarray(logmstar, dtype=float)
     return SOLAR_OXYGEN_ABUNDANCE + 0.37 * logmstar_array - 4.3
 
 
 def jades_lowmass_mzr_oh12(logmstar: np.ndarray | float) -> np.ndarray:
+    """Return the low-mass JADES MZR of Curti et al. (2024)."""
     logmstar_array = np.asarray(logmstar, dtype=float)
     return 7.72 + 0.17 * (logmstar_array - 8.0)
 
@@ -88,7 +104,9 @@ def compute_mzr_birth_metallicity(
     The stellar mass used by the MZR is the cumulative surviving stellar mass
     through the current source-time cell, computed from the externally supplied
     SFR history. The MZR prior therefore supplies only ``Z_birth(t)`` for the
-    IMF gate and does not feed back into the SFR or gas reservoir.
+    IMF gate and does not feed back into the SFR or gas reservoir.  Relation
+    provenance, including the ``fire2_highz`` naming caveat, is documented at
+    module level.
     """
 
     params = MZRBirthMetallicityParameters() if parameters is None else parameters

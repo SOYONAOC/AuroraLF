@@ -1,20 +1,26 @@
+"""Cooling thresholds used to route halo star-formation channels.
+
+Atomic cooling uses Barkana & Loeb (2001), DOI:
+10.1016/S0370-1573(01)00019-9, arXiv:astro-ph/0010468, together with the Bryan
+& Norman (1998) virial overdensity fit.  The Pop III molecular/LW threshold
+follows the formula adopted by Cruz et al. (2025), DOI:
+10.1103/PhysRevD.111.083503, arXiv:2407.18294; its physical LW-cooling basis is
+Machacek, Bryan & Abel (2001), DOI: 10.1086/319014,
+arXiv:astro-ph/0007198.
+"""
+
 from __future__ import annotations
 
 import numpy as np
 
 from auroralf.mah.models import Cosmology
 from auroralf.mah.physics import (
-    BRYAN_NORMAN_REFERENCE_OVERDENSITY,
-    compute_bryan_norman_virial_terms,
+    ATOMIC_COOLING_MU,
+    ATOMIC_COOLING_TEMPERATURE_K,
+    compute_atomic_cooling_mass_msun,
 )
 
 
-ATOMIC_COOLING_TEMPERATURE_K = 1.0e4
-ATOMIC_COOLING_MU = 0.61
-VIRIAL_TEMPERATURE_NORMALIZATION_K = 1.98e4
-VIRIAL_MASS_NORMALIZATION_MSUN = 1.0e8
-VIRIAL_MU_NORMALIZATION = 0.6
-VIRIAL_REDSHIFT_NORMALIZATION = 10.0
 POPIII_MOLECULAR_COOLING_M0_NORMALIZATION_MSUN = 3.3e7
 POPIII_MOLECULAR_COOLING_REDSHIFT_EXPONENT = -1.5
 POPIII_LW_FEEDBACK_COEFFICIENT = 2.0
@@ -30,78 +36,19 @@ STELLAR_CHANNELS = (
 )
 
 
-def compute_atomic_cooling_mass_msun(
-    z_obs: np.ndarray | float,
-    *,
-    cosmology: Cosmology,
-    virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
-    mu: float = ATOMIC_COOLING_MU,
-) -> np.ndarray | float:
-    """Return the halo mass corresponding to a virial-temperature threshold.
-
-    This is the algebraic inverse of the Barkana & Loeb (2001) virial
-    temperature relation, using the Bryan & Norman spherical-collapse
-    overdensity fit.  ``virial_temperature_k`` is in K and the returned mass
-    is in ``Msun``.
-    """
-
-    if not isinstance(cosmology, Cosmology):
-        raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
-
-    temperature_k = float(virial_temperature_k)
-    mean_molecular_weight = float(mu)
-    if not np.isfinite(temperature_k) or temperature_k <= 0.0:
-        raise ValueError("virial_temperature_k must be finite and positive")
-    if not np.isfinite(mean_molecular_weight) or mean_molecular_weight <= 0.0:
-        raise ValueError("mu must be finite and positive")
-
-    redshift = np.asarray(z_obs, dtype=float)
-    if not np.all(np.isfinite(redshift)):
-        raise ValueError("z_obs must be finite")
-    if np.any(redshift < 0.0):
-        raise ValueError("z_obs must be non-negative")
-
-    h = cosmology.h0_km_s_mpc / 100.0
-    one_plus_redshift = 1.0 + redshift
-    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-        _, omega_m_at_redshift, collapse_overdensity = compute_bryan_norman_virial_terms(
-            redshift,
-            cosmology=cosmology,
-        )
-        virial_correction = (
-            cosmology.omega_m
-            / omega_m_at_redshift
-            * collapse_overdensity
-            / BRYAN_NORMAN_REFERENCE_OVERDENSITY
-        )
-        threshold = (
-            VIRIAL_MASS_NORMALIZATION_MSUN
-            / h
-            * (temperature_k / VIRIAL_TEMPERATURE_NORMALIZATION_K) ** 1.5
-            * (mean_molecular_weight / VIRIAL_MU_NORMALIZATION) ** -1.5
-            * virial_correction**-0.5
-            * (one_plus_redshift / VIRIAL_REDSHIFT_NORMALIZATION) ** -1.5
-        )
-    if not np.all(np.isfinite(threshold)):
-        raise RuntimeError("atomic cooling mass calculation returned non-finite masses")
-    if np.any(threshold <= 0.0):
-        raise RuntimeError("atomic cooling mass calculation returned non-positive masses")
-    if np.ndim(z_obs) == 0:
-        return float(threshold)
-    return np.asarray(threshold, dtype=float)
-
-
 def compute_popiii_lw_minimum_mass_msun(
     z_obs: np.ndarray | float,
     *,
     lw_background_j21: np.ndarray | float = DEFAULT_LW_BACKGROUND_J21,
 ) -> np.ndarray | float:
-    """Return the Cruz/Venditti Pop III molecular-cooling mass.
+    """Return the Cruz et al. (2025) Pop III molecular-cooling mass.
 
     ``lw_background_j21`` is the LW intensity in units of
     ``1e-21 erg s^-1 cm^-2 Hz^-1 sr^-1``. The default zero background reduces
     to ``M0(z) = 3.3e7 * (1 + z)^(-3/2) Msun``, the Cruz/Zeus21
-    zero-feedback molecular-cooling threshold for ``Tvir=1e3 K``.
+    zero-feedback molecular-cooling threshold for ``Tvir=1e3 K``.  The fixed
+    coefficients are direct from the adopted Cruz/Zeus21 prescription, not a
+    fit performed by AuroraLF.
     """
 
     redshift = np.asarray(z_obs, dtype=float)
@@ -145,7 +92,15 @@ def classify_halo_stellar_channels(
     virial_temperature_k: float = ATOMIC_COOLING_TEMPERATURE_K,
     mu: float = ATOMIC_COOLING_MU,
 ) -> np.ndarray | str:
-    """Classify halos into below-PopIII, Pop III minihalo, or Pop II channels."""
+    """Route halos by cooling scale, not by a chemical Pop II/Pop III identity.
+
+    ``M < M_min,III`` is below the adopted star-formation threshold;
+    ``M_min,III <= M < M_atomic`` is the minihalo/Pop-III cooling channel; and
+    ``M >= M_atomic`` is the atomic-cooling channel.  The last channel can host
+    either Pop II or Pop III stars; a physical population identity requires an
+    enrichment/pristine-history model, which this classifier does not contain.
+    The historical return label ``"popii"`` is retained for API compatibility.
+    """
 
     mass = np.asarray(halo_mass_msun, dtype=float)
     if not np.all(np.isfinite(mass)):

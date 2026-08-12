@@ -1,3 +1,13 @@
+"""Smooth-duty Pop III star-formation prescriptions.
+
+The production equations implement Cruz et al. (2025), Eqs. 8 and 10--13,
+DOI: 10.1103/PhysRevD.111.083503, arXiv:2407.18294.  Fixed upper-mass choices
+such as ``Mup=1e10 Msun`` are AuroraLF sensitivity tests motivated by the
+occupation/burst dependence discussed by Venditti et al. (2025), DOI:
+10.3847/1538-4357/ae0610, arXiv:2505.20263; they are not the Cruz fiducial
+atomic-cooling cap and are not a time-resolved physical burst model.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -105,7 +115,7 @@ def compute_popiii_star_formation_efficiency(
     halo_mass_msun: np.ndarray | float,
     parameters: PopIIISFRParameters | None = None,
 ) -> np.ndarray | float:
-    """Return the Cruz et al. (2025, Eq. 10) Pop III efficiency."""
+    """Return the direct Cruz et al. (2025, Eq. 10) Pop III efficiency."""
 
     params = _resolve_popiii_sfr_parameters(parameters)
     mass = np.asarray(halo_mass_msun, dtype=float)
@@ -131,6 +141,12 @@ def compute_popiii_upper_mass_msun(
     *,
     cosmology: Cosmology,
 ) -> np.ndarray | float:
+    """Return the atomic cap or an explicit AuroraLF sensitivity-test cap.
+
+    ``upper_mass_mode='atomic'`` follows the Cruz et al. cooling window.
+    ``'fixed'`` is a project diagnostic and must not be described as a
+    literature-calibrated occupation model.
+    """
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")
     params = _resolve_popiii_sfr_parameters(parameters)

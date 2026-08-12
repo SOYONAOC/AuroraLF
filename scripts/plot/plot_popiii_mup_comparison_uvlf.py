@@ -15,6 +15,7 @@ from auroralf.sfr import (
     POPIII_UPPER_MASS_MODE_ATOMIC,
     POPIII_UPPER_MASS_MODE_FIXED,
     PopIIISFRParameters,
+    SFRModelParameters,
 )
 from auroralf.uvlf import compute_dust_attenuated_uvlf, sample_uvlf_from_hmf
 from scripts.plot.plot_group_meeting_popiii_components_uvlf import (
@@ -110,6 +111,22 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=14501)
     parser.add_argument("--logM-max", type=float, default=12.0)
     parser.add_argument("--fixed-upper-mass-msun", type=float, default=1.0e10)
+    parser.add_argument(
+        "--scenario-mode",
+        choices=("both", "fixed-only"),
+        default="both",
+        help="Compute both upper-mass scenarios or only the fixed-M_up scenario.",
+    )
+    parser.add_argument(
+        "--omit-samples",
+        action="store_true",
+        help="Write model curves and provenance without the large per-halo sample arrays.",
+    )
+    parser.add_argument("--epsilon-0", type=float, default=0.12)
+    parser.add_argument("--fstar-characteristic-mass-msun", type=float, default=10.0**11.7)
+    parser.add_argument("--fstar-beta", type=float, default=0.66)
+    parser.add_argument("--fstar-gamma", type=float, default=0.65)
+    parser.add_argument("--hmf-dlog10m", type=float, default=0.02)
     parser.add_argument("--lw-background-j21", type=float, default=0.0)
     parser.add_argument("--muv-min", type=float, default=-26.0)
     parser.add_argument("--muv-max", type=float, default=1.5)
@@ -155,6 +172,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--logM-max must be positive")
     if args.fixed_upper_mass_msun <= 0.0 or not np.isfinite(args.fixed_upper_mass_msun):
         raise ValueError("--fixed-upper-mass-msun must be finite and positive")
+    if not 0.0 <= args.epsilon_0 <= 1.0:
+        raise ValueError("--epsilon-0 must lie in [0, 1]")
+    if args.fstar_characteristic_mass_msun <= 0.0:
+        raise ValueError("--fstar-characteristic-mass-msun must be positive")
+    if args.fstar_beta < 0.0 or args.fstar_gamma < 0.0:
+        raise ValueError("--fstar-beta and --fstar-gamma must be non-negative")
+    if args.hmf_dlog10m <= 0.0:
+        raise ValueError("--hmf-dlog10m must be positive")
     if args.lw_background_j21 < 0.0:
         raise ValueError("--lw-background-j21 must be non-negative")
     if args.muv_max <= args.muv_min:
@@ -522,6 +547,14 @@ def _run_scenario(
         popiii_sfr_parameters=params,
         popiii_ssp_file=str(popiii_ssp_file),
         imf_mode="canonical",
+        sfr_model_parameters=SFRModelParameters(
+            epsilon_0=float(args.epsilon_0),
+            characteristic_mass=float(args.fstar_characteristic_mass_msun),
+            beta_star=float(args.fstar_beta),
+            gamma_star=float(args.fstar_gamma),
+        ),
+        mass_function_model="hmf_reed07",
+        hmf_dlog10m=float(args.hmf_dlog10m),
     )
 
     total_luminosity = np.asarray(result.samples["luminosity"], dtype=float)
@@ -648,6 +681,7 @@ def _save_npz(
     logm_min: float,
     popiii_ssp_file: Path,
     results: list[ScenarioResult],
+    include_samples: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, np.ndarray] = {
@@ -674,6 +708,16 @@ def _save_npz(
         "apply_dust": np.asarray([bool(args.apply_dust)], dtype=bool),
         "popiii_ssp_file": np.asarray([str(popiii_ssp_file)]),
         "popiii_ssp_label": np.asarray([str(args.popiii_ssp_label)]),
+        "enable_time_delay": np.asarray([True], dtype=bool),
+        "mass_function_model": np.asarray(["hmf_reed07"]),
+        "hmf_dlog10m": np.asarray([float(args.hmf_dlog10m)], dtype=float),
+        "epsilon_0": np.asarray([float(args.epsilon_0)], dtype=float),
+        "fstar_characteristic_mass": np.asarray(
+            [float(args.fstar_characteristic_mass_msun)], dtype=float
+        ),
+        "fstar_beta": np.asarray([float(args.fstar_beta)], dtype=float),
+        "fstar_gamma": np.asarray([float(args.fstar_gamma)], dtype=float),
+        "samples_included": np.asarray([bool(include_samples)], dtype=bool),
     }
     for result in results:
         prefix = result.scenario.key
@@ -684,15 +728,16 @@ def _save_npz(
             payload[f"{prefix}_sigma_{name}"] = result.components[name]["phi_sigma"]
             payload[f"{prefix}_count_{name}"] = result.components[name]["raw_counts"]
             payload[f"{prefix}_phi_plot_{name}"] = result.plot_columns[name]
-        payload[f"{prefix}_total_luminosity"] = result.total_luminosity
-        payload[f"{prefix}_popii_luminosity"] = result.popii_luminosity
-        payload[f"{prefix}_popiii_luminosity"] = result.popiii_luminosity
-        payload[f"{prefix}_scattered_popiii_luminosity"] = result.scattered_popiii_luminosity
-        payload[f"{prefix}_scattered_total_luminosity"] = result.scattered_total_luminosity
-        payload[f"{prefix}_scattered_sample_weight"] = result.scattered_sample_weight
-        payload[f"{prefix}_sample_weight"] = result.sample_weight
-        payload[f"{prefix}_sample_mh"] = result.sample_mh
-        payload[f"{prefix}_sample_stellar_channel"] = result.sample_stellar_channel
+        if include_samples:
+            payload[f"{prefix}_total_luminosity"] = result.total_luminosity
+            payload[f"{prefix}_popii_luminosity"] = result.popii_luminosity
+            payload[f"{prefix}_popiii_luminosity"] = result.popiii_luminosity
+            payload[f"{prefix}_scattered_popiii_luminosity"] = result.scattered_popiii_luminosity
+            payload[f"{prefix}_scattered_total_luminosity"] = result.scattered_total_luminosity
+            payload[f"{prefix}_scattered_sample_weight"] = result.scattered_sample_weight
+            payload[f"{prefix}_sample_weight"] = result.sample_weight
+            payload[f"{prefix}_sample_mh"] = result.sample_mh
+            payload[f"{prefix}_sample_stellar_channel"] = result.sample_stellar_channel
     np.savez(path, **payload)
 
 
@@ -791,7 +836,18 @@ def _draw_figure(
     )
 
     plt.style.use("apj")
-    fig, axes = plt.subplots(1, 2, figsize=(13.6, 5.35), sharex=True, sharey=True)
+    panel_count = len(results)
+    if panel_count < 1:
+        raise ValueError("at least one scenario result is required")
+    fig, axes_grid = plt.subplots(
+        1,
+        panel_count,
+        figsize=(6.8 * panel_count, 5.35),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes = axes_grid[0]
     style_by_name = {
         "popii": {"color": "#1F5C8B", "linewidth": 2.35, "linestyle": "-", "label": "Pop II only", "zorder": 6},
         "popiii_burst": {
@@ -920,30 +976,35 @@ def main() -> None:
         ),
     ]
 
-    if args.current_npz_path is None:
-        current_result = _run_scenario(
-            cosmology=cosmology,
-            args=args,
-            scenario=scenarios[0],
-            bin_edges=bin_edges,
-            centers=centers,
-            logm_min=logm_min,
-            popiii_ssp_file=popiii_ssp_file,
-        )
-    else:
-        current_npz_path = _resolve_path(args.current_npz_path)
-        if not current_npz_path.is_file():
-            raise FileNotFoundError(f"current NPZ file not found: {current_npz_path}")
-        current_result = _load_current_scenario_from_npz(
-            path=current_npz_path,
-            args=args,
-            scenario=scenarios[0],
-            centers=centers,
-            popiii_minimum_mass_msun=popiii_minimum_mass_msun,
-            atomic_mass_msun=atomic_mass_msun,
-            logm_min=logm_min,
-            popiii_ssp_file=popiii_ssp_file,
-        )
+    results: list[ScenarioResult] = []
+    if args.scenario_mode == "both":
+        if args.current_npz_path is None:
+            current_result = _run_scenario(
+                cosmology=cosmology,
+                args=args,
+                scenario=scenarios[0],
+                bin_edges=bin_edges,
+                centers=centers,
+                logm_min=logm_min,
+                popiii_ssp_file=popiii_ssp_file,
+            )
+        else:
+            current_npz_path = _resolve_path(args.current_npz_path)
+            if not current_npz_path.is_file():
+                raise FileNotFoundError(f"current NPZ file not found: {current_npz_path}")
+            current_result = _load_current_scenario_from_npz(
+                path=current_npz_path,
+                args=args,
+                scenario=scenarios[0],
+                centers=centers,
+                popiii_minimum_mass_msun=popiii_minimum_mass_msun,
+                atomic_mass_msun=atomic_mass_msun,
+                logm_min=logm_min,
+                popiii_ssp_file=popiii_ssp_file,
+            )
+        results.append(current_result)
+    elif args.current_npz_path is not None:
+        raise ValueError("--current-npz-path is incompatible with --scenario-mode fixed-only")
     fixed_result = _run_scenario(
         cosmology=cosmology,
         args=args,
@@ -953,7 +1014,7 @@ def main() -> None:
         logm_min=logm_min,
         popiii_ssp_file=popiii_ssp_file,
     )
-    results = [current_result, fixed_result]
+    results.append(fixed_result)
 
     if args.no_observations:
         observations = []
@@ -978,6 +1039,7 @@ def main() -> None:
         logm_min=logm_min,
         popiii_ssp_file=popiii_ssp_file,
         results=results,
+        include_samples=not bool(args.omit_samples),
     )
 
     figure_path = _resolve_path(args.figure_path)

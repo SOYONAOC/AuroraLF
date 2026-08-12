@@ -32,19 +32,6 @@ from .hmf_sampling import (
     uv_luminosity_to_muv,
     validate_mass_function_model,
 )
-from .imf import (
-    DEFAULT_CANONICAL_SSP_FILE,
-    DEFAULT_IMF_TRANSITION_PARAMETERS,
-    DEFAULT_MILD_TOPHEAVY_SSP_FILE,
-    DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY,
-    DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN,
-    IMF_MODE_CANONICAL,
-    IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
-    IMF_MODE_Z_GATED_MILD_TOPHEAVY,
-    IMFTransitionParameters,
-    compute_topheavy_source_flags,
-    validate_imf_mode,
-)
 from .pipeline import (
     DEFAULT_BURST_SCATTER_TIMESCALE_MYR,
     DEFAULT_POPIII_SSP_FILE,
@@ -54,21 +41,12 @@ from .pipeline import (
 
 __all__ = [
     "DEFAULT_BURST_SCATTER_TIMESCALE_MYR",
-    "DEFAULT_CANONICAL_SSP_FILE",
-    "DEFAULT_IMF_TRANSITION_PARAMETERS",
-    "DEFAULT_MILD_TOPHEAVY_SSP_FILE",
-    "DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY",
     "DEFAULT_POPIII_SSP_FILE",
-    "DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN",
     "DEFAULT_MASS_FUNCTION_MODEL",
     "DEFAULT_LW_BACKGROUND_J21",
     "ATOMIC_COOLING_MU",
     "ATOMIC_COOLING_TEMPERATURE_K",
     "HaloUVPipelineResult",
-    "IMF_MODE_CANONICAL",
-    "IMF_MODE_MAH_BURST_MILD_TOPHEAVY",
-    "IMF_MODE_Z_GATED_MILD_TOPHEAVY",
-    "IMFTransitionParameters",
     "MASS_FUNCTION_MODEL_HMF_REED07",
     "MASS_FUNCTION_MODELS",
     "POPIII_LW_FEEDBACK_COEFFICIENT",
@@ -84,7 +62,6 @@ __all__ = [
     "compute_atomic_cooling_mass_msun",
     "compute_halo_mass_function_dndm",
     "compute_reed07_halo_mass_function_dndm",
-    "compute_topheavy_source_flags",
     "compute_dust_attenuated_uvlf",
     "intrinsic_muv_from_observed",
     "intrinsic_muv_jacobian",
@@ -95,5 +72,4 @@ __all__ = [
     "uv_dust_attenuation",
     "uv_luminosity_to_muv",
     "validate_mass_function_model",
-    "validate_imf_mode",
 ]

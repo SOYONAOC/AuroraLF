@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Archived Hebe burst-mass inversion; not a production AuroraLF model."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,24 +15,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from auroralf.ssp import (
+from auroralf.archive.heii1640 import (
     DEFAULT_CASEB_HEII1640_ERG_PER_PHOTON,
     load_popiii_heii1640_luminosity_table,
     load_popiii_heplus_ionizing_photon_table,
 )
 from auroralf.ssp.convolution import interpolate_ssp_luminosity
-from auroralf.ssp.heii1640 import SCHAERER_HBETA_LUMINOSITY_COLUMN
-from scripts.analysis.compare_popiii_heii_to_hebe import (
+from auroralf.archive.heii1640 import SCHAERER_HBETA_LUMINOSITY_COLUMN
+from scripts.experiments.archived_compare_popiii_heii_to_hebe import (
     DEFAULT_HEBE_OBSERVATION_FILE,
     _load_hebe_observation_constraints,
     _require_constraint,
 )
 
 
-DEFAULT_OUTPUT_PREFIX = PROJECT_ROOT / "outputs" / "hebe_burst_mass_inversion"
-DEFAULT_SLIDE_OUTPUT = (
-    PROJECT_ROOT / "slides" / "group_meeting_popiii_20260622" / "assets" / "hebe_burst_mass_inversion_slide.pdf"
-)
+DEFAULT_OUTPUT_PREFIX = PROJECT_ROOT / "outputs" / "archived_heii" / "hebe_burst_mass_inversion"
+DEFAULT_SLIDE_OUTPUT = PROJECT_ROOT / "outputs" / "archived_heii" / "hebe_burst_mass_inversion_slide.pdf"
 DEFAULT_SSP_MODELS = (
     (
         "Salpeter 1-100",
@@ -51,6 +51,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Plot Hebe Pop III burst-mass inversion and a Case-B HeII/Hgamma diagnostic."
     )
+    parser.add_argument(
+        "--enable-archived-heii",
+        action="store_true",
+        help="Explicitly run the archived, non-production He II diagnostic.",
+    )
     parser.add_argument("--observation-file", type=Path, default=DEFAULT_HEBE_OBSERVATION_FILE)
     parser.add_argument("--output-prefix", type=Path, default=DEFAULT_OUTPUT_PREFIX)
     parser.add_argument("--slide-output", type=Path, default=DEFAULT_SLIDE_OUTPUT)
@@ -70,6 +75,11 @@ def _resolve_project_path(path: Path) -> Path:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    if not args.enable_archived_heii:
+        raise RuntimeError(
+            "This He II implementation is archived and excluded from production. "
+            "Pass --enable-archived-heii only for historical reproduction."
+        )
     if args.age_min_myr <= 0.0:
         raise ValueError("--age-min-myr must be positive")
     if args.age_max_myr <= args.age_min_myr:

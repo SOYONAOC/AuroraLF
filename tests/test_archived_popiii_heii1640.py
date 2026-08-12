@@ -8,7 +8,7 @@ import pytest
 
 
 def test_popiii_heii1640_loader_reads_schaerer_recombination_table(tmp_path) -> None:
-    from auroralf.ssp import load_popiii_heii1640_luminosity_table
+    from auroralf.archive.heii1640 import load_popiii_heii1640_luminosity_table
 
     table = tmp_path / "pop3_test_is5.22"
     table.write_text(
@@ -33,7 +33,7 @@ def test_popiii_heii1640_loader_reads_schaerer_recombination_table(tmp_path) -> 
 
 
 def test_popiii_heplus_loader_reads_schaerer_q2_column(tmp_path) -> None:
-    from auroralf.ssp import load_popiii_heplus_ionizing_photon_table
+    from auroralf.archive.heii1640 import load_popiii_heplus_ionizing_photon_table
 
     table = tmp_path / "pop3_test_is5.22"
     table.write_text(
@@ -57,7 +57,7 @@ def test_popiii_heplus_loader_reads_schaerer_q2_column(tmp_path) -> None:
 
 
 def test_popiii_heplus_loader_maps_schaerer_no_emission_sentinel_to_zero(tmp_path) -> None:
-    from auroralf.ssp import load_popiii_heplus_ionizing_photon_table
+    from auroralf.archive.heii1640 import load_popiii_heplus_ionizing_photon_table
 
     table = tmp_path / "pop3_test_is5.22"
     table.write_text(
@@ -82,7 +82,7 @@ def test_heii_and_heplus_caches_reload_same_path_atomic_replacement_and_hit_unch
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from auroralf.ssp import heii1640
+    from auroralf.archive import heii1640
 
     def table_text(log_q2: str, hbeta: str) -> str:
         return "\n".join(
@@ -129,7 +129,7 @@ def test_heii_and_heplus_caches_reload_same_path_atomic_replacement_and_hit_unch
 
 
 def test_heii1640_luminosity_from_heplus_rate_applies_nebular_factors() -> None:
-    from auroralf.ssp import heii1640_luminosity_from_heplus_rate
+    from auroralf.archive.heii1640 import heii1640_luminosity_from_heplus_rate
 
     q_heplus = np.array([1.0e52, 2.0e52])
     luminosity = heii1640_luminosity_from_heplus_rate(
@@ -144,7 +144,7 @@ def test_heii1640_luminosity_from_heplus_rate_applies_nebular_factors() -> None:
 
 
 def test_heii1640_luminosity_from_heplus_rate_rejects_finite_input_overflow() -> None:
-    from auroralf.ssp import heii1640_luminosity_from_heplus_rate
+    from auroralf.archive.heii1640 import heii1640_luminosity_from_heplus_rate
 
     with pytest.raises(RuntimeError, match="computed HeII 1640 luminosity must be finite and non-negative"):
         heii1640_luminosity_from_heplus_rate(
@@ -167,7 +167,7 @@ def test_heii1640_luminosity_rejects_boolean_numeric_inputs_before_cast(
     name: str,
     value: object,
 ) -> None:
-    from auroralf.ssp import heii1640_luminosity_from_heplus_rate
+    from auroralf.archive.heii1640 import heii1640_luminosity_from_heplus_rate
 
     inputs: dict[str, object] = {
         "q_heplus": np.array([1.0e52]),
@@ -183,7 +183,7 @@ def test_heii1640_luminosity_rejects_boolean_numeric_inputs_before_cast(
 
 
 def test_final_ssp_line_convolution_uses_years_per_gyr() -> None:
-    from auroralf.ssp import compute_final_ssp_line_luminosity_from_sfr_grid
+    from auroralf.archive.heii1640 import compute_final_ssp_line_luminosity_from_sfr_grid
 
     t_grid_gyr = np.array([[0.0, 1.0e-3, 2.0e-3]])
     sfr_grid = np.array([[1.0, 1.0, 1.0]])
@@ -204,7 +204,7 @@ def test_final_ssp_line_convolution_uses_years_per_gyr() -> None:
 
 
 def test_final_ssp_line_convolution_rejects_invalid_shapes() -> None:
-    from auroralf.ssp import compute_final_ssp_line_luminosity_from_sfr_grid
+    from auroralf.archive.heii1640 import compute_final_ssp_line_luminosity_from_sfr_grid
 
     with pytest.raises(ValueError, match="identical shapes"):
         compute_final_ssp_line_luminosity_from_sfr_grid(
@@ -217,7 +217,7 @@ def test_final_ssp_line_convolution_rejects_invalid_shapes() -> None:
 
 
 def test_heii_and_heplus_convolution_wrappers_delegate_to_common_engine(monkeypatch) -> None:
-    from auroralf.ssp import heii1640
+    from auroralf.archive import heii1640
 
     assert hasattr(heii1640, "compute_final_ssp_observable_from_sfr_grid")
     calls: list[dict[str, object]] = []
@@ -261,7 +261,7 @@ def test_heii_and_heplus_convolution_wrappers_delegate_to_common_engine(monkeypa
 
 
 def test_heii_and_heplus_wrappers_match_common_engine_for_single_source_bin() -> None:
-    from auroralf.ssp import (
+    from auroralf.archive.heii1640 import (
         compute_final_ssp_heplus_rate_from_sfr_grid,
         compute_final_ssp_line_luminosity_from_sfr_grid,
         compute_final_ssp_observable_from_sfr_grid,
@@ -313,7 +313,7 @@ def test_schaerer_loaders_reject_computed_overflow(
     failure_mode: str,
     loader_name: str,
 ) -> None:
-    import auroralf.ssp as ssp
+    import auroralf.archive.heii1640 as archived_heii
 
     if failure_mode == "age":
         rows = [
@@ -343,16 +343,16 @@ def test_schaerer_loaders_reject_computed_overflow(
         encoding="utf-8",
     )
 
-    loader = getattr(ssp, loader_name)
+    loader = getattr(archived_heii, loader_name)
     with pytest.raises(RuntimeError, match="computed .* must be finite"):
         loader(table)
 
 
 def test_hebe_comparison_defaults_match_extreme_popiii_ssp(monkeypatch) -> None:
-    from scripts.analysis import compare_popiii_heii_to_hebe
+    from scripts.experiments import archived_compare_popiii_heii_to_hebe
 
-    monkeypatch.setattr("sys.argv", ["compare_popiii_heii_to_hebe.py"])
-    args = compare_popiii_heii_to_hebe._parse_args()
+    monkeypatch.setattr("sys.argv", ["archived_compare_popiii_heii_to_hebe.py"])
+    args = archived_compare_popiii_heii_to_hebe._parse_args()
 
     assert args.popiii_uv_ssp_file.name == "pop3_ge0_sal_500_050_is4.25"
     assert args.heii_ssp_file.name == "pop3_ge0_sal_500_050_is4.22"
@@ -360,10 +360,30 @@ def test_hebe_comparison_defaults_match_extreme_popiii_ssp(monkeypatch) -> None:
     assert args.heplus_covering_factor == pytest.approx(1.0)
     assert args.heplus_escape_fraction == pytest.approx(0.0)
     assert args.heii_photoionization_efficiency == pytest.approx(1.0)
+    assert args.enable_archived_heii is False
+    with pytest.raises(RuntimeError, match="He II implementation is archived"):
+        archived_compare_popiii_heii_to_hebe._validate_args(args)
+    args.enable_archived_heii = True
+    archived_compare_popiii_heii_to_hebe._validate_args(args)
+
+
+def test_heii_is_absent_from_public_ssp_api() -> None:
+    import auroralf.ssp as ssp
+
+    archived_names = (
+        "DEFAULT_CASEB_HEII1640_ERG_PER_PHOTON",
+        "DEFAULT_POPIII_HEII1640_SSP_FILE",
+        "compute_final_ssp_heplus_rate_from_sfr_grid",
+        "compute_final_ssp_line_luminosity_from_sfr_grid",
+        "heii1640_luminosity_from_heplus_rate",
+        "load_popiii_heii1640_luminosity_table",
+        "load_popiii_heplus_ionizing_photon_table",
+    )
+    assert all(not hasattr(ssp, name) for name in archived_names)
 
 
 def test_hebe_observation_loader_reads_literature_constraints(tmp_path) -> None:
-    from scripts.analysis.compare_popiii_heii_to_hebe import _load_hebe_observation_constraints
+    from scripts.experiments.archived_compare_popiii_heii_to_hebe import _load_hebe_observation_constraints
 
     table = tmp_path / "hebe.csv"
     table.write_text(

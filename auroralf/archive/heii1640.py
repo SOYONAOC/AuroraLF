@@ -1,3 +1,18 @@
+"""Archived Pop III He II 1640 SSP and recombination-line utilities.
+
+The stellar ionizing rates and line tables are from Raiter, Schaerer & Fosbury
+(2010), DOI: 10.1051/0004-6361/201015236, arXiv:1008.2114.  The Case-B atomic
+basis is Storey & Hummer (1995), DOI: 10.1093/mnras/272.1.41.  Jeon et al.
+(2026), DOI: 10.3847/1538-4357/ae7bea, arXiv:2604.19075, is a downstream Pop
+III He II application, not the source of the conversion formula used here.
+
+This implementation is retained only for historical reproduction because its
+SFH/burst and nebular assumptions are not considered production-ready.  It is
+intentionally absent from the public ``auroralf.ssp`` API.  New science code
+must not import this module until a replacement model is independently
+validated.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -7,7 +22,7 @@ import numpy as np
 
 from auroralf.file_version import FileVersion
 
-from .convolution import (
+from auroralf.ssp.convolution import (
     DEFAULT_TIME_UNIT_IN_YEARS,
     _reject_boolean_scalar,
     _reject_boolean_values,
@@ -192,7 +207,8 @@ def load_popiii_heii1640_luminosity_table(
     Returns SSP age in ``Myr``, HeII 1640 luminosity in ``erg s^-1 Msun^-1``,
     and rest-frame equivalent width in Angstrom. The Schaerer/Raiter ``*.22``
     tables give ``L(H_beta)`` and ``I(HeII_1640)/I(H_beta)``; their product is
-    the line luminosity per one-solar-mass burst.
+    the line luminosity per one-solar-mass burst.  This uses the tabulated line
+    quantities directly rather than re-deriving nebular conditions.
     """
 
     version = FileVersion.from_path(file_path)
@@ -208,7 +224,8 @@ def load_popiii_heplus_ionizing_photon_table(
     Returns SSP age in ``Myr`` and ``Q_2`` in ``photon s^-1 Msun^-1``. In the
     Schaerer/Raiter ``*.22`` recombination tables, ``Q_2`` is the photon rate
     above the He+ ionization edge at 54.4 eV. The documented ``logQ_2=-99``
-    no-emission sentinel is returned as exactly zero.
+    no-emission sentinel is returned as exactly zero.  The rates come from the
+    Raiter/Schaerer model rather than an AuroraLF IMF sampling prescription.
     """
 
     version = FileVersion.from_path(file_path)
@@ -229,7 +246,10 @@ def heii1640_luminosity_from_heplus_rate(
     ``q_heplus`` is in ``photon s^-1``. The returned luminosity is
     ``erg s^-1`` and equals
     ``caseb_erg_per_photon * q_heplus * covering_factor *
-    (1 - escape_fraction) * photoionization_efficiency``.
+    (1 - escape_fraction) * photoionization_efficiency``.  The default Case-B
+    coefficient follows the adopted Raiter/Schaerer table convention, with
+    Storey & Hummer (1995) as the atomic recombination reference.  Geometry and
+    escape factors remain explicit project parameters.
     """
 
     _reject_boolean_values("q_heplus", q_heplus)

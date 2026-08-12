@@ -24,7 +24,7 @@ from auroralf.chemistry import (  # noqa: E402
 )
 from auroralf.mah import Cosmology  # noqa: E402
 from auroralf.seeding import derive_pipeline_random_seeds  # noqa: E402
-from auroralf.uvlf import (  # noqa: E402
+from auroralf.uvlf.imf import (  # noqa: E402
     IMF_MODE_CANONICAL,
     IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
     IMF_MODE_Z_GATED_MILD_TOPHEAVY,

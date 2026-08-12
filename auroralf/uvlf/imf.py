@@ -3,23 +3,30 @@
 The SFRIIIII production configuration uses only the canonical IMF. These modes
 and selectors remain importable for exact historical reproduction; high-level
 run configuration requires an explicit ``enable_archived_imf_gate`` opt-in.
+
+The gate thresholds and Boolean combinations are AuroraLF historical
+heuristics, not direct equations from a paper.  The canonical SSP is BPASS
+(Eldridge et al. 2017, DOI: 10.1017/pasa.2017.51; Stanway & Eldridge 2018,
+DOI: 10.1093/mnras/sty1353; Byrne et al. 2022, DOI:
+10.1093/mnras/stac807).  Those SSP references do not validate the archived
+source-time gate itself.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-
-IMF_MODE_CANONICAL = "canonical"
-IMF_MODE_Z_GATED_MILD_TOPHEAVY = "z10_mild_topheavy"
-IMF_MODE_MAH_BURST_MILD_TOPHEAVY = "mah_burst_mild_topheavy"
-IMF_MODES = (
+from auroralf.model_options import (
+    DEFAULT_IMF_TRANSITION_PARAMETERS,
+    DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN,
     IMF_MODE_CANONICAL,
-    IMF_MODE_Z_GATED_MILD_TOPHEAVY,
     IMF_MODE_MAH_BURST_MILD_TOPHEAVY,
+    IMF_MODE_Z_GATED_MILD_TOPHEAVY,
+    IMF_MODES,
+    IMFTransitionParameters,
+    validate_imf_mode,
 )
 
 DEFAULT_CANONICAL_SSP_FILE = (
@@ -31,38 +38,6 @@ DEFAULT_MILD_TOPHEAVY_SSP_FILE = (
     "SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5"
 )
 DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY = 0.05
-DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN = DEFAULT_MILD_TOPHEAVY_SSP_METALLICITY
-
-
-@dataclass(frozen=True)
-class IMFTransitionParameters:
-    """Archived parameters for selecting a mild top-heavy Pop II SSP.
-
-    The MAH-burst mode marks a star-forming time step as mild top-heavy when the
-    halo growth time ``Mh / dMh_dt_sfr`` is shorter than ``growth_time_threshold_myr``.
-    The effective SFR accretion rate is stored in ``Msun/Gyr``.
-    When ``metallicity_topheavy_max_zsun`` is not ``None``, a source time must
-    also have pre-star-formation birth metallicity below this threshold.
-    The historical source-redshift gate is retained for explicit comparisons
-    but is disabled by default.
-    """
-
-    z_topheavy_min: float = 10.0
-    source_redshift_gate_enabled: bool = False
-    growth_time_threshold_myr: float = 50.0
-    metallicity_topheavy_max_zsun: float | None = DEFAULT_TOPHEAVY_METALLICITY_MAX_ZSUN
-
-
-DEFAULT_IMF_TRANSITION_PARAMETERS = IMFTransitionParameters()
-
-
-def validate_imf_mode(imf_mode: str) -> str:
-    mode = str(imf_mode)
-    if mode not in IMF_MODES:
-        raise ValueError(f"imf_mode must be one of {IMF_MODES}, got {mode!r}")
-    return mode
-
-
 def resolve_ssp_path(file_path: str | Path) -> Path:
     return Path(file_path).expanduser().resolve()
 
@@ -81,7 +56,7 @@ def compute_topheavy_source_flags(
     birth_metallicity_zsun_grid: np.ndarray | None = None,
     transition_parameters: IMFTransitionParameters = DEFAULT_IMF_TRANSITION_PARAMETERS,
 ) -> np.ndarray:
-    """Return True where source-time star formation should use the mild top-heavy SSP."""
+    """Return the archived AuroraLF heuristic top-heavy source-time mask."""
 
     mode = validate_imf_mode(imf_mode)
     z = np.asarray(z_grid, dtype=float)

@@ -15,6 +15,12 @@ from auroralf.constants import (
     PLANCK18_OMEGA_B,
     PLANCK18_OMEGA_M,
 )
+from auroralf.model_options import (
+    IMF_MODE_CANONICAL,
+    IMFTransitionParameters,
+    validate_imf_mode,
+    validate_mass_function_model,
+)
 from auroralf.chemistry import MZRBirthMetallicityParameters, RegulatorMetallicityParameters
 from auroralf.chemistry.mzr import MZR_RELATIONS
 from auroralf.mah import (
@@ -26,8 +32,6 @@ from auroralf.mah import (
 from auroralf.mah.sampling import validate_parameter_sampler
 from auroralf.sfr import PopIIISFRParameters, SFRModelParameters
 from auroralf.sfr.popiii import POPIII_UPPER_MASS_MODES
-from auroralf.uvlf.hmf_sampling import validate_mass_function_model
-from auroralf.uvlf.imf import IMF_MODE_CANONICAL, IMFTransitionParameters, validate_imf_mode
 
 
 CONFIG_SCHEMA_VERSION = "2.2.0"

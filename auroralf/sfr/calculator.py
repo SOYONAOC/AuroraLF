@@ -1,3 +1,17 @@
+"""Pop II star-formation calculation along halo assembly histories.
+
+The efficiency structure ``SFR = f_b f_star(Mh) dMh/dt`` with a double-power-
+law ``f_star`` is adapted from Sun & Furlanetto (2016), DOI:
+10.1093/mnras/stw980, arXiv:1512.06219, and Mirocha et al. (2017), DOI:
+10.1093/mnras/stw2412, arXiv:1607.00386.  The delayed-SFR kernel is adapted
+from Yue, Ferrara & Xu (2016), DOI: 10.1093/mnras/stw2145,
+arXiv:1604.01314.
+
+The numerical values ``epsilon_0=0.12``, ``Mc=10**11.7 Msun``, ``beta=0.66``,
+and ``gamma=0.65`` are AuroraLF's z=6 UVLF calibration.  They are not quoted
+parameter values from the papers above.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -51,6 +65,11 @@ def _resolve_sfr_model_parameters(model_parameters: SFRModelParameters | None) -
 
 
 def _stellar_formation_efficiency(mass: np.ndarray, model_parameters: SFRModelParameters) -> np.ndarray:
+    """Evaluate the literature-motivated double-power-law efficiency.
+
+    Formula structure: Sun & Furlanetto (2016) / Mirocha et al. (2017).
+    Parameter values: calibrated in this work against the z=6 UVLF.
+    """
     ratio = np.asarray(mass, dtype=float) / model_parameters.characteristic_mass
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
         denominator = ratio ** (-model_parameters.beta_star) + ratio**model_parameters.gamma_star
@@ -58,6 +77,11 @@ def _stellar_formation_efficiency(mass: np.ndarray, model_parameters: SFRModelPa
 
 
 def _extended_burst_kernel(delta_t_gyr: np.ndarray, td_gyr: float, kappa: float = EXTENDED_BURST_KAPPA) -> np.ndarray:
+    """Evaluate the delayed-SFR kernel adapted from Yue et al. (2016).
+
+    ``kappa=0.1`` and AuroraLF's finite 100 Myr integration window are project
+    settings rather than independently fitted parameters from that paper.
+    """
     delta_t_gyr = np.asarray(delta_t_gyr, dtype=float)
     kernel = np.zeros_like(delta_t_gyr, dtype=float)
     positive = (delta_t_gyr >= 0.0) & np.isfinite(delta_t_gyr) & np.isfinite(td_gyr) & (td_gyr > 0.0)
@@ -296,7 +320,11 @@ def compute_sfr_from_tracks(
     burst_lookback_max_myr: float = EXTENDED_BURST_LOOKBACK_MAX_MYR,
     model_parameters: SFRModelParameters | None = None,
 ) -> dict[str, np.ndarray]:
-    """Compute SFR in Msun/yr and related virial quantities from halo history tracks."""
+    """Compute SFR in Msun/yr and related virial quantities from halo tracks.
+
+    The Pop II efficiency structure and calibrated/project-specific parameter
+    boundary are documented in this module's citation provenance above.
+    """
 
     if not isinstance(cosmology, Cosmology):
         raise TypeError("cosmology must be an instance of auroralf.mah.models.Cosmology")

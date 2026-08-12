@@ -64,7 +64,7 @@ def test_popiii_parameters_reject_invalid_values(params: dict[str, float | str])
 def test_popiii_duty_cycle_uses_molecular_floor_and_upper_cutoff() -> None:
     from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters, compute_popiii_duty_cycle
-    from auroralf.uvlf.cooling import compute_popiii_lw_minimum_mass_msun
+    from auroralf.cooling import compute_popiii_lw_minimum_mass_msun
 
     z_obs = 20.0
     halo_mass = 1.0e6
@@ -96,7 +96,7 @@ def test_popiii_duty_cycle_uses_molecular_floor_and_upper_cutoff() -> None:
 def test_popiii_sfr_grid_forms_stars_in_minihalos_below_atomic_threshold() -> None:
     from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters, compute_popiii_sfr_from_grids
-    from auroralf.uvlf.cooling import compute_atomic_cooling_mass_msun
+    from auroralf.cooling import compute_atomic_cooling_mass_msun
 
     z_grid = np.array([[20.0, 15.0, 10.0]])
     mh_grid = np.array([[2.0e6, 4.0e6, 8.0e6]])
@@ -509,7 +509,7 @@ def test_pipeline_keeps_popiii_minihalos_when_popii_atomic_gate_inactive(
     import auroralf.uvlf.pipeline as pipeline
     from auroralf.mah import Cosmology
     from auroralf.sfr import PopIIISFRParameters
-    from auroralf.uvlf.cooling import compute_atomic_cooling_mass_msun
+    from auroralf.cooling import compute_atomic_cooling_mass_msun
 
     z_final = 14.5
     mh_final = 1.0e7

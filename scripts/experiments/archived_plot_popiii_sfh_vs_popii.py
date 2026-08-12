@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Archived SFH diagnostic tailored to the retired He II analysis."""
+
 from __future__ import annotations
 
 import argparse
@@ -23,10 +25,10 @@ from auroralf.sfr import (
 from auroralf.uvlf import run_halo_uv_pipeline
 
 
-DEFAULT_OUTPUT_PREFIX = PROJECT_ROOT / "outputs" / "popiii_sfh_vs_popii_brightest_heii_track"
-DEFAULT_SLIDE_OUTPUT = (
-    PROJECT_ROOT / "slides" / "group_meeting_popiii_20260622" / "assets" / "popiii_sfh_vs_popii_slide.pdf"
+DEFAULT_OUTPUT_PREFIX = (
+    PROJECT_ROOT / "outputs" / "archived_heii" / "popiii_sfh_vs_popii_brightest_heii_track"
 )
+DEFAULT_SLIDE_OUTPUT = PROJECT_ROOT / "outputs" / "archived_heii" / "popiii_sfh_vs_popii_slide.pdf"
 DEFAULT_EXTREME_POPIII_UV_SSP_FILE = (
     PROJECT_ROOT
     / "external_data"
@@ -39,6 +41,11 @@ DEFAULT_EXTREME_POPIII_UV_SSP_FILE = (
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Plot the model-forward Pop III SFH against the Pop II SFR for one halo track."
+    )
+    parser.add_argument(
+        "--enable-archived-heii",
+        action="store_true",
+        help="Explicitly run this archived He II-oriented SFH diagnostic.",
     )
     parser.add_argument("--z", type=float, default=10.583)
     parser.add_argument("--logMh", type=float, default=8.272727272727273)
@@ -72,6 +79,11 @@ def _resolve_project_path(path: Path) -> Path:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    if not args.enable_archived_heii:
+        raise RuntimeError(
+            "This He II-oriented SFH diagnostic is archived. "
+            "Pass --enable-archived-heii only for historical reproduction."
+        )
     if args.z <= 0.0:
         raise ValueError("--z must be positive")
     if args.n_tracks <= 0:

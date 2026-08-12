@@ -5,7 +5,7 @@ import pytest
 
 
 def test_integrate_lookback_mass_uses_years_per_gyr() -> None:
-    from scripts.analysis.plot_popiii_sfh_vs_popii import integrate_mass_within_lookback
+    from scripts.experiments.archived_plot_popiii_sfh_vs_popii import integrate_mass_within_lookback
 
     lookback_myr = np.array([10.0, 5.0, 0.0])
     sfr = np.array([2.0, 2.0, 2.0])
@@ -16,7 +16,7 @@ def test_integrate_lookback_mass_uses_years_per_gyr() -> None:
 
 
 def test_prepare_log_series_masks_nonpositive_values() -> None:
-    from scripts.analysis.plot_popiii_sfh_vs_popii import positive_for_log_plot
+    from scripts.experiments.archived_plot_popiii_sfh_vs_popii import positive_for_log_plot
 
     values = positive_for_log_plot(np.array([1.0, 0.0, -1.0, 2.0]))
 
@@ -26,28 +26,33 @@ def test_prepare_log_series_masks_nonpositive_values() -> None:
 
 
 def test_popiii_sfh_comparison_defaults_target_brightest_heii_track(monkeypatch) -> None:
-    from scripts.analysis import plot_popiii_sfh_vs_popii
+    from scripts.experiments import archived_plot_popiii_sfh_vs_popii
 
     monkeypatch.setattr("sys.argv", ["plot_popiii_sfh_vs_popii.py"])
-    args = plot_popiii_sfh_vs_popii._parse_args()
+    args = archived_plot_popiii_sfh_vs_popii._parse_args()
 
     assert args.z == pytest.approx(10.583)
     assert args.logMh == pytest.approx(8.272727272727273)
     assert args.random_seed == 111
     assert args.track_index == 4
     assert args.output_prefix.name == "popiii_sfh_vs_popii_brightest_heii_track"
+    assert args.enable_archived_heii is False
+    with pytest.raises(RuntimeError, match="SFH diagnostic is archived"):
+        archived_plot_popiii_sfh_vs_popii._validate_args(args)
+    args.enable_archived_heii = True
+    archived_plot_popiii_sfh_vs_popii._validate_args(args)
 
 
 def test_popiii_sfh_comparison_exposes_visbal2015_arguments(monkeypatch) -> None:
-    from scripts.analysis import plot_popiii_sfh_vs_popii
+    from scripts.experiments import archived_plot_popiii_sfh_vs_popii
 
     monkeypatch.setattr("sys.argv", ["plot_popiii_sfh_vs_popii.py"])
-    args = plot_popiii_sfh_vs_popii._parse_args()
+    args = archived_plot_popiii_sfh_vs_popii._parse_args()
 
     assert args.include_visbal2015_sfh is False
     assert args.visbal_fstar == pytest.approx(0.1)
     assert args.eta_duty_values == "1.0,0.1,0.01"
 
-    values = plot_popiii_sfh_vs_popii.parse_eta_duty_values("1,0.25,0.01")
+    values = archived_plot_popiii_sfh_vs_popii.parse_eta_duty_values("1,0.25,0.01")
 
     np.testing.assert_allclose(values, np.array([1.0, 0.25, 0.01]))

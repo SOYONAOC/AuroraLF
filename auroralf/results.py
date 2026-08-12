@@ -6,11 +6,11 @@ from numbers import Integral, Real
 import numpy as np
 
 from auroralf.config import UVLFRunConfig
+from auroralf.model_options import validate_imf_mode
 from auroralf._array_utils import (
     immutable_array as _immutable_array,
     validate_real_array_members as _validate_real_array_members,
 )
-from auroralf.uvlf.imf import validate_imf_mode
 
 
 def _strict_float(name: str, value: object) -> float:

@@ -7,6 +7,7 @@ import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
 from .models import Cosmology, HaloHistoryResult
+from . import physics as halo_physics
 from .physics import accretion_rate
 from .sampling import sample_parameters, validate_parameter_sampler
 
@@ -77,10 +78,11 @@ def _resolve_mass_floor(
     cosmology: Cosmology,
 ) -> np.ndarray:
     if mass_floor is None:
-        from auroralf.cooling import compute_atomic_cooling_mass_msun
-
         return np.asarray(
-            compute_atomic_cooling_mass_msun(redshift, cosmology=cosmology),
+            halo_physics.compute_atomic_cooling_mass_msun(
+                redshift,
+                cosmology=cosmology,
+            ),
             dtype=float,
         )
 

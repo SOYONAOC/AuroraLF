@@ -189,6 +189,14 @@ def _gaussian_magnitude_scattered_luminosities(
     sigma_mag: float,
     quadrature_order: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Apply AuroraLF's Gaussian-magnitude quadrature diagnostic.
+
+    This is a this-work sensitivity model for a rare bright tail.  It is not a
+    time-resolved physical Pop III burst/SFH prescription.  Venditti et al.
+    (2025), DOI: 10.3847/1538-4357/ae0610, arXiv:2505.20263, motivates testing
+    bursty versus heavy Pop III contributions, but is not the source of this
+    Gaussian scatter formula.
+    """
     luminosity = np.asarray(luminosity, dtype=float)
     sample_weight = np.asarray(sample_weight, dtype=float)
     if luminosity.shape != sample_weight.shape:

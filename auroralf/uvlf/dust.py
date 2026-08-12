@@ -1,3 +1,13 @@
+"""Empirical UV-slope dust mapping for the UV luminosity function.
+
+The redshift- and magnitude-dependent UV slope is from Williams et al. (2018),
+DOI: 10.3847/1538-4365/aabcbb, arXiv:1802.05272.  The attenuation relation
+``A_1600=max(4.85+2.10 beta, 0)`` follows Koprowski et al. (2018), DOI:
+10.1093/mnras/sty1527, arXiv:1801.00791.  The final cap that prevents the
+dust-mapped UVLF from exceeding the no-dust UVLF is an AuroraLF physical
+safeguard, not an equation from either paper.
+"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,7 +46,7 @@ def uv_continuum_slope_beta(
     *,
     m0: float = DEFAULT_M0,
 ) -> np.ndarray | float:
-    """Return the UV continuum slope beta(M_UV^obs, z)."""
+    """Return the Williams et al. (2018) UV slope ``beta(Muv_obs, z)``."""
 
     muv_obs_array = np.asarray(muv_obs, dtype=float)
     beta0 = -0.09 * z - 1.49
@@ -55,7 +65,7 @@ def uv_dust_attenuation(
     c1: float = DEFAULT_C1,
     m0: float = DEFAULT_M0,
 ) -> np.ndarray | float:
-    """Return A_UV(M_UV^obs, z) with the non-negative attenuation floor."""
+    """Return the Koprowski et al. (2018) ``A_1600`` relation with its floor."""
 
     beta = np.asarray(uv_continuum_slope_beta(muv_obs, z, m0=m0), dtype=float)
     attenuation = np.maximum(c1 + c0 * beta, 0.0)
@@ -140,7 +150,9 @@ def compute_dust_attenuated_uvlf(
       phi_obs(M_UV^obs) = phi_int(M_UV^obs - A_UV) * dM_UV / dM_UV^obs
 
     `match_faint_end_after_intersection` and `insert_transition_point` are retained only
-    for call-site compatibility.
+    for call-site compatibility.  The later ``min(phi_obs_raw,
+    phi_nodust_obs)`` operation is an AuroraLF safeguard and is not part of the
+    Williams/Koprowski empirical relations.
     """
 
     intrinsic_muv_array = np.asarray(intrinsic_muv, dtype=float)

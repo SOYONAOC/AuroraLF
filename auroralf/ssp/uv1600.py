@@ -1,3 +1,16 @@
+"""Load UV SSP kernels used by AuroraLF.
+
+The canonical Pop II path uses BPASS binary-population spectra: Eldridge et
+al. (2017), DOI: 10.1017/pasa.2017.51, arXiv:1710.02154; Stanway & Eldridge
+(2018), DOI: 10.1093/mnras/sty1353, arXiv:1805.08784; and Byrne et al. (2022),
+DOI: 10.1093/mnras/stac807, arXiv:2203.13275.  The production selection is the
+BPASS v2.3 binary ``imf135_300``, BASEL, ``z001`` table.
+
+Pop III UV kernels are from Raiter, Schaerer & Fosbury (2010), DOI:
+10.1051/0004-6361/201015236, arXiv:1008.2114.  File and column selection is
+explicit; this module does not create a synthetic SSP fallback.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -229,6 +242,8 @@ def load_uv1600_table(
 
     For HDF5 SSP files, ``metallicity`` must be supplied in linear ``Z/Zsun`` and must
     exactly match one of the discrete metallicity bins stored in the file.
+    The module docstring records the BPASS model references; selecting a table
+    is an AuroraLF configuration choice rather than a new SSP calculation.
     """
 
     version = FileVersion.from_path(file_path)
@@ -251,7 +266,7 @@ def load_popiii_uv_luminosity_table(
     The Pop III tables store ``log[erg s^-1 A^-1]`` continuum luminosities
     normalized to a one-solar-mass burst. This loader converts the selected UV
     continuum column to ``erg s^-1 Hz^-1 Msun^-1`` for use by the existing SSP
-    convolution code.
+    convolution code.  The source model is Raiter, Schaerer & Fosbury (2010).
     """
 
     version = FileVersion.from_path(file_path)

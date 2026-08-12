@@ -1,3 +1,12 @@
+"""Sampling of McBride et al. (2009) halo-assembly parameters.
+
+The rejection weights, transformations, and 0.0466 mixture fraction implement
+Appendix A of McBride, Fakhouri & Ma (2009),
+DOI: 10.1111/j.1365-2966.2009.15329.x, arXiv:0902.3659.  The optional Gaussian
+approximation is an AuroraLF numerical approximation to those direct samples,
+not a distribution proposed in that paper.
+"""
+
 from __future__ import annotations
 
 import numpy as np

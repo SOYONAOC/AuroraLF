@@ -1,3 +1,11 @@
+"""Numerical convolution of star-formation histories with SSP kernels.
+
+Production SSP provenance is documented in ``uv1600.py``.  The archived He II
+implementation lives under ``auroralf.archive``.  The
+trapezoidal integration, active-history masking, finite lookback, and unit
+bookkeeping here are AuroraLF numerical choices rather than empirical fits.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -180,7 +188,9 @@ def compute_final_ssp_observable_from_sfr_grid(
 
     History times are in ``Gyr``, SSP ages are in ``Myr``, SFR is in
     ``Msun yr^-1``, and the SSP kernel is an observable per ``Msun``. The
-    returned array therefore has the kernel's observable units.
+    returned array therefore has the kernel's observable units.  This is the
+    standard SFH--SSP convolution; its discretization and finite lookback are
+    project implementation choices.
     """
 
     _reject_boolean_values("t_grid_gyr", t_grid_gyr)

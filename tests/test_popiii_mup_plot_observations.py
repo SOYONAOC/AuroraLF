@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,9 @@ from auroralf.uvlf import compute_dust_attenuated_uvlf
 from scripts.plot.plot_popiii_mup_comparison_uvlf import _load_observation_table_for_comparison
 from scripts.plot.plot_popiii_mup_comparison_uvlf import _apply_optional_dust_to_component
 from scripts.plot.plot_popiii_mup_comparison_uvlf import _resolve_log_y_limits
+from scripts.plot.plot_popiii_mup_comparison_uvlf import _save_npz
+from scripts.plot.plot_popiii_mup_comparison_uvlf import Scenario
+from scripts.plot.plot_popiii_mup_comparison_uvlf import ScenarioResult
 
 
 def test_popiii_mup_comparison_loads_legacy_z6_observation_table() -> None:
@@ -74,3 +78,77 @@ def test_popiii_mup_comparison_limits_default_lower_bound_to_observation_floor()
 
     assert np.isclose(lower, 1.0e-8)
     assert np.isclose(upper, 3.0e-4)
+
+
+def test_popiii_mup_summary_npz_omits_per_halo_samples(tmp_path: Path) -> None:
+    values = np.array([1.0, 2.0])
+    components = {
+        name: {
+            "phi": values,
+            "phi_sigma": 0.1 * values,
+            "raw_counts": np.array([10, 20]),
+        }
+        for name in ("popii", "popiii", "total", "popiii_burst", "total_burst")
+    }
+    result = ScenarioResult(
+        scenario=Scenario(
+            key="fixed_mup1e10",
+            title="fixed",
+            upper_mass_mode="fixed",
+            upper_mass_msun=1.0e10,
+        ),
+        components=components,
+        plot_data={name: (values, values) for name in components},
+        plot_columns={name: values for name in components},
+        total_luminosity=values,
+        popii_luminosity=values,
+        popiii_luminosity=values,
+        scattered_popiii_luminosity=values,
+        scattered_total_luminosity=values,
+        scattered_sample_weight=values,
+        sample_weight=values,
+        sample_mh=values,
+        sample_stellar_channel=np.array(["popii", "popiii"]),
+        popiii_upper_mass_msun=1.0e10,
+    )
+    args = argparse.Namespace(
+        z=6.0,
+        logM_max=13.0,
+        N_mass=5062,
+        n_tracks=1000,
+        n_grid=240,
+        random_seed=42,
+        smooth_sigma_mag=0.6,
+        phi_min=None,
+        popiii_burst_sigma_mag=2.0,
+        popiii_burst_quadrature_order=31,
+        plot_min_raw_counts=10,
+        lw_background_j21=0.0,
+        apply_dust=True,
+        popiii_ssp_label="test",
+        hmf_dlog10m=0.02,
+        epsilon_0=0.12,
+        fstar_characteristic_mass_msun=10.0**11.7,
+        fstar_beta=0.66,
+        fstar_gamma=0.65,
+    )
+    output = tmp_path / "summary.npz"
+
+    _save_npz(
+        output,
+        args=args,
+        bin_edges=np.array([-21.0, -20.0, -19.0]),
+        centers=np.array([-20.5, -19.5]),
+        popiii_minimum_mass_msun=1.0e6,
+        atomic_mass_msun=1.0e8,
+        logm_min=6.0,
+        popiii_ssp_file=tmp_path / "ssp.dat",
+        results=[result],
+        include_samples=False,
+    )
+
+    with np.load(output, allow_pickle=False) as payload:
+        assert not bool(payload["samples_included"][0])
+        assert payload["mass_function_model"][0] == "hmf_reed07"
+        assert "fixed_mup1e10_phi_total_burst" in payload.files
+        assert "fixed_mup1e10_total_luminosity" not in payload.files

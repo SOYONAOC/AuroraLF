@@ -3,6 +3,15 @@
 This module is the single source of truth for unit conversions, physical
 constants, and the fiducial cosmologies used by production and simulation-cache
 workflows. Runtime TOML files still record explicit values for provenance.
+
+Citation provenance
+-------------------
+The production cosmology is built from Astropy's Planck18 realization of
+Planck Collaboration VI (2020), DOI: 10.1051/0004-6361/201833910,
+arXiv:1807.06209.  The solar abundance constants follow Asplund et al. (2009),
+DOI: 10.1146/annurev.astro.46.060407.145222, arXiv:0909.0948.  Astropy supplies
+the dimensional physical constants and unit conversions; AuroraLF does not
+copy rounded numerical values for those quantities.
 """
 
 from __future__ import annotations
@@ -28,10 +37,13 @@ _AB_REFERENCE_LUMINOSITY = (
     4.0 * pi * (10.0 * u.pc) ** 2 * _AB_ZERO_FLUX_DENSITY
 ).to_value(u.erg / (u.s * u.Hz))
 AB_ZEROPOINT_LNU = 2.5 * log10(float(_AB_REFERENCE_LUMINOSITY))
+# Asplund et al. (2009): proto-solar bulk Z=0.0142 and photospheric
+# 12+log10(O/H)=8.69.  These are distinct abundance conventions.
 SOLAR_METALLICITY_MASS_FRACTION = 0.0142
 SOLAR_OXYGEN_ABUNDANCE = 8.69
 
-# McBride MAH parameter-mixture fraction.
+# Direct from the Appendix-A MAH parameter mixture of McBride, Fakhouri & Ma
+# (2009), DOI: 10.1111/j.1365-2966.2009.15329.x, arXiv:0902.3659.
 POWER_LAW_FRACTION = 0.0466
 
 # Fiducial Astropy Planck18 cosmology used by production. AuroraLF's analytic

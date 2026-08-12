@@ -1,0 +1,76 @@
+schema_version = "2.2.0"
+run_id = "z6-popii-calibrated-rerun"
+redshifts = [6.0]
+base_seed = 42
+
+[cosmology]
+h0_km_s_mpc = 67.66
+omega_m = 0.30966
+omega_b = 0.04897
+
+[mah]
+backend = "mcbride"
+sampler = "mcbride"
+z_start_max = 50.0
+n_time_steps = 240
+tng_mass_bin_width_dex = 0.15
+tng_min_candidates = 5
+tng_smoothing_myr = 0.0
+tng_time_grid_mode = "snapshot"
+thesan_mass_bin_width_dex = 0.15
+thesan_min_candidates = 5
+thesan_smoothing_myr = 0.0
+thesan_time_grid_mode = "snapshot"
+
+[star_formation]
+enable_time_delay = true
+efficiency_normalization = 0.12
+characteristic_halo_mass_msun = 5.011872336272715e11
+low_mass_slope = 0.66
+high_mass_slope = 0.65
+enable_archived_burst_scatter = false
+burst_scatter_dex = 0.0
+burst_scatter_correlation_timescale_myr = 20.0
+burst_scatter_mass_conserving = true
+enable_archived_metallicity = false
+metallicity_source = "none"
+
+[stellar_population]
+imf_modes = ["canonical"]
+enable_archived_imf_gate = false
+canonical_ssp_path = "../../external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+topheavy_ssp_path = "../../external_data/ssp_spectra/bpass_v2_2_1/imf100_300/SSP_Spectra_BPASSv2.2.1_bin-imf100_300.hdf5"
+topheavy_ssp_template_metallicity_zsun = 0.05
+historical_topheavy_redshift_min = 10.0
+source_redshift_gate_enabled = false
+growth_time_threshold_myr = 50.0
+birth_metallicity_topheavy_max_zsun = 0.05
+enable_popiii = false
+popiii_ssp_path = "../../external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_sal_500_001_is5.25"
+popiii_efficiency = 0.001
+popiii_pivot_halo_mass_msun = 1.0e7
+popiii_low_mass_slope = 0.0
+popiii_high_mass_slope = 0.0
+lw_background_j21 = 0.0
+popiii_upper_mass_mode = "atomic"
+
+[sampling]
+mass_batch_size = 16
+n_halo_mass_samples = 3000
+n_tracks_per_halo_mass = 1000
+log10_halo_mass_min_msun = 9.0
+log10_halo_mass_max_msun = 13.0
+muv_bin_edges = [
+  -24.500, -24.025, -23.550, -23.075, -22.600,
+  -22.125, -21.650, -21.175, -20.700, -20.225,
+  -19.750, -19.275, -18.800, -18.325, -17.850,
+  -17.375, -16.900, -16.425, -15.950, -15.475,
+  -15.000,
+]
+workers = 8
+mass_function_model = "hmf_reed07"
+hmf_dlog10m = 0.02
+apply_dust = true
+
+[output]
+artifact_path = "../../data_save/uvlf_z6_popii_calibrated_rerun.h5"

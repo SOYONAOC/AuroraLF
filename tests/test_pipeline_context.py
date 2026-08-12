@@ -249,7 +249,7 @@ def test_mcbride_default_mass_floor_uses_supplied_cosmology(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import auroralf.mah.generator as generator
-    import auroralf.cooling as cooling
+    import auroralf.mah.physics as halo_physics
 
     cosmology = Cosmology(
         h0=2.0 * Cosmology().h0,
@@ -263,7 +263,11 @@ def test_mcbride_default_mass_floor_uses_supplied_cosmology(
         contexts.append(cosmology)
         return np.full(np.asarray(z_obs).shape, 1.0, dtype=float)
 
-    monkeypatch.setattr(cooling, "compute_atomic_cooling_mass_msun", atomic_floor)
+    monkeypatch.setattr(
+        halo_physics,
+        "compute_atomic_cooling_mass_msun",
+        atomic_floor,
+    )
     generator.generate_halo_histories(
         n_tracks=1,
         z_final=6.0,
