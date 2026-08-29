@@ -14,28 +14,13 @@ temp_data/
 cosm/
 third_party/
 runs/
+slides/
 jupyter.err
 kernel/jupyter.err
 
 # Data-management scripts are source code, not generated data.
 !scripts/data/
 !scripts/data/*.py
-
-# Track formal slide sources, PDFs, scripts, and compile-time assets.
-slides/**/*.aux
-slides/**/*.log
-slides/**/*.nav
-slides/**/*.out
-slides/**/*.snm
-slides/**/*.toc
-slides/**/*.fls
-slides/**/*.fdb_latexmk
-slides/**/*.synctex.gz
-slides/**/*.vrb
-slides/**/*.bbl
-slides/**/*.blg
-slides/**/*.run.xml
-slides/**/__pycache__/
 
 *.egg-info/
 
@@ -64,8 +49,3 @@ external_data/literature_sources/modules/
 external_data/literature_sources/papers/
 external_data/literature_sources/references.bib
 literature/
-
-# Local slide drafts generated for advisor review.
-slides/one_zone_metallicity_explainer/
-slides/project_status_advisor_draft/
-slides/uvlf_status_deck/assets/miniagn_smoothocc_selected_uvlf.pdf
