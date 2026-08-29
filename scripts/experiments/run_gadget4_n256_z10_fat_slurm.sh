@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-gadget_root="${GADGET_ROOT:-/home/SOYONAOC/AstroCode/AuroraLF_local_backup_20260514_200743/external/gadget4}"
+: "${GADGET_ROOT:?Set GADGET_ROOT to the GADGET-4 checkout directory}"
+gadget_root="$GADGET_ROOT"
 python_bin="$repo_root/.venv/bin/python"
 run_dir="$repo_root/outputs/gadget4_dmo_n256_z10_fat"
 
