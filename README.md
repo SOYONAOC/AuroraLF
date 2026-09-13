@@ -160,6 +160,25 @@ The [Pop III prediction roadmap](docs/popiii-predictions-roadmap.md) records
 the planned He II, PISN, and 21 cm MAP predictions from the shared epsilon=0.03
 random-q model, including current status, dependencies, and observational checks.
 
+The PISN follow-up uses the same saved bursts and logE IMF, with an explicit
+140–260 Msun fate window and a sourced H+He burning delay:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/analysis/analyze_random_q_pisn.py --config configs/experiments/pisn_random_q.toml
+```
+
+It writes `data_save/pisn_random_q_20260911/summary.json` and vector slide assets.
+Outputs include source-frame rates (events/yr/comoving Mpc³), observer-frame
+rates (events/yr/deg²/unit redshift), progenitor-mass bins, UV-bright host
+fractions, MC errors, and lifetime/window sensitivities. These are continuous-IMF
+expectations at two existing snapshots; telescope selection and discrete
+stellar sampling are not included. See the [PISN study](docs/pisn-random-q-study.md).
+
+`scripts/plot/plot_random_q_pisn_observations.py` adds the source-attributed HSC
+luminous-PISN bound on the same comoving source-rate axis. Its typical z≈1–3
+sensitivity does not overlap the model snapshots; the figure shows coverage
+and is not a statistical constraint on the current high-redshift prediction.
+
 Experiment code has pinned Ruff checks; the include list in `pyproject.toml`
 defines the current scope. After `uv sync --frozen --all-groups`, run:
 

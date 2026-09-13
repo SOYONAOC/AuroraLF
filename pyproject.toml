@@ -53,10 +53,13 @@ include = [
   "scripts/analysis/combine_visbal_batches.py",
   "scripts/analysis/analyze_random_q.py",
   "scripts/analysis/analyze_random_q_heii.py",
+  "scripts/analysis/analyze_random_q_pisn.py",
+  "scripts/plot/plot_random_q_pisn_observations.py",
   "scripts/analysis/compare_random_q_heii_observations.py",
   "scripts/analysis/merge_random_q_shards.py",
   "tests/test_experiment_workflows.py",
   "tests/test_random_q_heii.py",
+  "tests/test_random_q_pisn.py",
   "tests/test_heii_observation_comparison.py",
 ]
 

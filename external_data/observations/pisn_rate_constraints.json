@@ -1,0 +1,61 @@
+{
+  "retrieved_date": "2026-09-11",
+  "constraints": [
+    {
+      "id": "moriya2021_hsc_luminous_pisn",
+      "reference": "Moriya et al. (2021), ApJ 908, 249",
+      "doi": "10.3847/1538-4357/abcfc0",
+      "arxiv": "2012.00171v1",
+      "url": "https://arxiv.org/html/2012.00171v1",
+      "locator": "Section 6, PDF page 9, Table 2 and Figure 8",
+      "kind": "order_of_magnitude_upper_bound",
+      "value_gpc3_yr": 100.0,
+      "time_frame": "source",
+      "volume": "comoving",
+      "typical_sensitivity_redshift": [
+        1.0,
+        3.0
+      ],
+      "redshift_interval_is_bin": false,
+      "confidence_level": null,
+      "population": "Luminous, long-lasting PISN light-curve templates; not all PISNe or specifically Pop III",
+      "area_deg2": 1.75,
+      "observing_seasons": 4,
+      "observing_dates": "late 2016 to early 2020",
+      "filters": [
+        "g",
+        "r",
+        "i",
+        "z"
+      ],
+      "typical_limiting_ab_mag": 26.0,
+      "selection": "Transient detections in multiple seasons; no plausible PISN lasting more than a year",
+      "rate_assumption": "Constant volumetric rate with redshift; template-dependent selection from survey simulations",
+      "caveat": "Approximately 100 is the authors' order-of-magnitude bound, not a tabulated 95% confidence limit or a redshift-resolved measurement."
+    }
+  ],
+  "not_rate_constraints": [
+    {
+      "reference": "DeCoursey et al. (2025), ApJ 979, 250",
+      "doi": "10.3847/1538-4357/ad8fab",
+      "url": "https://doi.org/10.3847/1538-4357/ad8fab",
+      "description": "JADES: 79 supernova candidates, about 25 arcmin2, two discovery epochs separated by one year, about 30 AB mag. The total supernova discovery rate is not a PISN rate at z>10."
+    },
+    {
+      "reference": "Ferrara et al. (2026), Possible evidence for a pair-instability supernova nature of ultra-early JWST sources",
+      "doi": "10.33232/001c.162107",
+      "arxiv": "2601.07374v1",
+      "url": "https://arxiv.org/html/2601.07374v1",
+      "description": "Historical PISN interpretation of Capotauro at z about 15; superseded by Liu et al. (2026), arXiv:2608.07461v1, whose measured motion rejects an extragalactic source at >6 sigma. Ferrara section VI.2 is a theoretical expected count, not an observed rate."
+    },
+    {
+      "reference": "Liu et al. (2026), A clear detection of proper motion confirms that the claimed z~32 galaxy candidate, Capotauro, is a Y-type brown dwarf",
+      "arxiv": "2608.07461v1",
+      "url": "https://arxiv.org/html/2608.07461v1",
+      "locator": "Section 3.1.3 and Section 6",
+      "publication_status": "preprint, submitted to MNRAS",
+      "description": "NIRCam astrometry measures 132 +/- 20 mas displacement over about 3.5 years, rejecting an extragalactic interpretation including the proposed z~15 PISN at >6 sigma. SED favors a Y-type brown dwarf.",
+      "status": "PISN interpretation rejected by subsequent astrometry"
+    }
+  ]
+}
