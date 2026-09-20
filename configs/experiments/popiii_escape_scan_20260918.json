@@ -1,0 +1,47 @@
+{
+  "model": "threshold_mu0_sigma1.5_epsilon0.03_dual100Myr",
+  "fesc_popii": 0.2,
+  "baseline_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918",
+  "density_root": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/eor_sweep_fesc005/kinf",
+  "redshift_list": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/eor_sweep_fesc005/redshift_list.npy",
+  "data_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918",
+  "plot_output": "/home/zhuhourui/AstroCode/AuroraLF/outputs/popiii_escape_scan_20260918",
+  "cases": [
+    {
+      "fesc_popiii": 0.005,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.005",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_escape_scan_20260918/fesc0.005"
+    },
+    {
+      "fesc_popiii": 0.01,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.01",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_escape_scan_20260918/fesc0.01"
+    },
+    {
+      "fesc_popiii": 0.03,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.03",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_escape_scan_20260918/fesc0.03"
+    },
+    {
+      "fesc_popiii": 0.06,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.06",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_escape_scan_20260918/fesc0.06"
+    }
+  ],
+  "input_sha256": {
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.005/sources.npz": "11b12d96a883347ca324a62dd4c0074b100b8decd74fd62698b982d639fa1807",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.005/manifest.json": "b16f9685dbf6c3facc6c630e549628c9f5ef035eacc9c226b88403ef2a09a085",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.01/sources.npz": "9920b79b35c2835a1e5e6a05b49f8645042585d120dfd31299c8f5b183f29fe5",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.01/manifest.json": "ca05951e5670ebb7c9035fc8ba1df717ade809daa5c76e41457ba5f1a6c06cfe",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.03/sources.npz": "15756aab8dac68ff5dcf9117fa0a0334669c6e0eec3081ffa0ef9c18bca2a234",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.03/manifest.json": "7422d36baced8479eabd5fe8320c0814a53bb9fad8fa68abb6cdcfd95d5eb8dd",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.06/sources.npz": "1b878dcaa8195c51aac226617e28f740cd44d431c62ed72abb8ca1e57f028935",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_escape_scan_20260918/sources/fesc0.06/manifest.json": "cf604fbeec30934e33182b9a321de08d0fb77583d308056eb6a9966b52400949",
+    "/home/zhuhourui/AstroCode/SmallScale21cm/scripts/run/run_aurora_rates.py": "f6a1ec57a350bdf5d12be06b14636f91f521bebe3ac95e4a1195bf7a37089e65",
+    "/home/zhuhourui/AstroCode/AuroraLF/scripts/analysis/analyze_popiii_escape_scan.py": "d6fd60af84f80c7789151e0d7a9d4daa997e66fd382afe0d57aecd445e3e1d56",
+    "/home/zhuhourui/AstroCode/AuroraLF/scripts/run/run_popiii_escape_scan.py": "b05fd05f8079269549967cf0ed515f2ff6e5ac342717c1fb30a7e617f6f1c222",
+    "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918/manifest.json": "ba7a1c6a35457b51939bae8cf3855ea2115675791e93709c43b6ee2a07723f14",
+    "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918/histories.json": "58bdc1f01c2e3da8538d6be72af6f16e591bcd5aa8c47726da6c3dfffbb4b056",
+    "/home/zhuhourui/AstroCode/SmallScale21cm/runs/eor_sweep_fesc005/redshift_list.npy": "8975c22848209cf20fc5c7197246cfb4ba5eaf008cd8d57fbc8175df89f8f608"
+  }
+}

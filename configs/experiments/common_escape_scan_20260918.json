@@ -1,0 +1,50 @@
+{
+  "model": "threshold_mu0_sigma1.5_epsilon0.03_dual100Myr",
+  "baseline_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918",
+  "density_root": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/eor_sweep_fesc005/kinf",
+  "redshift_list": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/eor_sweep_fesc005/redshift_list.npy",
+  "escape_mode": "common_popii_popiii",
+  "baseline_fesc_popii": 0.2,
+  "data_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918",
+  "plot_output": "/home/zhuhourui/AstroCode/AuroraLF/outputs/common_escape_scan_20260918",
+  "cases": [
+    {
+      "fesc_common": 0.025,
+      "fesc_popii": 0.025,
+      "fesc_popiii": 0.025,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.025",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.025",
+      "node": "node4",
+      "script": "/home/zhuhourui/AstroCode/AuroraLF/outputs/common_escape_scan_20260918/fesc0.025.sh"
+    },
+    {
+      "fesc_common": 0.05,
+      "fesc_popii": 0.05,
+      "fesc_popiii": 0.05,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.05",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.05",
+      "node": "node3",
+      "script": "/home/zhuhourui/AstroCode/AuroraLF/outputs/common_escape_scan_20260918/fesc0.05.sh"
+    },
+    {
+      "fesc_common": 0.1,
+      "fesc_popii": 0.1,
+      "fesc_popiii": 0.1,
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.1",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.1",
+      "node": "node6",
+      "script": "/home/zhuhourui/AstroCode/AuroraLF/outputs/common_escape_scan_20260918/fesc0.1.sh"
+    }
+  ],
+  "input_sha256": {
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.025/sources.npz": "7ed732459006617d07de75a1ccdef1ddda683b2e69b6a845d629d9ed05a983d6",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.025/manifest.json": "0a3db1956cbe8f066e5abbc546c5ea96bcc869e50f6531b442945cfae645de0a",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.05/sources.npz": "a3cedd5929eaebb2480f2735813e1114b0b3c2e8cef9cf9e538bee9b69badf7e",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.05/manifest.json": "1321d7e98202ce608030f0aca9d4fe07cf9a26b95fe9a619b4a485d3986f8102",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.1/sources.npz": "0b149f45abdd6000cc4dea400dc0ad7f6abf917a774a3a5b44e796b05a8780d9",
+    "/home/zhuhourui/AstroCode/AuroraLF/data_save/common_escape_scan_20260918/sources/fesc0.1/manifest.json": "507ee59d6cf49d1a070363f1740b29a6ead659fd1c9aa1b50ea6f9749033673c",
+    "/home/zhuhourui/AstroCode/SmallScale21cm/scripts/run/run_aurora_rates.py": "f6a1ec57a350bdf5d12be06b14636f91f521bebe3ac95e4a1195bf7a37089e65",
+    "/home/zhuhourui/AstroCode/AuroraLF/scripts/analysis/rescale_popiii_escape.py": "886919e3afc88630285fe667c1739f2b2b0e5885d3f328503cfbe37399df95ca"
+  },
+  "selection_basis": "Exploratory common fesc brackets .025,.05,.1; one-zone estimate at z7 gives xHI .761,.521,.042; not a spatial calibration."
+}

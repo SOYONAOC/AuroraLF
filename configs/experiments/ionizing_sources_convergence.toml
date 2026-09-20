@@ -1,0 +1,27 @@
+# First source-budget convergence study. No claim of full merger-tree closure.
+output = "data_save/ionizing_sources/mainbranch_convergence"
+
+[grid]
+redshifts = [8.0, 12.5, 15.0, 20.0]
+logmass_min = 4.0
+logmass_max = 15.0
+n_mass = 111
+
+[model]
+n_tracks = 1024
+track_chunk = 64
+n_grid = 1920
+seed = 610228
+z_start = 50.0
+epsilon_b = 0.03
+fesc_popii = 0.2
+fesc_popiii = 0.2
+q_log10_mean = 0.5
+q_log10_sigma = 1.5
+# Retain the AuroraLF production cosmology, explicitly rather than adopting
+# the rounded SmallScale defaults. Density provenance is a separate requirement.
+h = 0.6766
+omega_m = 0.30966
+omega_b = 0.04897
+popii_ssp = "external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+popiii_ssp = "external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_logE_500_001_is5.20"

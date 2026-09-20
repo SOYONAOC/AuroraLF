@@ -1,0 +1,8 @@
+id,reference,z,z_min,z_max,xhi,lower,upper,kind,confidence,method,url
+mcgreer15_56,McGreer et al. (2015),5.6,5.6,5.6,0.09,0,0.09,upper_limit,1sigma_upper,dark_pixels,https://arxiv.org/abs/1411.5375
+mcgreer15_59,McGreer et al. (2015),5.9,5.9,5.9,0.11,0,0.11,upper_limit,1sigma_upper,dark_pixels,https://arxiv.org/abs/1411.5375
+mason18_7,Mason et al. (2018),7,7,7,0.59,0.44,0.70,interval,68_percent,Lya_EW,https://arxiv.org/abs/1709.05356
+davies18_709,Davies et al. (2018),7.09,7.09,7.09,0.48,0.22,0.74,interval,68_percent,QSO_damping_wing,https://arxiv.org/abs/1802.06066
+davies18_754,Davies et al. (2018),7.54,7.54,7.54,0.60,0.37,0.80,interval,68_percent,QSO_damping_wing,https://arxiv.org/abs/1802.06066
+mason26_65,Mason et al. (2026),6.5,5.5,8.0,0.33,0.06,0.51,interval,68_percent,JWST_damping_wing,https://arxiv.org/html/2501.11702v2
+mason26_93,Mason et al. (2026),9.3,8.0,10.6,0.64,0.41,0.81,interval,68_percent,JWST_damping_wing,https://arxiv.org/html/2501.11702v2

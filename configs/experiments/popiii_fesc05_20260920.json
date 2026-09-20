@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "key": "popii_f0_popiii_f0.5",
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_fesc05_20260920/sources/popii_f0_popiii_f0.5",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_fesc05_20260920/popii_f0_popiii_f0.5",
+      "fesc_popii": 0,
+      "fesc_popiii": 0.5
+    },
+    {
+      "key": "popii_f0.05_popiii_f0.5",
+      "source": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_fesc05_20260920/sources/popii_f0.05_popiii_f0.5",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popiii_fesc05_20260920/popii_f0.05_popiii_f0.5",
+      "fesc_popii": 0.05,
+      "fesc_popiii": 0.5
+    }
+  ],
+  "reference_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_z5_20260919/popii_popiii_f0.064",
+  "tau_reference": {
+    "value": 0.054,
+    "sigma": 0.007,
+    "reference": "Planck 2018 VI, combined LCDM constraint, rounded abstract values",
+    "url": "https://arxiv.org/abs/1807.06209"
+  },
+  "data_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/popiii_fesc05_20260920",
+  "plot_output": "/home/zhuhourui/AstroCode/AuroraLF/outputs/popiii_fesc05_20260920",
+  "assumptions": {
+    "calibration": "Two explicit rankings: neutral_score uses three narrow-redshift constraints; combined_score adds ((tau-.054)/.007)^2. Descriptive scores, not joint likelihoods, confidence intervals, or independent validation. Wide-z bins are shown at centers only.",
+    "stellar": "Fixed mu=0, sigma=1.5 dex, epsilon_b=.03, paired100/100Myr source windows. This user-requested trial explicitly separates fesc_III=.5 and fesc_II; no shared-escape restriction.",
+    "tau": "Density-weighted HII; normalized matter-density proxy traces baryons. X_H=.75 consistent with EoRCaLC. H+HeI together; HeIII tanh centered at z=3.5, width .5. Flat matter+Lambda background matching source ages.",
+    "low_z": "Spatial histories extended to last real density snapshot z=5.01; source rates independently calculated to z=5.00. Integrate actual Q_mass over all snapshots; require complete ionization at final snapshot, then use Q_mass=1 below it. No invented z=5.00 spatial field.",
+    "high_z": "Neutral before highest snapshot as initialized in spatial solver. No recombination-era residual electrons in reionization tau.",
+    "limitations": "Density cosmology remains unverified; overlapping excursion regions do not enforce global photon conservation. Bounds omit source sampling, density, helium and spatial solver systematics.",
+    "selection": "First test nonnegative Pop II boundary fII=0 and response at .05; these are exploration points, not priors or inferred confidence limits."
+  }
+}

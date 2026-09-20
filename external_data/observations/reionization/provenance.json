@@ -1,0 +1,15 @@
+{
+  "quantity": "Volume-averaged IGM neutral hydrogen fraction",
+  "retrieved": "2026-09-13",
+  "selection": "Representative published constraints, including a JWST study; not a complete catalogue or an independent joint likelihood.",
+  "value_source": "Numbers transcribed from primary abstracts and text, not digitized figures.",
+  "references": {
+    "McGreer et al. (2015)": {"bibcode": "2015MNRAS.447..499M", "doi": "10.1093/mnras/stu2449", "arxiv": "1411.5375", "locator": "Abstract; 0.04+0.05 at z=5.6, 0.06+0.05 at z=5.9. Plot 1-sigma upper bounds, not detections."},
+    "Mason et al. (2018)": {"bibcode": "2018ApJ...856....2M", "doi": "10.3847/1538-4357/aab0a7", "arxiv": "1709.05356v2", "locator": "Abstract; 0.59 -0.15 +0.11 at z~7."},
+    "Davies et al. (2018)": {"bibcode": "2018ApJ...864..142D", "doi": "10.3847/1538-4357/aad6dc", "arxiv": "1802.06066", "locator": "Abstract; posterior medians and 68% credible intervals, marginalized over quasar lifetimes 1e3--1e8 yr. Two distinct quasars; do not add alternative analyses of the same objects as independent points."},
+    "Mason et al. (2026)": {"bibcode": "2026A&A...705A.114M", "doi": "10.1051/0004-6361/202553820", "arxiv": "2501.11702v2", "locator": "Section 5.2 and Fig. 10: bins 5.5--8.0 and 8.0--10.6, mean redshifts 6.5 and 9.3. Adopt intervals including conservative sightline-variance addition of sigma=0.1. Include GNz11; do not double-count the alternative >0.70 bound without GNz11."}
+  },
+  "metadata_verification": "ADS API queried using all four arXiv identifiers on 2026-09-13.",
+  "redshift_interpretation": "z_min/z_max give the published JWST bin extent, not a redshift measurement error. For other entries no width is specified here; equal bounds do not imply an infinitely narrow physical sample.",
+  "interpretation": "Except dark-pixel upper limits, these are observationally inferred xHI posteriors conditional on radiative-transfer and source assumptions. Wide-bin JWST constraints must not be treated as precision pointwise data. No joint chi-square from these summary intervals."
+}
