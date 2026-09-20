@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "name": "baseline",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_z5_20260919/popii_popiii_f0.064"
+    },
+    {
+      "name": "delay0",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popii_transition_delay0_20260920/popii_popiii_f0.064"
+    },
+    {
+      "name": "delay30",
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/popii_transition_delay30_20260920/popii_popiii_f0.064"
+    }
+  ],
+  "common_fesc": 0.064
+}

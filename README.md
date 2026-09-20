@@ -1127,3 +1127,28 @@ dndm = compute_reed07_halo_mass_function_dndm(
     cosmology=cosmology,
 )
 ```
+
+随机阈值 Pop II+III 混合模型已默认采用“先发生 Pop III，再允许 Pop II 出生”，
+有效延迟基准为 0 Myr。统一配置为 `configs/uvlf/popii_popiii.json`，默认
+`variants=["delay0"]`；选择 `delay30` 可计算 30 Myr 对照，`baseline` 仅用于
+显式复现旧的独立启动。详见[过渡模型说明](docs/popii-transition.md)。
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/run/run_popii_transition.py --kind uvlf --validate-only
+PYTHONPATH=. .venv/bin/python scripts/run/run_popii_transition.py --kind rates --validate-only
+PYTHONPATH=. .venv/bin/python scripts/submit/submit_popii_transition.py --release <unique-name> --dry-run
+```
+
+在同一 release 上依次使用 `--prepare`、`--apply` 可冻结输入并提交 cp6 UVLF/源率
+作业；正式数值计算要求非 debug SLURM 分配。输出为
+`data_save/popii_popiii_production/{uvlf,rates}`，不覆盖已完成的科学结果。
+UVLF 的模型轴和 `diagnostic` 列按 manifest 中的 `variants` / `diagnostic_columns`
+解释；配对差值以所选第一组为参照。源表父目录的 `diagnostics.npz` 保存 Pop II
+积分误差和起始前事件的附加上界，空间适配器的源表字段保持兼容。
+
+已验证的零延迟结果路径保存在配置的 `adoption` 中。混合空间再电离准备入口
+`prepare_reionization_calibration.py --population popii_popiii --fesc 0.064 --tag <new-tag>`
+默认使用该源表并核对其 manifest 哈希；`--source-base` 可显式选用其他源表。
+旧 `run_random_q_burst.py`、`build_ionizing_rates.py` 和带日期的试验配置保留历史行为；
+新混合模型计算使用上述统一入口。纯 Pop II 的 UVLF-v2 对照保持原定义。
+三组历史比较仍可显式传入 `--plan configs/experiments/popii_transition_20260920.json`。

@@ -173,6 +173,23 @@ default paths, or silently skipping the calculation.
 
 ## Production Runs
 
+The adopted random-q Pop II+III mixed model requires Pop II births to follow the
+same main-branch Pop III event. Its default is zero effective transition delay;
+30 Myr remains a sensitivity option, not an established recovery time. Use
+`configs/uvlf/popii_popiii.json` with `scripts/run/run_popii_transition.py`
+(`--kind uvlf` or `--kind rates`), and submit through
+`scripts/submit/submit_popii_transition.py --release <unique-name>`.
+The default selection is `variants=["delay0"]`; `delay30` and the historical
+independent-onset `baseline` must be selected explicitly. UVLF and rates share
+these workers and onset semantics. Preserve the original cooling/delay SFR,
+same-q correlation, exact birth-time truncation and lack of mass renormalization.
+The validated zero-delay products are registered under `adoption` in that config;
+mixed spatial preparation defaults to those sources. Do not silently return to
+the older independent-onset sources. `run_random_q_burst.py`,
+`build_ionizing_rates.py` and dated experiment configs retain historical behavior;
+use the adopted entrypoint for new mixed-model work. The pure Pop II UVLF-v2
+configuration below remains a separate control without a Pop III history.
+
 Large UVLF comparisons are compute jobs. Submit them through the SLURM wrapper
 instead of running the production target directly on a login node:
 
