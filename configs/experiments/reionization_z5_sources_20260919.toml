@@ -1,0 +1,26 @@
+output = "data_save/reionization_z5_20260919/lowz_sources_parallel"
+
+[grid]
+redshifts = [5.0, 5.01, 5.03, 5.05, 5.07, 5.09, 5.11, 5.13, 5.15, 5.17, 5.19, 5.21, 5.23, 5.25, 5.27, 5.29, 5.31, 5.33, 5.35, 5.37, 5.39, 5.41, 5.43, 5.45, 5.47, 5.49, 5.51, 5.53, 5.55, 5.57, 5.59, 5.61, 5.63, 5.65, 5.67, 5.69, 5.71, 5.73, 5.75, 5.77, 5.79, 5.81, 5.83, 5.85, 5.87, 5.89, 5.91, 5.93, 5.95, 5.97, 5.99, 6.0]
+logmass_min = 4.0
+logmass_max = 15.0
+n_mass = 111
+
+[model]
+n_tracks = 256
+track_chunk = 64
+n_grid = 960
+seed = 610228
+z_start = 50.0
+max_lookback_myr = 100.0
+epsilon_b = 0.03
+fesc_popii = 0.2
+fesc_popiii = 0.2
+q_log10_mean = 0.0
+q_log10_sigma = 1.5
+h = 0.6766
+omega_m = 0.30966
+omega_b = 0.04897
+popii_ssp = "external_data/ssp_spectra/bpass_byrne23_imf135_300/BASEL/spectra-bin-imf135_300.BASEL.z001.a+00.dat"
+popiii_ssp = "external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_logE_500_001_is5.20"
+popiii_max_age_myr = 100.0

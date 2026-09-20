@@ -1,0 +1,37 @@
+{
+  "targets": [
+    0.25,
+    0.5,
+    0.75,
+    0.9
+  ],
+  "data_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/matched_reionization_20260919",
+  "plot_output": "/home/zhuhourui/AstroCode/AuroraLF/outputs/matched_reionization_20260919",
+  "input_campaign": "/home/zhuhourui/AstroCode/AuroraLF/configs/experiments/reionization_z5_20260919.json",
+  "cases": [
+    {
+      "population": "popii",
+      "fesc": 0.1775,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_z5_20260919/popii_f0.1775",
+      "previous_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_f0.1775",
+      "key": "popii_f0.1775",
+      "matched_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/matched_reionization_20260919/popii_f0.1775"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.064,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_z5_20260919/popii_popiii_f0.064",
+      "previous_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_popiii_f0.064",
+      "key": "popii_popiii_f0.064",
+      "matched_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/matched_reionization_20260919/popii_popiii_f0.064"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.0725,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_z5_20260919/popii_popiii_f0.0725",
+      "previous_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_popiii_f0.0725",
+      "key": "popii_popiii_f0.0725",
+      "matched_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/matched_reionization_20260919/popii_popiii_f0.0725"
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "baseline_run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918",
+  "data_output": "/home/zhuhourui/AstroCode/AuroraLF/data_save/reionization_calibration_20260919",
+  "plot_output": "/home/zhuhourui/AstroCode/AuroraLF/outputs/reionization_calibration_20260919",
+  "cases": [
+    {
+      "population": "popii",
+      "fesc": 0.2,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.2,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/threshold_zero_100myr_20260918"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.025,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.025"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.05,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.05"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.1,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.1"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.06,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.06"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.07,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.07"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.08,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/common_escape_scan_20260918/fesc0.08"
+    },
+    {
+      "population": "popii",
+      "fesc": 0.15,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_f0.15"
+    },
+    {
+      "population": "popii",
+      "fesc": 0.175,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_f0.175"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.0675,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_popiii_f0.0675"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.064,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_popiii_f0.064"
+    },
+    {
+      "population": "popii_popiii",
+      "fesc": 0.0725,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_popiii_f0.0725"
+    },
+    {
+      "population": "popii",
+      "fesc": 0.1775,
+      "run": "/home/zhuhourui/AstroCode/SmallScale21cm/runs/aurora_maps/reionization_calibration_20260919/popii_f0.1775"
+    }
+  ],
+  "tau_reference": {
+    "value": 0.054,
+    "sigma": 0.007,
+    "reference": "Planck 2018 VI, combined LCDM constraint, rounded abstract values",
+    "url": "https://arxiv.org/abs/1807.06209"
+  },
+  "assumptions": {
+    "calibration": "Two explicit rankings: neutral_score uses three narrow-redshift constraints; combined_score adds ((tau-.054)/.007)^2. Descriptive scores, not joint likelihoods, confidence intervals, or independent validation. Wide-z bins are shown at centers only.",
+    "stellar": "Fixed mu=0, sigma=1.5 dex, epsilon_b=.03, paired100/100Myr source windows; mixed populations share fesc, pure PopII calibrated separately.",
+    "tau": "Density-weighted HII; normalized matter-density proxy traces baryons. X_H=.75 consistent with EoRCaLC. H+HeI together; HeIII tanh centered at z=3.5, width .5. Flat matter+Lambda background matching source ages.",
+    "low_z": "Explicit sensitivity prescription: linear Q_mass to 1 at z=5.6, with completion at z=5 and immediate completion at last snapshot as bounds. These choices are exploratory, not fitted constraints or simulated low-z histories.",
+    "high_z": "Neutral before highest snapshot as initialized in spatial solver. No recombination-era residual electrons in reionization tau.",
+    "limitations": "Density cosmology remains unverified; overlapping excursion regions do not enforce global photon conservation. Bounds omit source sampling, density, helium and spatial solver systematics.",
+    "selection_rounds": [
+      "Existing mixed f=.025,.05,.06,.07,.08,.1,.2 reused with full paired validation.",
+      "First new round: pure II f=.15,.175 to bracket existing .2; mixed .0675 explores the neutral-fraction/optical-depth tradeoff.",
+      "Second round: mixed .064 (joint score interpolation suggested .06388), .0725 (neutral-only interpolation .07253); pure II .1775 (three observed redshifts already covered in first round, interpolation .17719). Interpolated curves are proposal tools only."
+    ],
+    "unrun_candidate": "pure II .17 prepared and queued as159963, canceled while pending after interpolation gave .17719; no spatial output or score claimed for .17."
+  }
+}

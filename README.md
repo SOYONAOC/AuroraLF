@@ -1,5 +1,12 @@
 # AuroraLF
 
+再电离源表、逃逸率校准和观测对照已并入 `main`。新混合模型使用
+[Pop III 后启动 Pop II 的默认配置](docs/popii-transition.md)，零有效延迟，
+Pop II / Pop III 供光窗口均为 100 Myr；UVLF 与源率共用同一启动条件。
+[氢电离光子接口](docs/ionizing-sources.md)、[再电离与光深](docs/reionization-calibration.md)
+记录接口、单位及历史比较。独立启动和 Pop III 6 Myr 配置保留用于显式历史复现。
+空间演化依赖相邻 SmallScale21cm 项目的求解器、真实密度场和已生成源表。
+
 ## v2 typed API
 
 AuroraLF v2 exposes one strict configuration boundary and one in-memory run
