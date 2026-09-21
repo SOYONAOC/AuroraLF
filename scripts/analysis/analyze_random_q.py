@@ -123,7 +123,12 @@ def summarize_run(path, edges):
     diag = dict(
         logq_mean=float(logq.mean()),
         logq_std=float(logq.std()),
-        q_central_fraction=float(np.mean((logq >= -1) & (logq <= 2))),
+        q_central_fraction=float(
+            np.mean(
+                (logq >= c["q_log10_mean"] - c["q_log10_sigma"])
+                & (logq <= c["q_log10_mean"] + c["q_log10_sigma"])
+            )
+        ),
         q_high_fraction=float(np.mean(logq > 2)),
         not_triggered_fraction=float(np.mean(status == 0)),
         left_censored_fraction=float(np.mean(status == 2)),

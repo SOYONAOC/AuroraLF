@@ -44,7 +44,11 @@ def analyze_case(case, config, base, kernel, hydrogen_kernel, hashes):
         manifest = read_completed_manifest(path, required_products=("samples.npz", "source.tar.gz"))
         c = manifest["config"]
         require(c["z"] == z and c["seed"] not in seeds, "redshift mismatch / duplicate seed")
-        require(c["q_log10_mean"] == 0.5 and c["q_log10_sigma"] == 1.5, "different q model")
+        require(
+            c["q_log10_mean"] == config.get("q_log10_mean", 0.5)
+            and c["q_log10_sigma"] == config.get("q_log10_sigma", 1.5),
+            "different q model",
+        )
         require(c["logmass_min"] == 5.0 and c["logmass_max"] == 12.0, "different halo mass range")
         require(eps in c["efficiencies"], "efficiency absent from parent run")
         uv = resolve_path(base, config["executed_uv_ssp"])

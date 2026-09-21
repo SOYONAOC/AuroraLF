@@ -31,6 +31,7 @@ class Config:
     popiii_ssp: str
     lookback_myr: float
     sfr_convolution: str = "dense"
+    popii_wavelength_a: float = 1600.0
 
     @classmethod
     def load(cls, path):
@@ -73,6 +74,8 @@ class Config:
             raise ValueError("efficiencies must be unique and sorted")
         if cfg.sfr_convolution not in ("dense", "direct"):
             raise ValueError("sfr_convolution")
+        if not np.isfinite(cfg.popii_wavelength_a) or cfg.popii_wavelength_a <= 0:
+            raise ValueError("popii_wavelength_a")
         data = asdict(cfg)
         for key in ("popii_ssp", "popiii_ssp"):
             data[key] = str(resolve_path(path.parent, data[key]).resolve(strict=True))
@@ -149,7 +152,7 @@ def initialize_worker(cfg):
     dt = (astro.age(cfg.z).value - astro.age(cfg.z_start).value) / (cfg.n_grid - 1)
     if dt * (cfg.n_grid - 1) * 1000 <= cfg.lookback_myr:
         raise ValueError("left-censored bursts not outside declared UV lookback")
-    a2, k2 = load_uv1600_table(cfg.popii_ssp)
+    a2, k2 = load_uv1600_table(cfg.popii_ssp, wavelength_a=cfg.popii_wavelength_a)
     a3, k3 = load_popiii_uv_luminosity_table(cfg.popiii_ssp)
     if cfg.lookback_myr > min(a2[-1], a3[-1]):
         raise ValueError("SSP does not cover lookback")

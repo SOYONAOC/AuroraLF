@@ -7,6 +7,12 @@
 Pop III He II 通量分布，再叠加实测线通量或上限。没有对 ε、IMF 或气体效率
 重新拟合。两对象尚不足以据此确认或排除模型。
 
+2026-09-16 当前结果：作业159041已补算实际观测红移12.342和13.86，
+2026-09-17：AUR-S01第9页合并五个红移的效率0.03模型与观测，
+高红移仍按目标UV窗口选择，低红移仍使用年轻UV亮样本。效率0.01页面已删除。
+下方早期近邻红移分析保留为历史记录；新数值见文末“Exact observed redshifts”。见
+[文献图形对照与实现口径](heii-figure-conventions.md)。
+
 ## 观测口径
 
 | 对象 | 观测 z | MUV / AB mag | He II 通量 / erg s−1 cm−2 | 模型样本 z |
@@ -94,3 +100,65 @@ CLI 的路径参数相对仓库根目录，原 SSP 路径沿用父分析的配�
 观测预测按 [波段、模式与谱线噪声判据](heii-jwst-observing-criteria.md) 执行。
 固定通量门槛仅保留为分布摘要；新的灵敏度曲线和检出率需真实观测噪声或
 指定配置的 ETC 输出。本次未运行 ETC，未更改既有模型结果。
+## Exact observed redshifts (2026-09-16; complete)
+
+The high-redshift comparison now uses newly calculated GHZ2 `z=12.342` and
+GS-z14-1 `z=13.86` populations. The earlier sections describe historical
+`z=12.5,14.5` proxy samples, superseded for these target comparisons.
+
+Plan: `configs/experiments/heii_exact_targets_20260916.json`; typed configurations
+are `heii_ghz2_exact_20260916.toml` (R053) and
+`heii_gsz14_exact_20260916.toml` (R054). Each uses one batch of 3600 masses,
+1000 tracks per mass and 960 time samples. Efficiencies 0.01, 0.03 and 0.1
+separately select the total-UV target windows. The previous high-z physics,
+mass range and UV proxy (Pop II 1600 A plus Pop III 1500 A) are retained.
+There is no young-burst age cut. Known zero emitters and unknown early bursts
+remain distinct. Quantiles describe population diversity, not measurement errors.
+
+Job **159041** completed successfully in 747.4 seconds on local DMDE SLURM `node5`, partition `cpu`, with 33 workers
+from 34 idle CPUs, leaving one idle CPU at placement. Mail is configured to
+`lighmisamisa@agent.qq.com` on END/FAIL. Job 159040 failed before computation
+because the submission lacked `PYTHONPATH=.`; 159041 explicitly exports it.
+No scientific parameters changed for this repair. The event-only watcher
+continues this same task on completion for output checks, three efficiency
+plots, current AUR-S01 slides and Zotero synchronization.
+
+Verified output: `data_save/heii_exact_targets_20260916/{manifest.json,summary.json,z12.342.npz,z13.86.npz}`.
+The manifest freezes input hashes and archives the implementation. Six focused
+tests and SSP/input validation passed before submission. A scheduler exit code
+alone does not establish scientific convergence.
+
+The output manifest/product SHA-256 values and raw sample dimensions/redshifts
+were checked after completion. Both redshifts have 3,600,000 histories. The
+following luminosities are intrinsic, in erg/s, using baseline linear-L/log-age
+SSP interpolation and the +/-0.25 mag UV selection.
+
+| Efficiency | Target | L16 | L50 | L84 | Effective mass samples |
+| --- | --- | --- | --- | --- | --- |
+| 0.01 | GHZ2 | 1.027e+21 | 2.867e+41 | 3.512e+42 | 128.0 |
+| 0.01 | JADES-GS-z14-1 | 1.463e+40 | 1.663e+41 | 9.558e+41 | 98.6 |
+| 0.03 | GHZ2 | 7.661e+40 | 9.733e+41 | 4.194e+42 | 77.0 |
+| 0.03 | JADES-GS-z14-1 | 1.946e+40 | 2.282e+41 | 1.088e+42 | 89.6 |
+| 0.1 | GHZ2 | 7.539e+40 | 1.048e+42 | 4.211e+42 | 85.6 |
+| 0.1 | JADES-GS-z14-1 | 1.857e+40 | 4.567e+41 | 1.081e+42 | 83.3 |
+
+GHZ2 observation: (4.51 +/- 2.67)e41 erg/s; GS-z14-1: 3-sigma upper
+limit 1.97e41 erg/s. Unknown weighted fractions are 0.009%–0.645%;
+known-zero fractions are 0.017%–1.351%. The very low GHZ2 L16 at efficiency
+0.01 is retained and explicitly annotated below the plotting range. No claim
+of full convergence, formal fit or model rejection follows from these intervals.
+Current AUR-S01 is 24 pages: exact-redshift high-z comparisons pages9–10,
+existing low-z comparisons pages11–13. The high-z efficiency0.1 slide was
+removed at user request; its scientific products are retained. Physical assumptions and the separate
+young-SSP interpolation diagnostics remain in the frozen plan and summary.
+
+Final PDF compiled twice with XeLaTeX; modified pages9–11 and25 visually
+checked with no visible clipping or overlap. Zotero AUR-S01 (DXT5453A) updated
+and deep-verified; QA record: outputs/heii_literature_figures_20260916/exact-review.json.
+
+## 展示合并（2026-09-17）
+
+当前讲稿共20页，第9页合并五个红移的epsilon=0.03对照。
+两张epsilon=0.01页、独立低红移epsilon=0.03页及epsilon=0.1页均已按用户要求移除。
+高、低红移采用不同符号和颜色，并明确列出不同选样条件；未重新计算或改写摘要。
+低红移模型只有约5–11个有效独立质量样本，GN-z11不同孔径不是独立星系。

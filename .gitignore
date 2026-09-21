@@ -15,6 +15,9 @@ cosm/
 third_party/
 runs/
 slides/
+# Generated document archives and a separately versioned local research repository.
+/docs/documents/
+/miniquench_reproduction/
 jupyter.err
 kernel/jupyter.err
 

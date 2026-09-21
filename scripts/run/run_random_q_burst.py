@@ -94,7 +94,7 @@ def main():
         node_list=os.environ.get("SLURM_JOB_NODELIST"),
         status="running",
         started_utc=datetime.now(timezone.utc).isoformat(),
-        scope="User-prescribed UV-only, fixed PopII, no pristine/enrichment/feedback model; PopII stellar1600A and PopIII total1500A, no dust",
+        scope=f"User-prescribed UV-only, fixed PopII, no pristine/enrichment/feedback model; PopII stellar{cfg.popii_wavelength_a:g}A and PopIII total1500A, no dust",
         left_censored_policy="no fabricated event; zero within 100Myr UV window only because history span is longer",
         interpolation="first log(M/Mcool) crossing linear in time; logM interpolation at crossing",
         q_distribution="untruncated independent lognormal, once per track; not literature calibrated",

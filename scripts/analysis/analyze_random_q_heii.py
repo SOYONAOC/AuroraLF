@@ -75,7 +75,11 @@ def analyze_case(case, config, base, kernel, uv_path, source_hashes):
         require(
             c["z"] == z and c["seed"] not in seeds, "redshift mismatch or duplicate realization"
         )
-        require(c["q_log10_mean"] == 0.5 and c["q_log10_sigma"] == 1.5, "different q model")
+        require(
+            c["q_log10_mean"] == config.get("q_log10_mean", 0.5)
+            and c["q_log10_sigma"] == config.get("q_log10_sigma", 1.5),
+            "different q model",
+        )
         require(c["lookback_myr"] == 100.0, "different UV lookback")
         require(m["input_sha256"][c["popiii_ssp"]] == digest(uv_path), "different executed UV SSP")
         # These two definitions set the burst mass and ages in the frozen run.

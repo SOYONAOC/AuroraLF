@@ -1,0 +1,26 @@
+{
+  "retrieved_on": "2026-09-10",
+  "flux_unit": "erg s^-1 cm^-2",
+  "targets": [
+    {
+      "name": "GHZ2", "z": 12.342, "z_error_minus": 0.009, "z_error_plus": 0.009,
+      "muv": -20.53, "muv_error": 0.01, "magnification": 1.3,
+      "measurement": "deblended_flux", "flux": 2.7e-19, "flux_error": 1.6e-19,
+      "ew_rest_angstrom": 4.9, "ew_error_angstrom": 3.1,
+      "population_z": 12.5,
+      "source": "https://arxiv.org/html/2403.10238v2",
+      "locator": "Table 1; sections III.1, III.2, III.5; section II magnification",
+      "notes": "MUV is delensed, measured over 1450-1550 A; line flux is aperture/slit corrected and still magnified. HeII/OIII] blended at PRISM resolution: two-Gaussian decomposition. Table SNR=5 is direct integration, NOT flux/error. Other metal lines detected."
+    },
+    {
+      "name": "JADES-GS-z14-1", "z": 13.86, "z_error_minus": 0.05, "z_error_plus": 0.04,
+      "muv": -19.0, "muv_error": 0.4, "magnification": 1.0,
+      "measurement": "upper_limit", "flux": 7e-20, "upper_limit_sigma": 3,
+      "ew_rest_upper_angstrom": 12,
+      "population_z": 14.5,
+      "source": "https://arxiv.org/html/2507.22858",
+      "locator": "Introduction MUV; Table 2; sections III.3 and III.4",
+      "notes": "56 h NIRSpec PRISM; Gaussian unresolved-line profile fixed to instrumental FWHM; spectral covariance and redshift draws included. Slit correction uses point-source geometry and NIRCam calibration. Adopt mu=1 for this non-lensed field target; this is an analysis assumption. No measured HeII flux/error supplied by Table 2: do not turn upper limit into a zero-flux measurement."
+    }
+  ]
+}

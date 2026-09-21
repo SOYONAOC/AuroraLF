@@ -1,5 +1,17 @@
 # Visbal duty statistical comparison
 
+## 2026-09-11：启动 21 cm MAP 接入核查
+
+后续讨论已选定优先复用 SmallScale21cm 条件质量函数框架的方向，并完成
+22 页解释性方法 slides。逐历史分开计算 Pop II/III 光子贡献，再接区域源项；
+保留平均贡献与丢失时空散布的区别、累计时间闭合和高温近似均已说明。
+此阶段未运行新电离图。早期逐晕路线核查仍保留供参考。
+
+用户要求推进 21 cm 空间图。已检查当前随机阈值模型、本地 Zeus21 和
+21cmFAST v4.2 固定源码；发现空间晕身份/爆发继承与全局辐射源一致性需要
+补齐。尚未安装后端或提交计算。见[核查记录](21cm-map.md)与
+`slides/21cm_map/archive/full_51pages_20260912/21cm_map.pdf`。
+
 Created 2026-09-07 on codex/popiii-visbal-duty from 6c846e5.
 
 User-selected scope: independent reproduction-style statistical comparison of
@@ -89,6 +101,11 @@ Uncrossed histories remain untriggered; left-censored histories are marked, not
 given a fabricated start-time event. Same histories provide PopII and q=1 controls.
 PopII uses its own atomic active mask; random triggers use the full stored DM
 history. This is not a merger-forest/pristine/enrichment/feedback model.
+
+`Config.popii_wavelength_a` selects the BPASS UV wavelength (positive Angstrom;
+default 1600, preserving historical runs). The component-UVLF diagnostic uses
+1500 so that Pop II and the Pop III `L_1500` table are summed in the same band.
+The configured wavelength is recorded in the generic random-q run manifest.
 
 R018: 8 mass x100 tracks preflight. R019-R022: four independent 3600x1000
 batches, 960 time nodes, log10 final halo mass 5-12, track chunks100, 56workers.

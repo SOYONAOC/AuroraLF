@@ -1,0 +1,22 @@
+# Post-processing existing realizations; no new histories or scheduler jobs.
+uv_ssp = "../../external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_logE_500_001_is5.25"
+# Frozen calculation used a CDS-extracted copy with a different text header.
+executed_uv_ssp = "../../external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_logE_500_001_is5.25"
+line_ssp = "../../external_data/ssp_spectra/schaerer2010_pop3/pop3_ge0_logE_500_001_is5.22"
+output = "../../data_save/threshold_zero_all_20260918/heii"
+figures = "../../outputs/threshold_zero_all_20260918/heii"
+efficiencies = [0.01, 0.03, 0.1]
+reference_efficiency = 0.03
+uv_cut = -20.0
+flux_cuts = [1e-20, 1e-19, 1e-18]
+
+q_log10_mean = 0.0
+q_log10_sigma = 1.5
+
+[[cases]]
+z = 12.5
+runs = ["../../data_save/threshold_zero_20260918/AUR-EX-0006-R040"]
+
+[[cases]]
+z = 14.5
+runs = ["../../data_save/threshold_zero_20260918/AUR-EX-0006-R041"]

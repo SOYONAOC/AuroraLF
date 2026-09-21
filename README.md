@@ -139,6 +139,11 @@ error. Scientific parameters and physical windows are unchanged.
 
 The conditional He II follow-up reads existing random-q event masses and ages:
 
+The current slide comparison selects total `M1500 <= -20` and burst age `<=3 Myr`,
+without a line-flux cut. This is an explicit model selection, not an observational
+detection criterion. The Vikaeus+22 survey-depth alternative is retained in the
+appendix. See [selection definitions and reproduction commands](docs/heii-survey-depth.md).
+
 ```bash
 PYTHONPATH=. .venv/bin/python scripts/analysis/analyze_random_q_heii.py --config configs/experiments/heii_random_q.toml
 ```
